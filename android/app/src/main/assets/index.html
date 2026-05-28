@@ -99,8 +99,9 @@
   /* ============ 终端视图 ============ */
   #view-term { background:#11131a; display:flex; flex-direction:column; }
   #term-bar { flex:none; display:flex; align-items:center; gap:10px; padding:11px 16px; border-bottom:1px solid var(--line); background:rgba(22,25,34,.6); font-size:14px; }
-  #term-bar .back { color:var(--fg-faint); }
-  #term-bar .back .k { color:var(--bg); background:var(--fg-dim); border-radius:5px; padding:2px 7px; font-weight:700; font-size:11px; }
+  .tbar-back { color:var(--fg-dim); background:var(--surface-2); border:1px solid var(--line); border-radius:8px;
+    padding:6px 13px; font-family:var(--mono); font-size:14px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  .tbar-back:active { background:#222838; border-color:var(--accent); color:var(--fg); }
   #term-bar .tproj { color:var(--accent); font-weight:700; letter-spacing:.02em; }
   #term-bar .ttype { color:var(--fg-faint); font-size:11px; letter-spacing:.12em; text-transform:uppercase; }
   #term-wrap { flex:1; position:relative; }
@@ -111,13 +112,16 @@
   #overlay-hint { margin-top:12px; font-size:12px; color:#888; }
 
   /* ============ 自绘虚拟键盘(v1)============ */
-  #vkeyboard { position:fixed; left:0; right:0; bottom:0; z-index:20; display:flex; gap:8px; justify-content:center;
-    padding:10px 16px; background:linear-gradient(0deg, var(--bg) 62%, rgba(13,15,22,.85)); border-top:1px solid var(--line); }
+  #vkeyboard { position:fixed; left:0; right:0; bottom:0; z-index:20; display:flex; flex-direction:column; gap:8px;
+    padding:10px 14px; background:linear-gradient(0deg, var(--bg) 70%, rgba(13,15,22,.9)); border-top:1px solid var(--line); }
   #vkeyboard[hidden] { display:none; }
+  .krow { display:flex; gap:8px; justify-content:center; }
   .kc { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
-    min-width:64px; height:56px; padding:0 14px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line);
+    min-width:54px; height:56px; padding:0 10px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line);
     color:var(--fg); font-family:var(--mono); cursor:pointer; user-select:none; -webkit-user-select:none; -webkit-tap-highlight-color:transparent;
     transition:transform .08s, background .12s, border-color .12s; }
+  .kc.sys { background:rgba(123,162,247,.08); border-color:rgba(123,162,247,.32); }
+  .kc.sys .kl { color:#7aa2f7; }
   .kc:active, .kc.held { transform:translateY(1px); background:#222838; border-color:var(--accent); }
   .kc .kl { font-size:20px; font-weight:700; line-height:1; }
   .kc .ks { font-size:10px; color:var(--fg-dim); letter-spacing:.06em; text-transform:uppercase; }
@@ -129,10 +133,10 @@
   #hint-footer[hidden] { display:none; }
   #hint-footer .k { color:var(--bg); background:var(--fg-dim); border-radius:5px; padding:2px 8px; font-weight:700; font-size:12px; margin-right:5px; }
   #hint-footer .spacer { flex:1; }
-  /* 两视图底部留出虚拟键盘空间 */
-  body.vk-on #list { padding-bottom:88px; }
-  body.vk-on #term { bottom:78px; }
-  body:not(.vk-on) #list { padding-bottom:64px; }
+  /* 底部空间:列表恒留 slim hint;终端按是否显示虚拟键盘留 2 行 or slim */
+  #list { padding-bottom:60px; }
+  body.vk-on #term { bottom:150px; }       /* 2 行虚拟键盘 */
+  body:not(.vk-on) #term { bottom:52px; }  /* slim hint(接了硬件键盘时)*/
 
   @keyframes rise { to { opacity:1; transform:translateY(0); } }
   @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
@@ -154,7 +158,7 @@
   <!-- 终端视图 -->
   <div id="view-term" class="view" hidden>
     <div id="term-bar">
-      <span class="back"><span class="k">⌫</span> 返回</span>
+      <button class="tbar-back" onclick="vkey('home')">‹ 返回</button>
       <span class="tproj" id="term-proj">—</span>
       <span class="ttype" id="term-type"></span>
     </div>
@@ -168,14 +172,23 @@
 
   <!-- 自绘虚拟键盘(外接键盘未连接时显示)— v1: 8 键,后续按 8BitDo Micro 实际键位迭代 -->
   <div id="vkeyboard">
-    <button class="kc" data-act="up"><span class="kl">↑</span></button>
-    <button class="kc" data-act="down"><span class="kl">↓</span></button>
-    <button class="kc" data-act="enter"><span class="kl">↵</span><span class="ks">Enter</span></button>
-    <button class="kc" data-act="esc"><span class="kl">⎋</span><span class="ks">Esc</span></button>
-    <button class="kc" data-act="tab"><span class="kl">⇥</span><span class="ks">Tab</span></button>
-    <button class="kc" data-act="ctrlc"><span class="kl">^C</span><span class="ks">中断</span></button>
-    <button class="kc voice" data-voice="zh"><span class="kl">🎤</span><span class="ks">中文</span></button>
-    <button class="kc voice" data-voice="en"><span class="kl">🎤</span><span class="ks">EN</span></button>
+    <div class="krow">
+      <button class="kc sys" data-act="home"><span class="kl">⌂</span><span class="ks">返回</span></button>
+      <button class="kc" data-act="left"><span class="kl">←</span></button>
+      <button class="kc" data-act="up"><span class="kl">↑</span></button>
+      <button class="kc" data-act="down"><span class="kl">↓</span></button>
+      <button class="kc" data-act="right"><span class="kl">→</span></button>
+      <button class="kc" data-act="enter"><span class="kl">↵</span><span class="ks">Enter</span></button>
+      <button class="kc" data-act="esc"><span class="kl">⎋</span><span class="ks">Esc</span></button>
+    </div>
+    <div class="krow">
+      <button class="kc" data-act="delword"><span class="kl">⌫</span><span class="ks">删词</span></button>
+      <button class="kc" data-act="tab"><span class="kl">⇥</span><span class="ks">Tab</span></button>
+      <button class="kc" data-act="shifttab"><span class="kl">⇧⇥</span><span class="ks">模式</span></button>
+      <button class="kc" data-act="ctrlc"><span class="kl">^C</span><span class="ks">中断</span></button>
+      <button class="kc voice" data-voice="zh"><span class="kl">🎤</span><span class="ks">中文</span></button>
+      <button class="kc voice" data-voice="en"><span class="kl">🎤</span><span class="ks">EN</span></button>
+    </div>
   </div>
   <div id="hint-footer" hidden>
     <span><span class="k">↑↓</span>导航</span><span><span class="k">↵</span>进入</span><span><span class="k">F13</span>语音</span>
@@ -261,12 +274,14 @@
     document.getElementById('view-list').hidden=true;
     document.getElementById('view-term').hidden=false;
     currentView='term';
+    updateBottomBar();
     requestAnimationFrame(()=>{ try{ fitAddon.fit(); }catch(e){} term.focus(); });
   };
   window.showList=function(){
     document.getElementById('view-term').hidden=true;
     document.getElementById('view-list').hidden=false;
     currentView='list';
+    updateBottomBar();
   };
   window.currentView=function(){ return currentView; };
 
@@ -287,10 +302,15 @@
   document.addEventListener('keydown', e=>{
     if(currentView!=='list') return;  // 终端态:不拦截,xterm/Kotlin 处理
     switch(e.key){
-      case 'ArrowDown': case 'j': setFocus(focusIdx+1); e.preventDefault(); break;
-      case 'ArrowUp':   case 'k': setFocus(focusIdx-1); e.preventDefault(); break;
+      case 'ArrowDown': case 'ArrowRight': case 'j': setFocus(focusIdx+1); e.preventDefault(); break;
+      case 'ArrowUp':   case 'ArrowLeft':  case 'k': setFocus(focusIdx-1); e.preventDefault(); break;
       case 'Enter': openFocused(); e.preventDefault(); break;
     }
+  });
+  // 触屏:点卡片直接进入(无硬件键盘时的导航方式)
+  document.getElementById('list').addEventListener('click', e=>{
+    const c=e.target.closest('.card'); if(!c) return;
+    setFocus(+c.dataset.idx); openFocused();
   });
 
   window.updateProject=function(host,name,patch){ const i=flat.findIndex(p=>p.host===host&&p.name===name); if(i<0)return; Object.assign(flat[i],patch); const keep=focusIdx; flat.length=0; render(); setFocus(keep); };
@@ -298,12 +318,27 @@
   /* ========== 虚拟键盘 ========== */
   function writeChannel(s){ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(s)))); }
   function vkey(a){
-    if(a==='up'){ if(currentView==='list') setFocus(focusIdx-1); else writeChannel('\x1b[A'); }
-    else if(a==='down'){ if(currentView==='list') setFocus(focusIdx+1); else writeChannel('\x1b[B'); }
-    else if(a==='enter'){ if(currentView==='list') openFocused(); else if(window.Bridge&&window.Bridge.vkeyEnter) window.Bridge.vkeyEnter(); else writeChannel('\r'); }
-    else if(a==='esc'){ if(window.Bridge&&window.Bridge.vkeyEsc) window.Bridge.vkeyEsc(); else writeChannel('\x1b'); }
-    else if(a==='tab'){ writeChannel('\t'); }
-    else if(a==='ctrlc'){ writeChannel('\x03'); }
+    // 返回 home 两个视图都可用
+    if(a==='home'){ if(window.Bridge&&window.Bridge.goHome) window.Bridge.goHome(); else showList(); return; }
+    if(currentView==='list'){
+      if(a==='up'||a==='left') setFocus(focusIdx-1);
+      else if(a==='down'||a==='right') setFocus(focusIdx+1);
+      else if(a==='enter') openFocused();
+      return;  // 列表态忽略其它键
+    }
+    // 终端态:方向键 → ANSI;其它 → 控制字节
+    switch(a){
+      case 'up':    writeChannel('\x1b[A'); break;
+      case 'down':  writeChannel('\x1b[B'); break;
+      case 'right': writeChannel('\x1b[C'); break;
+      case 'left':  writeChannel('\x1b[D'); break;
+      case 'enter': if(window.Bridge&&window.Bridge.vkeyEnter) window.Bridge.vkeyEnter(); else writeChannel('\r'); break;
+      case 'esc':   if(window.Bridge&&window.Bridge.vkeyEsc) window.Bridge.vkeyEsc(); else writeChannel('\x1b'); break;
+      case 'tab':      writeChannel('\t'); break;
+      case 'shifttab': writeChannel('\x1b[Z'); break;   // back-tab(Claude Code 切换模式)
+      case 'delword':  writeChannel('\x17'); break;     // Ctrl+W 删上一个词
+      case 'ctrlc':    writeChannel('\x03'); break;     // Ctrl+C 中断
+    }
   }
   document.querySelectorAll('#vkeyboard .kc[data-act]').forEach(b=>b.addEventListener('click',()=>vkey(b.dataset.act)));
   document.querySelectorAll('#vkeyboard .kc[data-voice]').forEach(b=>{
@@ -313,20 +348,22 @@
     b.addEventListener('touchstart',down,{passive:false}); b.addEventListener('touchend',up); b.addEventListener('touchcancel',up);
     b.addEventListener('mousedown',down); b.addEventListener('mouseup',up); b.addEventListener('mouseleave',up);
   });
-  window.setVirtualKeyboard=function(show){
-    document.getElementById('vkeyboard').hidden=!show;
-    document.getElementById('hint-footer').hidden=show;
-    document.body.classList.toggle('vk-on',show);
+  let hwkb=false;  // 是否接了外置物理键盘
+  function updateBottomBar(){
+    const showVk = (currentView==='term') && !hwkb;   // 虚拟键盘只在终端 + 无硬件键盘时显示
+    document.getElementById('vkeyboard').hidden=!showVk;
+    document.getElementById('hint-footer').hidden=showVk;
+    document.body.classList.toggle('vk-on',showVk);
     if(currentView==='term') requestAnimationFrame(()=>{ try{fitAddon.fit();}catch(e){} });
-  };
+  }
+  window.setHwKeyboard=function(present){ hwkb=present; updateBottomBar(); };  // Kotlin 在键盘插拔时调
 
   function tick(){ document.getElementById('clock').textContent=new Date().toTimeString().slice(0,5); }
   let resizePending=false;
   window.addEventListener('resize',()=>{ if(resizePending)return; resizePending=true; requestAnimationFrame(()=>{ resizePending=false; if(currentView==='term'){ try{ fitAddon.fit(); }catch(e){} } }); });
   render(); setFocus(0); tick(); setInterval(tick,1000);
-  // 外接键盘没连 → 显示自绘虚拟键盘
-  const hwkb = (window.Bridge&&window.Bridge.hasHardwareKeyboard) ? window.Bridge.hasHardwareKeyboard() : false;
-  setVirtualKeyboard(!hwkb);
+  hwkb = (window.Bridge&&window.Bridge.hasHardwareKeyboard) ? window.Bridge.hasHardwareKeyboard() : false;
+  updateBottomBar();   // 列表态:虚拟键盘不显示,只 slim hint
   console.log('[deck] index.html ready, hwKeyboard='+hwkb);
   </script>
 </body>

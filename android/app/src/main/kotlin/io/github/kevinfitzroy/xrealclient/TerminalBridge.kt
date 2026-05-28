@@ -25,6 +25,8 @@ class TerminalBridge(
     private val onVkeyEsc: () -> Unit = {},
     /** 是否有外接物理键盘(决定 JS 要不要显示自绘虚拟键盘) */
     private val hasHwKeyboard: () -> Boolean = { false },
+    /** 终端视图请求返回项目列表(虚拟键盘 ⌂ 键 / 顶栏返回) */
+    private val onGoHome: () -> Unit = {},
 ) {
 
     /**
@@ -43,6 +45,7 @@ class TerminalBridge(
     @JavascriptInterface fun voiceUp(lang: String) = onVoice(false, lang)
     @JavascriptInterface fun vkeyEnter() = onVkeyEnter()
     @JavascriptInterface fun vkeyEsc() = onVkeyEsc()
+    @JavascriptInterface fun goHome() = onGoHome()
     @JavascriptInterface fun hasHardwareKeyboard(): Boolean = hasHwKeyboard()
 
     @JavascriptInterface

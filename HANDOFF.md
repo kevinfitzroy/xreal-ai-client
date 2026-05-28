@@ -1,13 +1,27 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-28(Phase 0 + Stage B 代码完成,等运行时验证)
+> **最近更新**:2026-05-28(产品重塑为 Agent Deck + UI/虚拟键盘真机验证完成)
 
 ---
 
-## 1. 项目阶段:Phase 0 + Stage B 代码完成,待运行验证
+## 0. 最新进展(2026-05-28 晚 · 产品重塑 + UI 打磨,均真机验证)
 
-Phase 0(emulator 跑通骨架)+ Stage B(真 SSH / 真 AudioRecord / 真豆包 ASR client)的代码全部写完,APK 14 MB 编译通过。
+产品从"单 SSH 终端"重塑成 **AI agent 集群指挥台 "Agent Deck"**(详见 memory `product-vision`)。主入口 = WebView SPA 列表页 ⇄ 终端页。已在 **Beam Pro X4100 真机**全部验证通过:
+
+- **Agent Deck 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**mock 数据**,真状态探测(tmux capture-pane)待接。
+- **横屏锁定 + 响应式**(`auto-fill minmax(360px)` 双/三列,适配眼镜 16:10)。
+- **彻底禁用系统 IME**(`FLAG_ALT_FOCUSABLE_IM`)+ **自绘虚拟键盘 v2**(13 键 2 行,只在终端显示;列表卡片可点导航)。
+- **SPA 导航**:DPAD_CENTER/点卡片进项目,⌂返回/‹返回/硬件BACK 回列表。
+- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 →(键盘 v2 这次 commit)。
+
+**仍 mock / 待接**:列表是 mock 数据;进项目后终端走 LocalEchoChannel(每个 project 的真 SSH 连接 + 状态探测 poll 还没接);真豆包 ASR 待 creds。
+
+---
+
+## 1. (历史)Phase 0 + Stage B 代码完成
+
+Phase 0(emulator 跑通骨架)+ Stage B(真 SSH / 真 AudioRecord / 真豆包 ASR client)的代码全部写完,APK 编译通过。
 
 **没跑过的事**:
 - Emulator 端到端演示(本机内存压力 ~328 MB unused / 需要 5 GB,emulator 启时 QEMU CPU 线程一律 exit 139)

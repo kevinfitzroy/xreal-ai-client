@@ -67,6 +67,7 @@ class MainActivity : Activity() {
             onVkeyEnter = { if (!voiceDaemon.onEnter()) writeChannelByte(13) },   // 13 = CR
             onVkeyEsc = { if (!voiceDaemon.onEsc()) writeChannelByte(27) },        // 27 = ESC
             hasHwKeyboard = ::hasHardwareKeyboard,
+            onGoHome = { if (view == View.TERMINAL) backToList() },
         )
 
         webView = object : WebView(this@MainActivity) {
