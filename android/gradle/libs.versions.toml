@@ -1,0 +1,40 @@
+[versions]
+# 工具链
+agp = "8.7.3"
+kotlin = "2.1.0"
+
+# AndroidX(Phase 0 锁在 compileSdk 34 兼容版;Phase 1 bump compileSdk 35 时同步升)
+activity-ktx = "1.9.2"
+core-ktx = "1.13.1"
+webkit = "1.11.0"
+
+sshj = "0.39.0"
+bouncycastle = "1.78.1"
+eddsa = "0.3.0"
+slf4j = "2.0.16"
+
+# 网络 / JSON(豆包 ASR HTTP)
+okhttp = "4.12.0"
+
+# 异步
+coroutines = "1.9.0"
+
+[libraries]
+androidx-activity-ktx = { module = "androidx.activity:activity-ktx", version.ref = "activity-ktx" }
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+
+# SSH
+sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
+bouncycastle-prov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
+bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+eddsa = { module = "net.i2p.crypto:eddsa", version.ref = "eddsa" }
+slf4j-android = { module = "org.slf4j:slf4j-android", version = "1.7.36" }  # sshj 用 slf4j;Android 桥到 logcat
+
+# HTTP
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

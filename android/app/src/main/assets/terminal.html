@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #11131a; overflow: hidden;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    #term {
+      position: absolute; inset: 0;
+      padding: 8px;
+    }
+    .xterm-viewport { background-color: transparent !important; }
+
+    /* Voice 预览 overlay(0.6 之后由 VoiceDaemon 通过 JS Bridge 控制显隐)*/
+    #voice-overlay {
+      position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+      background: rgba(20, 22, 30, 0.95);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      padding: 16px 24px; border-radius: 12px;
+      color: #e6e6e6; min-width: 360px; max-width: 80vw;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+      display: none; z-index: 100;
+      font-size: 14px;
+    }
+    #overlay-text { margin-top: 8px; color: #94e0b2; word-break: break-word; }
+    #overlay-hint { margin-top: 12px; font-size: 12px; color: #888; }
+  </style>
+</head>
+<body>
+  <div id="term"></div>
+  <div id="voice-overlay">
+    <div id="overlay-status">🎤 录音中…</div>
+    <div id="overlay-text"></div>
+    <div id="overlay-hint">Enter 发送 · Esc 撤销 · F13/F14 重说</div>
+  </div>
+
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script src="addon-webgl.js"></script>
+  <script src="addon-search.js"></script>
+  <script>
+    (function () {
+      const term = new Terminal({
+        fontFamily: '"JetBrains Mono", "Menlo", monospace',
+        fontSize: 14,
+        lineHeight: 1.2,
+        cursorBlink: true,
+        scrollback: 10000,
+        theme: {
+          background: '#11131a',
+          foreground: '#e6e6e6',
+          cursor: '#94e0b2',
+          selectionBackground: '#3a4760',
+        },
+      });
+
+      // 这两个 addon 在 open() 前后都可以 load。
+      const fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.loadAddon(new SearchAddon.SearchAddon());
+
+      const el = document.getElementById('term');
+      term.open(el);
+      fitAddon.fit();
+
+      // WebGL addon 必须在 open() 之后 load(xterm v5 要求)。失败回退 DOM renderer。
+      try {
+        term.loadAddon(new WebglAddon.WebglAddon());
+      } catch (e) {
+        console.warn('[xreal] WebGL renderer 不可用,fallback 到 DOM:', e);
+      }
+
+      // 用户敲键 → Kotlin Bridge(0.5 注入)。Bridge 未注入时只在 console 出 warning。
+      term.onData((data) => {
+        if (window.Bridge && window.Bridge.onInput) {
+          window.Bridge.onInput(btoa(unescape(encodeURIComponent(data))));
+        } else {
+          console.warn('[xreal] Bridge 未注入,丢字符:', JSON.stringify(data));
+        }
+      });
+      term.onResize(({ cols, rows }) => {
+        if (window.Bridge && window.Bridge.onResize) {
+          window.Bridge.onResize(cols, rows);
+        }
+      });
+
+      // Kotlin → JS API(全局)
+      window.writeToTerm = function (b64) {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        term.write(bytes);
+      };
+      window.showOverlay = function (status, text) {
+        document.getElementById('overlay-status').innerText = status || '';
+        document.getElementById('overlay-text').innerText = text || '';
+        document.getElementById('voice-overlay').style.display = 'block';
+      };
+      window.hideOverlay = function () {
+        document.getElementById('voice-overlay').style.display = 'none';
+      };
+
+      // 窗口 resize 自适应
+      let resizePending = false;
+      const onResize = () => {
+        if (resizePending) return;
+        resizePending = true;
+        requestAnimationFrame(() => {
+          resizePending = false;
+          fitAddon.fit();
+        });
+      };
+      window.addEventListener('resize', onResize);
+
+      // Phase 0.4 自检:WebView + xterm 渲染成功的可见证据
+      term.write('\x1b[32m✓ xterm.js loaded\x1b[0m  Phase 0.4 — WebView render OK\r\n');
+      term.write('\x1b[90mAwaiting SSH bytes via Kotlin Bridge (0.5)...\x1b[0m\r\n');
+
+      // 方便从 chrome://inspect 控制台手动操作
+      window._term = term;
+      console.log('[xreal] terminal.html ready,cols x rows =', term.cols, 'x', term.rows);
+    })();
+  </script>
+</body>
+</html>

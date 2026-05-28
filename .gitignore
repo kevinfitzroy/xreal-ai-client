@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+*.iml
+.vscode/
+
+# 日志 / 临时
+*.log

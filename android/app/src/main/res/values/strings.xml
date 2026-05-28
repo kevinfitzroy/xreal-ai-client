@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XREAL Client</string>
+    <string name="config_title">连接配置</string>
+    <string name="config_ssh_section">SSH 服务器</string>
+    <string name="config_asr_section">语音识别</string>
+    <string name="config_save">保存并启动</string>
+    <string name="config_test_ssh">测试 SSH 连接</string>
+    <string name="config_ssh_host_hint">host(IP 或域名)</string>
+    <string name="config_ssh_port_hint">端口(默认 22)</string>
+    <string name="config_ssh_user_hint">用户名</string>
+    <string name="config_ssh_key_hint">私钥 PEM 文本(OpenSSH 或 RSA 格式)</string>
+    <string name="config_ssh_startup_hint">启动命令(默认 abduco -A dev bash)</string>
+    <string name="config_asr_provider">ASR provider(mock/volc/none)</string>
+    <string name="config_asr_appid">Volcengine appid</string>
+    <string name="config_asr_token">Volcengine access token</string>
+    <string name="config_asr_cluster">Volcengine cluster id(可选)</string>
+    <string name="mic_permission_denied">麦克风权限被拒,语音功能不可用</string>
+    <string name="ssh_connecting">正在连接 SSH…</string>
+    <string name="ssh_connected">已连接</string>
+    <string name="ssh_failed">SSH 连接失败:%1$s</string>
+</resources>
