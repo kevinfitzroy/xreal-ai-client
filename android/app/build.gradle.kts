@@ -42,6 +42,9 @@ android {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
         }
+        getByName("test") {
+            java.srcDirs("src/test/kotlin")
+        }
     }
 
     packaging {
@@ -76,4 +79,7 @@ dependencies {
 
     // HTTP(B.3 豆包 ASR)
     implementation(libs.okhttp)
+
+    // JVM 单测(S.3:AgentStatusDetector parser,不依赖 emulator/device)
+    testImplementation("junit:junit:4.13.2")
 }

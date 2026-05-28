@@ -46,6 +46,9 @@ class MainActivity : Activity() {
     private var backupVoiceDigit = -1
     private var backupVoiceKey = -1
 
+    // 状态探测:host 列表非空时才启动(目前 loadHosts() 返回空 → 不启,列表走 JS mock)
+    private var poller: StatusPoller? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(
@@ -101,6 +104,34 @@ class MainActivity : Activity() {
         }
 
         startReaderThread()
+
+        // 状态探测:有真实 host 配置才建 poller(空配置时 list 用 index.html mock 演示)
+        val hosts = SettingsStore(this).loadHosts()
+        if (hosts.isNotEmpty()) {
+            poller = StatusPoller(
+                hosts = hosts,
+                keyDir = filesDir,
+                knownHostsFile = java.io.File(filesDir, "known_hosts"),
+                onUpdate = { json ->
+                    runOnUiThread {
+                        if (::webView.isInitialized) {
+                            val q = org.json.JSONObject.quote(json)
+                            webView.evaluateJavascript("window.setHosts($q)", null)
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        poller?.start()
+    }
+
+    override fun onStop() {
+        poller?.stop()
+        super.onStop()
     }
 
     /** JS 列表 Enter 进入 project(当前 mock:仅切视图;真 SSH 连接后续接) */
@@ -204,6 +235,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         stopReader = true
+        poller?.shutdown()
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()
         runCatching { channel.close() }
         readerThread?.interrupt()

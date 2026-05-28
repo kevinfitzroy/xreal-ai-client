@@ -12,10 +12,18 @@
 - **Agent Deck 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**mock 数据**,真状态探测(tmux capture-pane)待接。
 - **横屏锁定 + 响应式**(`auto-fill minmax(360px)` 双/三列,适配眼镜 16:10)。
 - **彻底禁用系统 IME**(`FLAG_ALT_FOCUSABLE_IM`)+ **自绘虚拟键盘 v2**(13 键 2 行,只在终端显示;列表卡片可点导航)。
-- **SPA 导航**:DPAD_CENTER/点卡片进项目,⌂返回/‹返回/硬件BACK 回列表。
-- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 →(键盘 v2 这次 commit)。
+- **SPA 导航**:DPAD_CENTER 进项目,⌂返回/硬件BACK 回列表(键盘专用:已去掉卡片点击 + 终端 ‹返回 触摸按钮)。
+- **虚拟键盘 v3**(在 v2 之后):一行 13 键,列表+终端**共用**(列表态淡化终端专用键),固定高度;overlay 改 `position:absolute` 锚内容区,永不压键盘。
 
-**仍 mock / 待接**:列表是 mock 数据;进项目后终端走 LocalEchoChannel(每个 project 的真 SSH 连接 + 状态探测 poll 还没接);真豆包 ASR 待 creds。
+**状态探测 pipeline 已落地(2026-05-28,但 markers 未校准 / poller 休眠)**:
+- 代码完整:`AgentModels`(Host→Project 模型 + Status enum)、`AgentStatusDetector`(纯函数启发式 parser)、`HostClient`(per-host 单次 exec 批量 `tmux capture-pane`,`===session===` 分隔)、`StatusPoller`(协程轮询→序列化→`window.setHosts` 推 WebView)。
+- **验证到哪**:`./gradlew test` **9 个单测全过**(护住 parser 分支逻辑);headless 验证了 Kotlin↔JS `setHosts` 契约(真实 shape 的 JSON 能正确渲染:状态色 / preview / age 空值守卫)。
+- **没验到 / 必须 own**:`ClaudeCodeMarkers` 里的签名串(`esc to interrupt` / `❯ 1.` / `(y/n)` 等)是**对 Claude Code TUI 的假设,未对真实 `tmux capture-pane` 校准**。pipeline 是对的,能否正确分类**真** agent 取决于这些 marker。→ **task 0.3 跑通后**:真起一个 Claude Code,在 4 状态各抓一份 pane 存 `app/src/test/resources/panes/`,把测试样本换成真数据,逐条核对 markers(优先收紧太通用的 `Continue?`)。
+- **为何 poller 不跑**:`SettingsStore.loadHosts()` 现返回 `emptyList()`(还没 host 录入 UI)→ poller 不启 → 列表保留 `index.html` 的 mock 演示。等 0.3 + host 录入 UI 落地后,`loadHosts` 反序列化真配置即自动激活。
+
+- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3+去触摸+overlay+pill →(状态探测 pipeline 这次 commit)。
+
+**仍 mock / 待接**:列表 mock 数据(状态探测 pipeline 在位但休眠,待 0.3+录入 UI);进项目后终端走 LocalEchoChannel(per-project 真 SSH 连接还没接);真豆包 ASR 待 creds。
 
 ---
 

@@ -63,6 +63,13 @@ class SettingsStore(ctx: Context) {
         cluster = prefs.getString(K_ASR_CLUSTER, "") ?: "",
     )
 
+    /**
+     * Agent Deck 的 host/project 列表。目前没有录入 UI → 返回空列表,
+     * [StatusPoller] 因此不启动,WebView 保留 index.html 里的 mock 数据演示。
+     * 等 task 0.3(真 tmux 链路)+ host 录入 UI 落地后,从 prefs 反序列化真实配置。
+     */
+    fun loadHosts(): List<HostConfig> = emptyList()
+
     fun saveAsr(c: AsrConfig) {
         prefs.edit()
             .putString(K_ASR_PROVIDER, c.provider.name)

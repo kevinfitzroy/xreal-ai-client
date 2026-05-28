@@ -242,7 +242,7 @@
           <span class="ticon"><i>${ICONS[p.type]}</i></span>
           <div class="cbody">
             <div class="topline"><span class="name">${esc(p.name)}</span><span class="status"><span class="sd"></span>${st.label}</span></div>
-            <div class="subline"><span class="type">${TYPE_LABEL[p.type]}</span><span class="sep">·</span><span class="age">${p.age}</span></div>
+            <div class="subline"><span class="type">${TYPE_LABEL[p.type]}</span>${p.age?`<span class="sep">·</span><span class="age">${esc(p.age)}</span>`:''}</div>
             ${pv}
           </div></div>`;
         flat.push({host:h.name,...p}); idx++; delay+=42;
@@ -311,6 +311,14 @@
   // 键盘专用应用:卡片不可点(导航全靠方向键 + Enter)。摒弃触摸,简化交互模型
 
   window.updateProject=function(host,name,patch){ const i=flat.findIndex(p=>p.host===host&&p.name===name); if(i<0)return; Object.assign(flat[i],patch); const keep=focusIdx; flat.length=0; render(); setFocus(keep); };
+
+  /* Kotlin StatusPoller 每轮整批替换 hosts(真实状态/preview)。空数组 → 保留 mock(headless/演示)。 */
+  window.setHosts=function(json){
+    let data; try{ data = typeof json==='string'?JSON.parse(json):json; }catch(e){ console.warn('[deck] setHosts bad json',e); return; }
+    if(!Array.isArray(data)||!data.length) return;
+    HOSTS.splice(0, HOSTS.length, ...data);
+    const keep=focusIdx; flat.length=0; render(); setFocus(keep);
+  };
 
   /* ========== 虚拟键盘 ========== */
   function writeChannel(s){ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(s)))); }
