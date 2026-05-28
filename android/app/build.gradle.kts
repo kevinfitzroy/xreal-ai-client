@@ -51,6 +51,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true   // 让 JVM 单测里未 mock 的 android.util.Log 返回默认值而非抛
+    }
+
     packaging {
         resources {
             // sshj / BouncyCastle 常带这些 META-INF 重复文件
@@ -86,4 +90,5 @@ dependencies {
 
     // JVM 单测(S.3:AgentStatusDetector parser,不依赖 emulator/device)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")   // 单测用真 org.json(android.jar 里的是会抛的 stub)
 }

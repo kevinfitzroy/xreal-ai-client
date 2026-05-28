@@ -279,9 +279,10 @@
     const el=cards[focusIdx]; el.classList.add('focused'); el.scrollIntoView({block:'nearest',behavior:'smooth'}); }
   function openFocused(){ const el=document.querySelectorAll('.card')[focusIdx]; if(!el)return;
     el.classList.add('opening'); const p=flat[focusIdx];
-    console.log('[deck] OPEN',JSON.stringify({host:p.host,name:p.name,type:p.type,status:p.status}));
+    console.log('[deck] OPEN',JSON.stringify({host:p.host,session:p.session,name:p.name,type:p.type}));
     setTimeout(()=>el.classList.remove('opening'),320);
-    if(window.Bridge&&window.Bridge.openProject) window.Bridge.openProject(p.host,p.name,p.type);
+    // session 为主键(name 可能重复);mock 数据无 session 时回退 name
+    if(window.Bridge&&window.Bridge.openProject) window.Bridge.openProject(p.host,p.session||p.name,p.name,p.type);
     else showTerminal(p.name,p.type);  // 无 Bridge(headless 测试)时 JS 自切
   }
 

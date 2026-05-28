@@ -90,19 +90,27 @@ cmd_new() {
   # 启动命令:type 决定默认(--cmd 覆盖)。这就是"不同类型如何进入各自执行环境"的关键映射。
   if [ -z "$startup" ]; then
     case "$type" in
-      claude|maestro) startup="claude";;
-      agent)          startup="${XREAL_AGENT_CMD:-claude}";;
-      ssh)            startup="";;   # 普通 shell,不自动起程序
+      # maestro 自愈:claude 退出就自动重启(--continue 续上次对话)。保证每次进入都是 Claude Code,
+      # 而不是误退后掉回 bash 没法管项目。sleep 1 防 claude 起不来时热循环。
+      maestro) startup='while :; do claude --continue 2>/dev/null || claude; sleep 1; done';;
+      claude)  startup="claude";;
+      agent)   startup="${XREAL_AGENT_CMD:-claude}";;
+      ssh)     startup="";;   # 普通 shell,不自动起程序
     esac
   fi
 
   mkdir -p "$dir"
   if tmux has-session -t "$session" 2>/dev/null; then
     echo "tmux session '$session' 已存在,复用(不重起程序)"
+  elif [ -n "$startup" ]; then
+    # 启动命令作为 pane 命令直接跑(-u 强制 UTF-8)。**不用 send-keys** —— 它会和用户 shell 的
+    # .zshrc/.bashrc 启动竞争,命令可能只被打到 prompt 没执行。命令退出后 `exec bash` 落回交互 shell
+    # 保持 session 存活(maestro 的 loop 不会退,claude 项目退出后能在 shell 里手动重开)。
+    tmux -u new -d -s "$session" -c "$dir" "$startup"'; exec bash'
+    echo "建好 '$session' (type=$type) @ $dir  启动: $startup"
   else
-    tmux -u new -d -s "$session" -c "$dir"          # -u 强制 UTF-8;否则中文/powerline 被降级成 _
-    [ -n "$startup" ] && tmux send-keys -t "$session" "$startup" Enter
-    echo "建好 '$session' (type=$type) @ $dir${startup:+  启动: $startup}"
+    tmux -u new -d -s "$session" -c "$dir"          # 纯交互 shell(ssh 配角终端)
+    echo "建好 '$session' (type=$type) @ $dir"
   fi
   manifest_upsert "$session" "$name" "$type" "$dir" "$group" "$startup"
   echo "已登记进 manifest: $MANIFEST"
@@ -122,6 +130,8 @@ PY
 
 cmd_rm() {
   local session="${1:-}"; [ -n "$session" ] || { echo "用法: rm <session> [--kill]" >&2; exit 2; }
+  # 保护 Maestro:它是 host 总入口,删了列表就没法回到你这儿下指令了
+  [ "$session" = maestro ] && { echo "拒绝:maestro 是 host 总入口,不通过本脚本删除" >&2; exit 2; }
   [ "${2:-}" = --kill ] && tmux kill-session -t "$session" 2>/dev/null || true
   manifest_remove "$session"
   echo "已从 manifest 移除 '$session'${2:+ 并杀掉 tmux session}"

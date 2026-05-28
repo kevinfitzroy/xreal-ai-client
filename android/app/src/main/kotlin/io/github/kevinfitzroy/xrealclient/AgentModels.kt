@@ -29,12 +29,14 @@ data class ProjectConfig(
     }
 }
 
-/** 一台 host = SSH 接入参数 + 该 host 上的 project 列表。 */
+/** 一台 host = SSH 接入参数 + base path + 该 host 上的 project 列表。 */
 data class HostConfig(
     val name: String,
     val addr: String,
     val ssh: SshConfig,
     val projects: List<ProjectConfig>,
+    /** Maestro 工作根目录;manifest 在 `<basePath>/.xreal/projects.json`。空 = 不 live-fetch(仅用 seed)。 */
+    val basePath: String = "",
 )
 
 /** detect() 的产出:状态 + 列表预览(glyph + 一行文本)。preview 空 = 列表不显示预览行。 */

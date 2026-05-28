@@ -7,7 +7,7 @@
       "type": "maestro",
       "dir": "/home/evan/work",
       "group": "",
-      "startup": "claude"
+      "startup": "while :; do claude --continue 2>/dev/null || claude; sleep 1; done"
     },
     {
       "session": "xreal-ai-client",

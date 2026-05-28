@@ -15,8 +15,8 @@ import android.webkit.JavascriptInterface
  */
 class TerminalBridge(
     initial: PtyChannel,
-    /** JS 列表页 Enter 进入某 project 时回调(host, name, type)→ Activity 切到终端视图 */
-    private val onOpenProject: (host: String, name: String, type: String) -> Unit = { _, _, _ -> },
+    /** JS 列表页 Enter 进入某 project 时回调(host, session, name, type)→ Activity 切到终端视图。session 是主键 */
+    private val onOpenProject: (host: String, session: String, name: String, type: String) -> Unit = { _, _, _, _ -> },
     /** 虚拟键盘 / 语音键:down=按下开始录音,up=松开识别。lang = "zh"|"en" */
     private val onVoice: (down: Boolean, lang: String) -> Unit = { _, _ -> },
     /** 虚拟 Enter(voice-aware:preview 时发送识别文本,否则当普通回车) */
@@ -37,8 +37,8 @@ class TerminalBridge(
     @Volatile var channel: PtyChannel = initial
 
     @JavascriptInterface
-    fun openProject(host: String, name: String, type: String) {
-        onOpenProject(host, name, type)
+    fun openProject(host: String, session: String, name: String, type: String) {
+        onOpenProject(host, session, name, type)
     }
 
     @JavascriptInterface fun voiceDown(lang: String) = onVoice(true, lang)

@@ -115,6 +115,7 @@ class SettingsStore(ctx: Context) {
                         )
                     }
                 },
+                basePath = o.optString("basePath", ""),
             )
         }
     } catch (e: Exception) {

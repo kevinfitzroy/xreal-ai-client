@@ -57,6 +57,12 @@ class MainActivity : Activity() {
     private var dbgInput: DebugInputServer? = null
     // 真实 host/project 列表(静态枚举):页面加载完成后一次性推给 WebView,让 Enter 能开真终端
     private var pendingHostListJson: String? = null
+    // live manifest:最近一次从各 host 拉到的 project 列表(hostName→projects),findProject 的真相来源
+    @Volatile private var liveProjects: Map<String, List<ProjectConfig>> = emptyMap()
+    private var manifestFetcher: ManifestFetcher? = null
+    @Volatile private var fetchGen = 0   // 契约:仅 UI 线程 ++(onPageFinished/backToList/onStart),故无需原子
+    private var lastPushedJson: String? = null   // pushHostList 去重:内容不变不重推(避免列表重渲染闪烁)
+    private val fetchExec = java.util.concurrent.Executors.newSingleThreadExecutor()   // manifest 拉取串行(HostClient 非并发安全)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -103,6 +109,7 @@ class MainActivity : Activity() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     // 页面就绪后才推真实 host/project 列表(window.setHosts 此时才存在)
                     pendingHostListJson?.let { pushHostList(it) }
+                    refreshManifests()   // 首屏:静态 seed 先显示,manifest 拉到后替换
                 }
             }
             addJavascriptInterface(bridge, TerminalBridge.JS_NAME)
@@ -127,6 +134,11 @@ class MainActivity : Activity() {
             // 核心流程:真实 host/project 静态枚举(onPageFinished 推)。Enter→findProject 靠它开真终端。
             pendingHostListJson = StatusPoller.staticListJson(hosts)
 
+            // live manifest 拉取(P1.1c):任一 host 配了 basePath 才建 fetcher
+            if (hosts.any { it.basePath.isNotBlank() }) {
+                manifestFetcher = ManifestFetcher(filesDir, java.io.File(filesDir, "known_hosts"))
+            }
+
             // 实时状态刷新(P2,搁置):开关开才建 poller,周期性用真实状态/preview 覆盖静态枚举。
             if (FleetFeatures.LIVE_STATUS) {
                 poller = StatusPoller(
@@ -144,8 +156,10 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 把整批 hosts JSON 推给 WebView 列表(静态枚举 + poller 实时刷新 共用)。 */
+    /** 把整批 hosts JSON 推给 WebView 列表。内容不变则不重推(setHosts 会重渲染 + 重放入场动画 → 闪烁)。 */
     private fun pushHostList(json: String) {
+        if (json == lastPushedJson) return
+        lastPushedJson = json
         runOnUiThread {
             if (::webView.isInitialized) {
                 webView.evaluateJavascript("window.setHosts(${org.json.JSONObject.quote(json)})", null)
@@ -153,9 +167,26 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 从各 host 拉 manifest(P1.1c)→ 更新 liveProjects + 列表。单线程串行(HostClient 非并发安全),
+     *  fetchGen 让被新触发取代的旧任务跳过;拉取失败保留当前列表(pushHostList 去重不会重推)。 */
+    private fun refreshManifests() {
+        val fetcher = manifestFetcher ?: return
+        val gen = ++fetchGen
+        fetchExec.execute {
+            if (gen != fetchGen) return@execute
+            val updated = runCatching { fetcher.fetch(hosts) }.getOrNull() ?: return@execute
+            runOnUiThread {
+                if (gen != fetchGen) return@runOnUiThread
+                liveProjects = updated.associate { it.name to it.projects }
+                pushHostList(StatusPoller.staticListJson(updated))
+            }
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         poller?.start()
+        if (view == View.LIST) refreshManifests()   // 回前台 + 在列表态:刷一次
     }
 
     override fun onStop() {
@@ -167,8 +198,8 @@ class MainActivity : Activity() {
      * JS 列表 Enter 进入 project:查到真实 host 配置 → 后台连 SSH(attach 该 project 的 tmux
      * session)→ 热切 channel;查不到(mock 数据)→ 回退干净 LocalEcho 演示。
      */
-    private fun onOpenProject(host: String, name: String, type: String) {
-        Log.i(TAG, "openProject host=$host name=$name type=$type")
+    private fun onOpenProject(host: String, session: String, name: String, type: String) {
+        Log.i(TAG, "openProject host=$host session=$session name=$name type=$type")
         val seq = ++openSeq
         view = View.TERMINAL
         runOnUiThread {
@@ -177,7 +208,7 @@ class MainActivity : Activity() {
             )
         }
 
-        val match = findProject(host, name)
+        val match = findProject(host, session)
         if (match == null) {
             switchTo(LocalEchoChannel())   // mock / 无配置:本地 echo,demo 不卡
             return
@@ -214,11 +245,13 @@ class MainActivity : Activity() {
         view = View.LIST
         runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
         switchTo(LocalEchoChannel())   // 断开当前 project 的 SSH(switchTo 关掉旧 channel)
+        refreshManifests()   // 回列表即拉一次:刚让 Maestro 建的新项目此刻出现(主刷新时机)
     }
 
-    private fun findProject(host: String, name: String): Pair<HostConfig, ProjectConfig>? {
+    /** 按 session 查(name 可能重复)。真相来源:最近一次 manifest 拉到的 liveProjects,无则 seed。 */
+    private fun findProject(host: String, session: String): Pair<HostConfig, ProjectConfig>? {
         val h = hosts.firstOrNull { it.name == host } ?: return null
-        val p = h.projects.firstOrNull { it.displayName == name } ?: return null
+        val p = (liveProjects[host] ?: h.projects).firstOrNull { it.sessionName == session } ?: return null
         return h to p
     }
 
@@ -338,6 +371,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         readerGen++   // 让所有 reader 失效
+        fetchExec.shutdownNow()
+        manifestFetcher?.close()
         dbgInput?.stop()
         poller?.shutdown()
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()

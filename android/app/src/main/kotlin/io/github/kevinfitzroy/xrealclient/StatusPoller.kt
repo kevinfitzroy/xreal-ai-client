@@ -82,6 +82,7 @@ class StatusPoller(
     companion object {
         private fun projectJson(p: ProjectConfig, s: ProjectSnapshot): JSONObject {
             val o = JSONObject()
+                .put("session", p.sessionName)   // JS 端 openProject 的主键(name 可能重复)
                 .put("name", p.displayName)
                 .put("type", p.type.jsKey())
                 .put("status", s.status.jsKey())

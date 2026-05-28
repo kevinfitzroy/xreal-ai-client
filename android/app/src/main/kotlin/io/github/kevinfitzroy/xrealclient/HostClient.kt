@@ -65,6 +65,15 @@ class HostClient(
         }
     }
 
+    /** cat 一个文件(给 ManifestFetcher 读 manifest)。SSH 层失败 → null(关连接,下次重连)。 */
+    fun catFile(path: String): String? = try {
+        runExec("cat '$path' 2>/dev/null")
+    } catch (e: Exception) {
+        android.util.Log.w("HostClient", "catFile($host:$port) 失败: ${e.javaClass.simpleName}: ${e.message}")
+        runCatching { close() }
+        null
+    }
+
     private fun runExec(script: String): String {
         val session = ensure().startSession()
         try {
