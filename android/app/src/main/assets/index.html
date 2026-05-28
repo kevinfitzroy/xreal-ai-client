@@ -34,26 +34,6 @@
       var(--bg);
     display:flex; flex-direction:column;
   }
-  /* 横屏:header 一行,品牌左 + 舰队概览右 */
-  header { flex:none; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 20px; border-bottom:1px solid var(--line); background:linear-gradient(180deg, rgba(22,25,34,.6), transparent); }
-  .brand { display:flex; align-items:baseline; gap:11px; flex:none; }
-  .brand .mark { font-size:13px; letter-spacing:.32em; color:var(--accent); text-transform:uppercase; font-weight:700; }
-  .brand .mark::before { content:"▌ "; }
-  .brand .sub { font-size:11px; color:var(--fg-faint); letter-spacing:.12em; }
-  .fleet { display:flex; gap:8px; flex:none; }
-  .pill { display:flex; align-items:center; gap:7px; padding:7px 11px; border-radius:10px; background:var(--surface); border:1px solid var(--line); }
-  .pill .n { font-weight:700; font-size:17px; min-width:14px; }
-  .pill .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-  .pill .lbl { color:var(--fg-dim); font-size:11px; letter-spacing:.06em; text-transform:uppercase; }
-  /* 窄屏(真机 ~800px 横屏):藏副标语腾空间,概览 pill 保留文案 */
-  @media (max-width:880px){
-    .brand .sub { display:none; }
-  }
-  .pill.need { border-color:rgba(255,180,84,.45); background:rgba(255,180,84,.08); }
-  .pill.need .n { color:var(--wait); } .pill.need .dot { background:var(--wait); box-shadow:0 0 10px var(--wait); animation:pulse 1.4s ease-in-out infinite; }
-  .pill.work .n { color:var(--work); } .pill.work .dot { background:var(--work); }
-  .pill.idle .n { color:var(--fg-dim); } .pill.idle .dot { background:var(--idle); }
-  .pill.off  .n { color:var(--offline); } .pill.off .dot { background:var(--offline); }
   main { flex:1; overflow-y:auto; padding:12px 24px 16px; }
   main::-webkit-scrollbar { width:0; }
   /* 响应式:窄屏 2 列,MacBook 级宽屏自动 3 列(适配眼镜可视区与手机面板的不同长宽比)*/
@@ -165,10 +145,6 @@
   <div id="views">
     <!-- 列表视图 -->
     <div id="view-list" class="view">
-      <header>
-        <div class="brand"><span class="mark">Agent&nbsp;Deck</span><span class="sub">// xreal · beam pro</span></div>
-        <div class="fleet" id="fleet"></div>
-      </header>
       <main id="list"></main>
     </div>
 
@@ -244,7 +220,7 @@
   const flat = [];
   function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
   function render(){
-    const list=document.getElementById('list'); let counts={work:0,wait:0,idle:0,offline:0}; let html=''; let idx=0; let delay=0;
+    const list=document.getElementById('list'); let html=''; let idx=0; let delay=0;
     HOSTS.forEach(h=>{
       html+=`<div class="host${h.up?'':' down'}"><span class="hconn"></span><span class="hname">${h.name}</span><span class="haddr">${h.addr}</span><span class="hline"></span></div>`;
       html+=`<div class="cards">`;
@@ -253,13 +229,14 @@
       projects.forEach(p=>{
         const isMaestro=p.type==='maestro';
         const st = isMaestro ? {cls:'',label:'on duty'} : STATUS[p.status];
-        if(!isMaestro) counts[p.status]++;   // Maestro 是"班底"不是工作负载,不进舰队计数
+        // 暂时:idle 不显示状态 tag(实时状态搁置时全是"未激活",噪音)。Maestro/工作中/等待 仍显示
+        const statusHtml = (isMaestro || p.status!=='idle') ? `<span class="status"><span class="sd"></span>${st.label}</span>` : '';
         const pv = p.preview ? `<div class="preview"><span class="glyph">${p.preview.glyph}</span><span class="txt ${p.preview.cur?'cur':''}">${esc(p.preview.text)}</span></div>` : '';
         html+=`<div class="card ${st.cls} t-${p.type}" data-idx="${idx}" style="animation-delay:${delay}ms">
           <span class="cursor">▸</span><span class="rail"></span>
           <span class="ticon"><i>${ICONS[p.type]}</i></span>
           <div class="cbody">
-            <div class="topline"><span class="name">${esc(p.name)}</span><span class="status"><span class="sd"></span>${st.label}</span></div>
+            <div class="topline"><span class="name">${esc(p.name)}</span>${statusHtml}</div>
             <div class="subline"><span class="type">${TYPE_LABEL[p.type]}</span>${p.age?`<span class="sep">·</span><span class="age">${esc(p.age)}</span>`:''}</div>
             ${pv}
           </div></div>`;
@@ -268,9 +245,7 @@
       html+=`</div>`;
     });
     list.innerHTML=html;
-    document.getElementById('fleet').innerHTML = pill('need',counts.wait,'需要你')+pill('work',counts.work,'工作中')+pill('idle',counts.idle,'未激活')+pill('off',counts.offline,'已断开');
   }
-  function pill(c,n,l){ return `<div class="pill ${c}"><span class="dot"></span><span class="n">${n}</span><span class="lbl">${l}</span></div>`; }
 
   /* ========== 列表键盘导航 ========== */
   let focusIdx=0;
