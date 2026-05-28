@@ -15,6 +15,7 @@
     --bg:#0d0f16; --surface:#161922; --surface-2:#1c202b; --line:#262b38;
     --fg:#e6e6e6; --fg-dim:#8b93a7; --fg-faint:#565d70;
     --work:#94e0b2; --wait:#ffb454; --idle:#5b6478; --offline:#e06c75; --accent:#94e0b2;
+    --maestro:#bb9af7;   /* Maestro 专属紫罗兰,避开所有状态色 */
     --mono:'JetBrains Mono','SF Mono','Menlo','Consolas',monospace;
   }
   * { margin:0; padding:0; box-sizing:border-box; }
@@ -102,6 +103,13 @@
   .card .cursor { position:absolute; left:-1px; top:50%; transform:translateY(-50%) scaleX(0); transform-origin:left; color:var(--accent); font-size:20px; font-weight:700; opacity:0; transition:transform .14s ease,opacity .14s ease; }
   .card.focused.s-wait .cursor { color:var(--wait); }
   .card.focused .cursor { transform:translateY(-50%) scaleX(1); opacity:1; }
+  /* Maestro(t-maestro):紫罗兰专属,与状态色无关 —— 每 host pin 在首位 */
+  .card.t-maestro .rail { background:var(--maestro); box-shadow:0 0 14px rgba(187,154,247,.5); }
+  .card.t-maestro .ticon i { border-color:var(--maestro); box-shadow:inset 0 0 0 1px rgba(187,154,247,.3); }
+  .card.t-maestro .status { color:var(--maestro); background:rgba(187,154,247,.12); }
+  .card.t-maestro .status .sd { background:var(--maestro); box-shadow:0 0 8px rgba(187,154,247,.6); }
+  .card.t-maestro.focused { border-color:var(--maestro); box-shadow:0 0 0 1px var(--maestro), 0 8px 30px rgba(0,0,0,.5), -2px 0 24px rgba(187,154,247,.22); }
+  .card.t-maestro.focused .cursor { color:var(--maestro); }
   .card.opening { animation:flash .3s ease; }
 
   /* ============ 终端视图 ============ */
@@ -211,8 +219,9 @@
     ssh:`<svg viewBox="0 0 24 24" fill="none" stroke="#8b93a7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l5 5-5 5"/><path d="M12 17h8"/></svg>`,
     claude:`<svg viewBox="0 0 24 24" fill="none" stroke="#d98a52" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>`,
     agent:`<svg viewBox="0 0 24 24" fill="none" stroke="#7aa2f7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V4M8.5 13h.01M15.5 13h.01M9 19v2M15 19v2"/></svg>`,
+    maestro:`<svg viewBox="0 0 24 24" fill="none" stroke="#bb9af7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v10"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="14" r="2.5"/></svg>`,
   };
-  const TYPE_LABEL = { ssh:'SSH', claude:'Claude Code', agent:'Agent' };
+  const TYPE_LABEL = { ssh:'SSH', claude:'Claude Code', agent:'Agent', maestro:'Maestro' };
   const STATUS = { work:{cls:'s-work',label:'工作中'}, wait:{cls:'s-wait',label:'等待反馈'}, idle:{cls:'s-idle',label:'未激活'}, offline:{cls:'s-offline',label:'已断开'} };
   const HOSTS = [
     { name:'beam-server', addr:'evan@104.21.x.x', up:true, projects:[
@@ -239,10 +248,14 @@
     HOSTS.forEach(h=>{
       html+=`<div class="host${h.up?'':' down'}"><span class="hconn"></span><span class="hname">${h.name}</span><span class="haddr">${h.addr}</span><span class="hline"></span></div>`;
       html+=`<div class="cards">`;
-      h.projects.forEach(p=>{
-        counts[p.status]++; const st=STATUS[p.status];
+      // Maestro(type=maestro)pin 到 host 首位;其余保持原序(JS sort 稳定)
+      const projects=[...h.projects].sort((a,b)=>(b.type==='maestro'?1:0)-(a.type==='maestro'?1:0));
+      projects.forEach(p=>{
+        const isMaestro=p.type==='maestro';
+        const st = isMaestro ? {cls:'',label:'on duty'} : STATUS[p.status];
+        if(!isMaestro) counts[p.status]++;   // Maestro 是"班底"不是工作负载,不进舰队计数
         const pv = p.preview ? `<div class="preview"><span class="glyph">${p.preview.glyph}</span><span class="txt ${p.preview.cur?'cur':''}">${esc(p.preview.text)}</span></div>` : '';
-        html+=`<div class="card ${st.cls}" data-idx="${idx}" style="animation-delay:${delay}ms">
+        html+=`<div class="card ${st.cls} t-${p.type}" data-idx="${idx}" style="animation-delay:${delay}ms">
           <span class="cursor">▸</span><span class="rail"></span>
           <span class="ticon"><i>${ICONS[p.type]}</i></span>
           <div class="cbody">

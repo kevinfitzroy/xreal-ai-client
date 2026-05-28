@@ -11,7 +11,7 @@ package io.github.kevinfitzroy.xrealclient
  * `tmux capture-pane -p` 输出推断,[StatusPoller] 周期性刷新并推给 WebView 列表。
  */
 
-enum class ProjectType { SSH, CLAUDE, AGENT }
+enum class ProjectType { SSH, CLAUDE, AGENT, MAESTRO }   // MAESTRO = host orchestrator(每 host 一个,pin 首位)
 
 enum class ProjectStatus { WORKING, WAITING_FEEDBACK, IDLE, DISCONNECTED }
 
@@ -56,4 +56,5 @@ fun ProjectType.jsKey(): String = when (this) {
     ProjectType.SSH -> "ssh"
     ProjectType.CLAUDE -> "claude"
     ProjectType.AGENT -> "agent"
+    ProjectType.MAESTRO -> "maestro"
 }

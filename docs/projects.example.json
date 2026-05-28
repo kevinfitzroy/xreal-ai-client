@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "session": "maestro",
+      "name": "Maestro",
+      "type": "maestro",
+      "dir": "/home/evan/work",
+      "group": "",
+      "startup": "claude"
+    },
+    {
+      "session": "xreal-ai-client",
+      "name": "XREAL AI Client",
+      "type": "claude",
+      "dir": "/home/evan/work/xreal-ai-client",
+      "group": "work",
+      "startup": "claude --resume"
+    },
+    {
+      "session": "blog-rewrite",
+      "name": "博客重写",
+      "type": "claude",
+      "dir": "/home/evan/work/blog-rewrite",
+      "group": "work",
+      "startup": "claude"
+    },
+    {
+      "session": "prod-logs",
+      "name": "生产日志",
+      "type": "ssh",
+      "dir": "/home/evan/work",
+      "group": "ops",
+      "startup": "tail -F /var/log/app/current"
+    }
+  ]
+}

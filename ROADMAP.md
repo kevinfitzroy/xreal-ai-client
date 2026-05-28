@@ -33,10 +33,24 @@
 
 | # | 需求 | 状态 | 备注 |
 |---|---|---|---|
-| P1.1 | Host/Project 录入 UI | ⬜ | 替掉 adb push `xreal_hosts.json`。`SettingsStore.loadHosts()` 当前只读 `/data/local/tmp` 的 JSON。需要在 app 内增删 host + 持久化 + 私钥导入 |
+| P1.1 | Host 接入 = 代客安装 (Valet Setup),**无 UI** | ✅ 基本完成 | **刻意不做设置 UI**。Valet agent 经 adb push key+config → staging,app 导入私有存储(`SettingsStore.importStagingIfPresent`:key 设 600、原子写、用完删 staging、legacy 回退)。引导:`docs/agent-setup-guide.md`。剩 host 录入 UI 永不做 |
+| P1.1b | Maestro CLAUDE.md + manifest 契约 | ✅ 文档 | `docs/orchestrator-CLAUDE.md` 定义角色 + manifest schema(`<base>/.xreal/projects.json`,Maestro写 app 读)。base path 存 app 配置(Valet 写),不存 manifest(防循环信任) |
+| P1.1c | app live-fetch manifest | ⬜ | 剩余项:app 进列表时 SSH `cat <base>/.xreal/projects.json` → 替换 Valet 推的 seed 项目。需 parser 读持久化的 `basePath`。落地后Maestro新建项目自动出现在列表 |
 | P1.2 | 真豆包 ASR(替 mock) | ⬜ | 需 Volcengine creds。`VoiceDaemon` 已留 ASR 接口,接真实 AudioRecord→Opus→豆包 |
 | P1.3 | session 驻留可配置(abduco/tmux/screen) | ⬜ | `tmuxAttachCommand` 现在硬编 tmux;agent 类需 tmux(capture-pane),纯 SSH 可 abduco。做成 per-project 配置 |
 | P1.4 | host 分组头展示 | ✅(已有) | index.html `<div class="host">` 按 host 分组。**non-core 但有用**,先留着;若将来嫌乱可降级 |
+
+### Project 创建模型(2026-05-29 收敛 —— Maestro agent 驱动)
+
+层级:`Host(SSH + base path)→ Maestro Claude Code(orchestrator)→ Project(= 工作目录 + tmux session 1:1)`。
+
+**核心理念(因语音操作)**:用户**不在 6 键上手敲名字/路径**。每个 host 的 base path 下常驻一个**Maestro Claude Code**(自身一个 tmux session,起在 base path)。用户对Maestro用语音描述诉求("帮我开个做 X 的目录"),**Maestro负责** `mkdir` 子目录、起 session、**决定名字/路径**、登记项目。
+
+- **嵌套不固定**:层级/分组由Maestro创建的路径决定,app 只按 manifest 渲染(可选 `group` 字段表达分组);不在 app 里写死嵌套结构。
+- **app ↔ Maestro的接口 = 项目清单 manifest**:`<base>/.xreal/projects.json`(human-readable:`session`/`name`/`type`/`dir`/可选 `group`)。**Maestro写,app 读**(app 进列表时 `cat` via SSH 拉取,= P1.1c)。零服务端增量 —— 写文件是 Claude Code 的日常能力,无需 daemon。**base path 不进 manifest** —— 它在 app 的 host 配置里(Valet 写),否则Maestro能改 app 去哪读自己的 manifest = 循环信任。
+- **无 host 录入 UI**:第一个 SSH 连接没法语音 bootstrap,但也**不做设置 UI**;host 的 SSH 参数 + base path 由**代客安装(Valet)经 adb 配**(P1.1)。project 级全交给Maestro。
+- **worktree 不是 app 概念**:若某任务要并行分支,是**Maestro自己**决定 `git worktree add` —— 只是它手里的一个工具。很多任务不碰 git,create 层面 git-agnostic(只是"一个目录")。
+- **tmux session ↔ project 1:1**:`tmux new -s <proj> -c <工作目录>` 起在该目录(现有 `tmuxAttachCommand` 已是这形状)。配角终端(shell/日志/REPL)走 project 内多窗口(见 P2.5),不是第二个 agent。
 
 ---
 
@@ -50,6 +64,7 @@
 | P2.2 | 列表卡片状态展示(徽章 + preview 文本) | ⏸️ 搁置 | 依赖 P2.1。index.html `render` 的 `STATUS`/`preview` 已能消费,数据来源关了就一律 IDLE/无 preview |
 | P2.3 | 舰队聚合 pills(顶部 需要你/工作中/未激活/已断开 计数) | ⏸️ 搁置(随 P2.1) | index.html `#fleet`。纯展示,数据来自 P2.1;关了显示全 0/全 idle。**注意:这才是用户说的"舰队导航",≠ P0.2 方向键导航** |
 | P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 依赖 P2.1。"哪个 agent 要我反馈"一眼可见的排序/提醒 |
+| P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 
 ### §4 接回清单(P2.1 实时状态刷新)
 
