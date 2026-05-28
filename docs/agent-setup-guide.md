@@ -17,7 +17,11 @@
 
 ```bash
 adb devices          # 必须看到一台 device(不是 unauthorized/offline)。没有 → 让用户开 USB 调试并授权
-adb shell pm path io.github.kevinfitzroy.xrealclient   # 确认 app 已安装。没有 → 让用户先装 APK
+# 确认 app 已装;没装就走 adb 通道构建 + 安装(别让用户去 GUI 装):
+adb shell pm path io.github.kevinfitzroy.xrealclient || {
+  ( cd android && ./gradlew assembleDebug )      # JBR 21:见仓库 CLAUDE.md §10.1 的 JAVA_HOME
+  adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+}
 ```
 
 > **运行位置**:本指南假设你在 `xreal-ai-client` 的一个 checkout 里运行(第 4 步要 `scp` 仓库内的

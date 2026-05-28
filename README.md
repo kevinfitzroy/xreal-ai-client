@@ -74,6 +74,8 @@ App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"
 2. 它问你 host 信息、生成专用 key、经 `adb` 装好 app,并把 [`docs/orchestrator-CLAUDE.md`](docs/orchestrator-CLAUDE.md) 部署成服务器上的 Maestro(配 [`docs/xreal-project.sh`](docs/xreal-project.sh) 建项目助手)。
 3. 之后戴上眼镜,对 Maestro 说"帮我搞个做 X 的项目",它建目录、起 agent、更新列表;你 BACK 回列表,新项目就在那儿。
 
+> **给帮你装的 agent**:整个 onboarding **建议全程走 `adb` 通道**,不要手动 GUI 安装、也不要在眼镜里输任何配置 —— 构建 APK(`cd android && ./gradlew assembleDebug`)→ `adb install -r app/build/outputs/apk/debug/app-debug.apk` → 再做**代客安装**(`adb push` 专用 key + host 配置到 staging,启动 app 触发导入)。host / key 的初始化也走 adb,不另设 UI。完整 runbook 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md)。
+
 **安全**:每台 host 一把**专用、一次性**的 SSH key,在你笔记本上生成,经 USB(`adb`)直送 app 私有存储(`600`)。中转区里那把临时 key,由 Valet 在确认导入后 `adb shell rm` 清掉。**全程不碰你的主 key。**
 
 ---
