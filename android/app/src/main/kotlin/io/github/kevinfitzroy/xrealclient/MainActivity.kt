@@ -2,13 +2,15 @@ package io.github.kevinfitzroy.xrealclient
 
 import android.Manifest
 import android.app.Activity
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.text.InputType
 import android.util.Base64
 import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -17,68 +19,66 @@ import androidx.core.content.ContextCompat
 import kotlin.concurrent.thread
 
 /**
- * 主 Activity:WebView + xterm.js + SSH + VoiceDaemon。
+ * 主 Activity — WebView SPA:列表视图(Agent Deck)⇄ 终端视图。
  *
- * 启动顺序:
- *   1. 读 SettingsStore → 若 SshConfig 不全 → 跳 ConfigActivity
- *   2. 把 PEM 写 filesDir/ssh_key(perms 600)
- *   3. WebView 加载 terminal.html;先用 LocalEchoChannel 让 UI 立刻可交互
- *   4. 检查 RECORD_AUDIO 权限,未授予则 request
- *   5. 后台 connect SSH:成功 → swap channel(mutate bridge/daemon 字段,不重建)+ restart reader
+ * 当前(P.1):列表用 mock 数据;进入 project 切到终端,终端走 LocalEchoChannel
+ * (真 SSH per-project 连接 + 状态探测后续接)。
  *
- * **关键不变量**:`TerminalBridge` 和 `VoiceDaemon` 实例从 onCreate 创建后**永不重建**。
- * Channel/Recorder/Asr 是 `@Volatile var` 字段,只 swap 不重建 ——
- * 因为 WebView 端 `window.Bridge` 在 loadUrl 时已经绑到了原 instance,
- * addJavascriptInterface runtime swap 在 JS 端无效。
+ * 导航:
+ *   列表 Enter → JS Bridge.openProject → 切终端视图
+ *   BACK 键   → 终端视图返回列表;列表视图则退出 app
+ *
+ * **不变量**:TerminalBridge / VoiceDaemon 实例创建后不重建(channel 等用 @Volatile var 热切)。
  */
 class MainActivity : Activity() {
 
     private lateinit var webView: WebView
     private lateinit var bridge: TerminalBridge
     private lateinit var voiceDaemon: VoiceDaemon
-    private lateinit var store: SettingsStore
-    private lateinit var sshConfig: SshConfig
-    private lateinit var asrConfig: AsrConfig
+    private val channel: PtyChannel = LocalEchoChannel()
+
+    private enum class View { LIST, TERMINAL }
+    @Volatile private var view = View.LIST
 
     private var readerThread: Thread? = null
     @Volatile private var stopReader = false
 
-    // 备路径 Ctrl+Alt+1/2 状态:记住启动 voice 的数字键 + 映射的 F13/F14
     private var backupVoiceDigit = -1
     private var backupVoiceKey = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        store = SettingsStore(this)
-        sshConfig = store.loadSsh()
-        asrConfig = store.loadAsr()
-
-        // 1. 配置不全 → ConfigActivity
-        if (!sshConfig.isComplete()) {
-            startActivity(Intent(this, ConfigActivity::class.java))
-            finish()
-            return
-        }
-
         window.setFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
         )
+        // 彻底禁用系统软键盘:窗口声明"不需要与 IME 交互"(仍可聚焦、硬件键正常)。
+        // 输入只走 8BitDo 硬件键 + 语音 + 自绘虚拟键盘。比 per-view TYPE_NULL 可靠。
+        window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
         WebView.setWebContentsDebuggingEnabled(true)
 
-        // 2. PEM 写 filesDir(权限 600 — 跨用户隔离)
-        val keyFile = filesDir.resolve("ssh_key")
-        keyFile.writeText(sshConfig.privateKeyPem.trim() + "\n")
-        keyFile.setReadable(false, false)
-        keyFile.setReadable(true, true)
-        val knownHostsFile = filesDir.resolve("known_hosts")
+        bridge = TerminalBridge(
+            initial = channel,
+            onOpenProject = ::onOpenProject,
+            onVoice = { down, lang ->
+                val kc = if (lang == "en") VoiceDaemon.KEY_F14 else VoiceDaemon.KEY_F13
+                if (down) voiceDaemon.onKeyDown(kc) else voiceDaemon.onKeyUp(kc)
+            },
+            onVkeyEnter = { if (!voiceDaemon.onEnter()) writeChannelByte(13) },   // 13 = CR
+            onVkeyEsc = { if (!voiceDaemon.onEsc()) writeChannelByte(27) },        // 27 = ESC
+            hasHwKeyboard = ::hasHardwareKeyboard,
+        )
 
-        // 3. 单 bridge/daemon 实例;先指向 LocalEchoChannel,SSH 连上后只 swap 字段
-        val initialChannel: PtyChannel = LocalEchoChannel()
-        bridge = TerminalBridge(initialChannel)
-
-        webView = WebView(this).apply {
-            setBackgroundColor(0xff11131a.toInt())
+        webView = object : WebView(this@MainActivity) {
+            // 抑制软键盘:本产品输入 = 8BitDo 硬件键 + 语音,软键盘会挡住半屏。
+            // TYPE_NULL 让系统不弹软键盘,但硬件 KeyEvent 仍照常进 dispatchKeyEvent / WebView。
+            override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+                val ic = super.onCreateInputConnection(outAttrs)
+                outAttrs.inputType = InputType.TYPE_NULL
+                return ic
+            }
+        }.apply {
+            setBackgroundColor(0xff0d0f16.toInt())
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -87,16 +87,10 @@ class MainActivity : Activity() {
             addJavascriptInterface(bridge, TerminalBridge.JS_NAME)
         }
         setContentView(webView)
-        webView.loadUrl("file:///android_asset/terminal.html")
+        webView.loadUrl("file:///android_asset/index.html")
 
-        voiceDaemon = VoiceDaemon(
-            webView = webView,
-            initialChannel = initialChannel,
-            initialAsr = buildAsr(asrConfig),
-            initialRecorder = null,  // 等 4. 权限拿到
-        )
+        voiceDaemon = VoiceDaemon(webView = webView, initialChannel = channel)
 
-        // 4. 麦克风权限
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
         ) {
@@ -105,96 +99,70 @@ class MainActivity : Activity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
         }
 
-        // 5. 后台 connect SSH
-        thread(start = true, name = "ssh-connect", isDaemon = true) {
-            connectSshAndStartReader(keyFile.absolutePath, knownHostsFile)
-        }
+        startReaderThread()
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray,
-    ) {
-        if (requestCode == REQ_MIC) {
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-                voiceDaemon.recorder = AudioRecorder()
-            } else {
-                Toast.makeText(this, R.string.mic_permission_denied, Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-
-    private fun connectSshAndStartReader(privateKeyPath: String, knownHosts: java.io.File) {
+    /** JS 列表 Enter 进入 project(当前 mock:仅切视图;真 SSH 连接后续接) */
+    private fun onOpenProject(host: String, name: String, type: String) {
+        Log.i(TAG, "openProject host=$host name=$name type=$type")
+        view = View.TERMINAL
         runOnUiThread {
-            webView.evaluateJavascript(
-                "window.writeToTerm('${b64ansi("\r\n[33mConnecting SSH to ${sshConfig.host}…[0m\r\n")}')",
-                null,
-            )
+            val n = org.json.JSONObject.quote(name)
+            val t = org.json.JSONObject.quote(type)
+            webView.evaluateJavascript("window.showTerminal($n, $t)", null)
         }
-        val ssh = SshConnection(
-            host = sshConfig.host,
-            port = sshConfig.port,
-            user = sshConfig.user,
-            privateKeyPath = privateKeyPath,
-            startupCommand = sshConfig.startupCommand,
-            knownHostsFile = knownHosts,
-        )
-        try {
-            ssh.connect(cols = 80, rows = 24)
-            // 关闭旧 LocalEchoChannel(让旧 reader 的 read() 返回 -1 退出)
-            val old = bridge.channel
-            bridge.channel = ssh
-            voiceDaemon.channel = ssh
-            runCatching { old.close() }
-            startReaderThread(ssh)
-        } catch (e: Exception) {
-            Log.w(TAG, "SSH connect failed: ${e.message}", e)
-            runOnUiThread {
-                webView.evaluateJavascript(
-                    "window.writeToTerm('${b64ansi("\r\n[31mSSH 失败: ${e.message}[0m\r\n回退 LocalEcho 模式 (调 ConfigActivity 改配置)。\r\n")}')",
-                    null,
-                )
-            }
-            // 保持 LocalEchoChannel,reader 仍要起一下让 echo 通
-            startReaderThread(bridge.channel)
-        }
+        // TODO(状态探测/真SSH):按 host+name 查配置 → SshConnection.connect → bridge.channel = ssh
     }
 
-    private fun buildAsr(c: AsrConfig): Asr = when {
-        c.isVolcConfigured() -> VolcEngineAsr(
-            appid = c.appid, token = c.token,
-            cluster = c.cluster.ifBlank { "volcengine_input_common" },
-        )
-        else -> MockAsr()
+    private fun backToList() {
+        view = View.LIST
+        runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
+    }
+
+    private fun writeChannelByte(b: Int) {
+        runCatching { channel.outputStream().write(b); channel.outputStream().flush() }
+    }
+
+    /** 是否接了外置物理键盘(8BitDo 在键盘模式会算 QWERTY)→ 决定虚拟键盘显隐 */
+    private fun hasHardwareKeyboard(): Boolean {
+        val cfg = resources.configuration
+        return cfg.keyboard == android.content.res.Configuration.KEYBOARD_QWERTY &&
+            cfg.hardKeyboardHidden == android.content.res.Configuration.HARDKEYBOARDHIDDEN_NO
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (requestCode == REQ_MIC) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) voiceDaemon.recorder = AudioRecorder()
+            else Toast.makeText(this, R.string.mic_permission_denied, Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (!::voiceDaemon.isInitialized) return super.dispatchKeyEvent(event)
 
-        // 诊断:打印每个到达的 keycode(确认 8BitDo F13/F14 是否被收到 = Stage A.1)
+        // BACK:终端视图 → 返回列表(消费);列表视图 → 默认(退出)
+        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+            if (view == View.TERMINAL) { backToList(); return true }
+            return super.dispatchKeyEvent(event)
+        }
+
+        // 列表视图:方向键/Enter 交给 WebView 的列表导航,语音键不介入
+        if (view == View.LIST) return super.dispatchKeyEvent(event)
+
+        // --- 以下为终端视图 ---
         Log.i(TAG, "dispatchKey code=${event.keyCode} action=${event.action} ctrl=${event.isCtrlPressed} alt=${event.isAltPressed}")
 
-        // 备路径 Ctrl+Alt+1/2 → F13/F14。
-        // 注意:松手时 ctrl/alt 通常先于数字键释放,所以数字键 UP 到达时 isCtrlPressed 已 false。
-        // 解法:DOWN(带 ctrl+alt)时记住"数字键→voice key"映射,对应数字键的 UP(忽略修饰键)结束。
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
-            && event.isCtrlPressed && event.isAltPressed
-        ) {
+        // 备路径 Ctrl+Alt+1/2 → F13/F14(松手时修饰键先释放,所以记住数字键的 UP 来收尾)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && event.isCtrlPressed && event.isAltPressed) {
             val mapped = when (event.keyCode) {
                 KeyEvent.KEYCODE_1 -> VoiceDaemon.KEY_F13
                 KeyEvent.KEYCODE_2 -> VoiceDaemon.KEY_F14
                 else -> null
             }
-            if (mapped != null) {
-                backupVoiceDigit = event.keyCode
-                backupVoiceKey = mapped
-                voiceDaemon.onKeyDown(mapped)
-                return true
-            }
+            if (mapped != null) { backupVoiceDigit = event.keyCode; backupVoiceKey = mapped; voiceDaemon.onKeyDown(mapped); return true }
         }
         if (event.action == KeyEvent.ACTION_UP && event.keyCode == backupVoiceDigit) {
-            voiceDaemon.onKeyUp(backupVoiceKey)
-            backupVoiceDigit = -1
-            return true
+            voiceDaemon.onKeyUp(backupVoiceKey); backupVoiceDigit = -1; return true
         }
         if (event.keyCode == VoiceDaemon.KEY_F13 || event.keyCode == VoiceDaemon.KEY_F14) {
             routeVoiceKey(event.action, event.keyCode); return true
@@ -215,22 +183,17 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startReaderThread(ch: PtyChannel) {
-        // 停旧 reader(close 旧 channel 会让旧 reader 的 read 抛 / 返回 -1)
-        stopReader = true
-        readerThread?.interrupt()
+    private fun startReaderThread() {
         stopReader = false
         readerThread = thread(start = true, name = "pty-reader", isDaemon = true) {
             val buf = ByteArray(4096)
             try {
-                val ins = ch.inputStream()
+                val ins = channel.inputStream()
                 while (!stopReader) {
                     val n = ins.read(buf)
                     if (n <= 0) break
                     val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
-                    runOnUiThread {
-                        webView.evaluateJavascript("window.writeToTerm('$b64')", null)
-                    }
+                    runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$b64')", null) }
                 }
             } catch (e: Exception) {
                 if (!stopReader) Log.w(TAG, "pty-reader stopped: ${e.message}")
@@ -238,13 +201,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun b64ansi(s: String): String =
-        Base64.encodeToString(s.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-
     override fun onDestroy() {
         stopReader = true
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()
-        if (::bridge.isInitialized) runCatching { bridge.channel.close() }
+        runCatching { channel.close() }
         readerThread?.interrupt()
         if (::webView.isInitialized) webView.destroy()
         super.onDestroy()

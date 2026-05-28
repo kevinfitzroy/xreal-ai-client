@@ -101,7 +101,7 @@ Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告
 | **Voice → SSH 直写** | Voice Daemon 拿到 ASR 文本,**直接写 ssh.outputStream**,字符走 SSH 到远端 shell,shell echo 回送,xterm.js 渲染。Voice 路径不需要知道 xterm.js 存在 |
 | **不用 Accessibility / IME** | 不需要这两个权限。同 app 内事件路由用 `Activity.dispatchKeyEvent` |
 | **F13/F14 keycode 主路径,Ctrl+Alt+1/2 备路径** | 8BitDo Ultimate Software 官方支持 F13-F24,但 Beam Pro 真机是否收到 KeyEvent 326/327 是 Phase 1 实测项;Phase 0 代码两条都写,优先 F13/F14 |
-| **服务端 session 驻留默认 abduco,不是 tmux** | 用户 tmux 体感差(卡 + 历史难查),客户端 xterm.js 已有 10000 行 scrollback + 搜索,服务端只需"session 不死",abduco 更契合。`SshConnection` 应该把启动命令做成可配置,不要硬编码。详见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md) |
+| **session 驻留:agent 用 tmux,纯 SSH 可 abduco**(2026-05-28 修订)| 原决策是默认 abduco(单终端场景,client 自己管 scrollback)。但产品升级成"AI agent 集群指挥台"后,**状态探测 + 最近命令预览需要 `tmux capture-pane -p`,abduco 无等价能力** → agent 类 project 改用 tmux。纯 SSH project 不需要探测,abduco/tmux 均可。`SshConnection` 启动命令本就可配置。详见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md) 和 memory `product-vision` |
 | **优雅降级** | 任何组件挂了,用户能退回 Termius / Termux 继续工作。App 不是必需品 |
 
 ---

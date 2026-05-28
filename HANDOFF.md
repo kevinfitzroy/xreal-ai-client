@@ -23,7 +23,7 @@ Phase 0(emulator 跑通骨架)+ Stage B(真 SSH / 真 AudioRecord / 真豆包 AS
 android/app/src/main/
 ├── AndroidManifest.xml         INTERNET / RECORD_AUDIO / FOREGROUND_SERVICE_MICROPHONE
 ├── assets/
-│   ├── terminal.html           xterm.js + WebGL + voice overlay
+│   ├── index.html              WebView SPA:Agent Deck 列表页 ⇄ 终端页 + xterm.js + voice overlay + 自绘虚拟键盘
 │   ├── xterm.{js,css}          v5.5.0
 │   ├── addon-{fit,webgl,search}.js
 ├── res/values/
