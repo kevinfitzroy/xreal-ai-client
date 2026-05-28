@@ -1,11 +1,24 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-29(真 host + 电脑打字直通手机终端;终端中文/powerline 显示修复——根因 tmux 非 UTF-8;Meslo+Sarasa 字体)
+> **最近更新**:2026-05-29(优先级收敛:实时状态刷新搁置为 P2,新增 ROADMAP.md;真 host + 打字直通;终端中文/powerline 修复)
 
 ---
 
-## 0. 最新进展(2026-05-28 晚 · 产品重塑 + UI 打磨,均真机验证)
+## 0.0 优先级收敛(2026-05-29)—— 先读这条
+
+新增 **[`ROADMAP.md`](ROADMAP.md)**:按 P0 核心 / P1 可用性 / P2 体验增强分级跟踪需求。
+
+**用户决策**:把**实时状态刷新**(列表上 agent/shell 的 WORKING/WAITING/preview 探测)**搁置为 P2 体验增强**——它不影响整体流程打通,等核心完善后再接回。
+
+- **代码已搁置但保留**:`FleetFeatures.LIVE_STATUS = false` 关掉 `StatusPoller` 轮询。接回只需置 true(接回清单见 ROADMAP §4)。
+- **核心流程未受影响**:列表现在用 `StatusPoller.staticListJson(hosts)` **一次性静态枚举**真实 host/project(全 IDLE、无 preview),`onPageFinished` 推。Enter→开真终端、Mac dev rig 照常工作。
+- **下个 cold-start 注意**:当前列表"没有实时状态"是**有意为之**,不是 bug,别去"修"。真实状态探测的 `StatusPoller`/`AgentStatusDetector`/校准测试都还在,只是开关关着。
+- "舰队导航"语义已在 ROADMAP 拆清:**方向键列表导航 = P0 核心(不可删)**;舰队聚合 pills/状态徽章 = P2(随状态刷新一起搁置)。
+
+---
+
+## 0. (历史)最新进展(2026-05-28 晚 · 产品重塑 + UI 打磨,均真机验证)
 
 产品从"单 SSH 终端"重塑成 **AI agent 集群指挥台 "Agent Deck"**(详见 memory `product-vision`)。主入口 = WebView SPA 列表页 ⇄ 终端页。已在 **Beam Pro X4100 真机**全部验证通过:
 

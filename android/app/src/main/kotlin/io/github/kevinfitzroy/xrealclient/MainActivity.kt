@@ -51,10 +51,12 @@ class MainActivity : Activity() {
     private var backupVoiceKey = -1
 
     private lateinit var hosts: List<HostConfig>
-    // 状态探测:host 列表非空时才启动(目前 loadHosts() 返回空 → 不启,列表走 JS mock)
+    // 实时状态刷新(P2,搁置,见 FleetFeatures.LIVE_STATUS / ROADMAP):仅开关开 + 有 host 时才建
     private var poller: StatusPoller? = null
     // 调试输入直通:仅 debug build + 有 host 配置时起(电脑经 adb 打字进终端,见 scripts/term-relay.py)
     private var dbgInput: DebugInputServer? = null
+    // 真实 host/project 列表(静态枚举):页面加载完成后一次性推给 WebView,让 Enter 能开真终端
+    private var pendingHostListJson: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,7 +99,12 @@ class MainActivity : Activity() {
                 @Suppress("DEPRECATION")
                 allowFileAccessFromFileURLs = true   // 让 file:// 页面能加载 @font-face 字体(sarasa-term.ttf)
             }
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    // 页面就绪后才推真实 host/project 列表(window.setHosts 此时才存在)
+                    pendingHostListJson?.let { pushHostList(it) }
+                }
+            }
             addJavascriptInterface(bridge, TerminalBridge.JS_NAME)
         }
         setContentView(webView)
@@ -115,25 +122,33 @@ class MainActivity : Activity() {
 
         startReaderFor(activeChannel)
 
-        // 状态探测:有真实 host 配置才建 poller(空配置时 list 用 index.html mock 演示)
         hosts = SettingsStore(this).loadHosts()
         if (hosts.isNotEmpty()) {
-            poller = StatusPoller(
-                hosts = hosts,
-                keyDir = filesDir,
-                knownHostsFile = java.io.File(filesDir, "known_hosts"),
-                onUpdate = { json ->
-                    runOnUiThread {
-                        if (::webView.isInitialized) {
-                            val q = org.json.JSONObject.quote(json)
-                            webView.evaluateJavascript("window.setHosts($q)", null)
-                        }
-                    }
-                },
-            )
-            // 调试输入直通:只在 debug build + 有真 host 配置(= 正在用 dev-host 测试)时监听
+            // 核心流程:真实 host/project 静态枚举(onPageFinished 推)。Enter→findProject 靠它开真终端。
+            pendingHostListJson = StatusPoller.staticListJson(hosts)
+
+            // 实时状态刷新(P2,搁置):开关开才建 poller,周期性用真实状态/preview 覆盖静态枚举。
+            if (FleetFeatures.LIVE_STATUS) {
+                poller = StatusPoller(
+                    hosts = hosts,
+                    keyDir = filesDir,
+                    knownHostsFile = java.io.File(filesDir, "known_hosts"),
+                    onUpdate = { json -> pushHostList(json) },
+                )
+            }
+
+            // 调试输入直通:测试基建(与状态刷新无关),debug build + 有真 host 时监听
             if (BuildConfig.DEBUG) {
                 dbgInput = DebugInputServer(sink = { activeChannel }).also { it.start() }
+            }
+        }
+    }
+
+    /** 把整批 hosts JSON 推给 WebView 列表(静态枚举 + poller 实时刷新 共用)。 */
+    private fun pushHostList(json: String) {
+        runOnUiThread {
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript("window.setHosts(${org.json.JSONObject.quote(json)})", null)
             }
         }
     }

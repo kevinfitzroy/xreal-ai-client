@@ -78,10 +78,9 @@ class StatusPoller(
         return arr.toString()
     }
 
-    /** 输出形状对齐 index.html 的 HOSTS mock:{name,addr,up,projects:[{name,type,status,age,preview}]}。 */
-    private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>): JSONObject {
-        val projects = JSONArray()
-        for ((p, s) in snaps) {
+    /** JSON 形状的唯一来源(对齐 index.html 的 setHosts/HOSTS):{name,addr,up,projects:[...]}。 */
+    companion object {
+        private fun projectJson(p: ProjectConfig, s: ProjectSnapshot): JSONObject {
             val o = JSONObject()
                 .put("name", p.displayName)
                 .put("type", p.type.jsKey())
@@ -95,9 +94,26 @@ class StatusPoller(
                     .put("text", s.preview)
                     .put("cur", s.status == ProjectStatus.WORKING),
             )
-            projects.put(o)
+            return o
         }
-        val up = snaps.any { it.second.status != ProjectStatus.DISCONNECTED }
-        return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up).put("projects", projects)
+
+        private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>): JSONObject {
+            val projects = JSONArray()
+            for ((p, s) in snaps) projects.put(projectJson(p, s))
+            val up = snaps.any { it.second.status != ProjectStatus.DISCONNECTED }
+            return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up).put("projects", projects)
+        }
+
+        /**
+         * 无 SSH 探测的静态枚举:实时状态刷新搁置时(P2,见 ROADMAP),列表仍需把真实 host/project
+         * 推给 WebView —— 否则列表退回 mock,Enter→findProject 名字匹配不上 → 开不了真终端。
+         * 状态一律 IDLE、无 preview(诚实:没探测就别假装有状态)。
+         */
+        fun staticListJson(hosts: List<HostConfig>): String {
+            val arr = JSONArray()
+            val idle = ProjectSnapshot(ProjectStatus.IDLE, "", "")
+            for (h in hosts) arr.put(hostJson(h, h.projects.map { it to idle }))
+            return arr.toString()
+        }
     }
 }
