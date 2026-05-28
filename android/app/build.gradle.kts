@@ -30,6 +30,10 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true   // 供 BuildConfig.DEBUG 门控调试输入直通(DebugInputServer)
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

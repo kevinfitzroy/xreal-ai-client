@@ -4,8 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <link rel="stylesheet" href="xterm.css">
+
 <title>Agent Deck</title>
 <style>
+  /* 终端字体:Meslo LG S(用户 iTerm 同款,Latin + powerline)作主字体;Sarasa Term SC Nerd 子集
+     作 CJK 回退(中英 2:1)。locale 修好后 WebGL 的 canvas 逐字形回退正常工作。 */
+  @font-face{ font-family:'MesloLGS'; src:url('meslo-powerline.otf') format('opentype'); font-display:block; }
+  @font-face{ font-family:'SarasaTerm'; src:url('sarasa-term.ttf') format('truetype'); font-display:block; }
   :root {
     --bg:#0d0f16; --surface:#161922; --surface-2:#1c202b; --line:#262b38;
     --fg:#e6e6e6; --fg-dim:#8b93a7; --fg-faint:#565d70;
@@ -276,7 +281,8 @@
     document.getElementById('view-term').hidden=false;
     currentView='term';
     updateBottomBar();
-    requestAnimationFrame(()=>{ try{ fitAddon.fit(); }catch(e){} term.focus(); });
+    // 容器现已可见 + 字体就绪 → 首次创建终端(WebGL 图集才会带上字形);之后只 fit+focus
+    fontReady.then(()=>{ if(!term) initTerm(); requestAnimationFrame(()=>{ if(!term)return; try{ fitAddon.fit(); }catch(e){} term.focus(); }); });
   };
   window.showList=function(){
     document.getElementById('view-term').hidden=true;
@@ -287,17 +293,29 @@
   window.currentView=function(){ return currentView; };
 
   /* ========== xterm ========== */
-  const term=new Terminal({ fontFamily:'"JetBrains Mono","Menlo",monospace', fontSize:14, lineHeight:1.2, cursorBlink:true, scrollback:10000,
-    theme:{ background:'#11131a', foreground:'#e6e6e6', cursor:'#94e0b2', selectionBackground:'#3a4760' } });
-  const fitAddon=new FitAddon.FitAddon();
-  term.loadAddon(fitAddon); term.loadAddon(new SearchAddon.SearchAddon());
-  term.open(document.getElementById('term'));
-  try{ term.loadAddon(new WebglAddon.WebglAddon()); }catch(e){ console.warn('[xreal] WebGL fallback',e); }
-  term.onData(d=>{ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d)))); });
-  term.onResize(({cols,rows})=>{ if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(cols,rows); });
-  window.writeToTerm=function(b64){ const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); term.write(u); };
+  // 单一 Sarasa Term SC Nerd 子集字体:Latin + 中文 + Nerd/powerline 全有,WebGL 不需回退。
+  // 关键(xterm #3280,真机实测):**必须等字体加载完再创建终端**,WebGL 字形图集才会带上
+  // CJK/powerline 字形;若在字体就绪前创建,图集缓存空字形,CJK 渲染空白且 clearTextureAtlas 救不回来。
+  let term, fitAddon, webglAddon=null;
+  function initTerm(){
+    term=new Terminal({ fontFamily:"'MesloLGS','SarasaTerm',monospace", fontSize:14, lineHeight:1.2, cursorBlink:true, scrollback:10000,
+      theme:{ background:'#11131a', foreground:'#e6e6e6', cursor:'#94e0b2', selectionBackground:'#3a4760' } });
+    fitAddon=new FitAddon.FitAddon();
+    term.loadAddon(fitAddon); term.loadAddon(new SearchAddon.SearchAddon());
+    term.open(document.getElementById('term'));
+    try{ webglAddon=new WebglAddon.WebglAddon(); term.loadAddon(webglAddon); }catch(e){ console.warn('[xreal] WebGL 不可用,回退 DOM',e); }
+    term.onData(d=>{ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d)))); });
+    term.onResize(({cols,rows})=>{ if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(cols,rows); });
+    try{ fitAddon.fit(); }catch(e){}
+  }
+  // 终端推迟到「首次进入终端视图(#term 可见)+ 字体就绪」时创建 —— 见 showTerminal。
+  // WebGL 必须在容器可见(有尺寸)+ 字体加载完时 open,否则字形图集建在 0 尺寸/空字体态 → 全空白。
+  const fontReady = (document.fonts&&document.fonts.load)
+    ? Promise.all([document.fonts.load("14px 'MesloLGS'"), document.fonts.load("14px 'SarasaTerm'")]).catch(()=>{})
+    : Promise.resolve();
+  window.writeToTerm=function(b64){ if(!term)return; const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); term.write(u); };
   // 热切 channel 后由 Kotlin 调:把当前 xterm 尺寸重新推给新通道(否则刚连上的 SSH PTY 停在初始 80x24)
-  window.syncSize=function(){ try{ fitAddon.fit(); }catch(e){} if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(term.cols, term.rows); };
+  window.syncSize=function(){ if(!term)return; try{ fitAddon.fit(); }catch(e){} if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(term.cols, term.rows); };
   window.showOverlay=function(s,t){ document.getElementById('overlay-status').innerText=s||''; document.getElementById('overlay-text').innerText=t||''; document.getElementById('voice-overlay').style.display='block'; };
   window.hideOverlay=function(){ document.getElementById('voice-overlay').style.display='none'; };
 

@@ -64,11 +64,54 @@ class SettingsStore(ctx: Context) {
     )
 
     /**
-     * Agent Deck 的 host/project 列表。目前没有录入 UI → 返回空列表,
-     * [StatusPoller] 因此不启动,WebView 保留 index.html 里的 mock 数据演示。
-     * 等 task 0.3(真 tmux 链路)+ host 录入 UI 落地后,从 prefs 反序列化真实配置。
+     * Agent Deck 的 host/project 列表。
+     *
+     * 过渡期持久化(还没录入 UI):读 [HOSTS_JSON](adb push 进来)。schema:
+     * `[{ "name","addr","host","port","user","keyPath","projects":[{"session","name","type"}] }]`
+     * keyPath 指向设备上的私钥文件(由 [readPemSafe] 校验后读成 PEM)。文件不存在 → 空列表(走 mock)。
      */
-    fun loadHosts(): List<HostConfig> = emptyList()
+    fun loadHosts(): List<HostConfig> {
+        val f = java.io.File(HOSTS_JSON)
+        if (!f.exists()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(f.readText())
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                HostConfig(
+                    name = o.getString("name"),
+                    addr = o.optString("addr", o.getString("host")),
+                    ssh = SshConfig(
+                        host = o.getString("host"),
+                        port = o.optInt("port", 22),
+                        user = o.getString("user"),
+                        privateKeyPem = readPemSafe(o.getString("keyPath")),
+                    ),
+                    projects = o.getJSONArray("projects").let { pj ->
+                        (0 until pj.length()).map { j ->
+                            val p = pj.getJSONObject(j)
+                            ProjectConfig(
+                                sessionName = p.getString("session"),
+                                displayName = p.optString("name", p.getString("session")),
+                                type = ProjectType.valueOf(p.getString("type").uppercase()),
+                            )
+                        }
+                    },
+                )
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("SettingsStore", "loadHosts 解析 $HOSTS_JSON 失败: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** 读私钥文件并做基本校验:防 hosts.json 指向任意文件(路径遍历 / 读 /proc 等)。 */
+    private fun readPemSafe(path: String): String {
+        val kf = java.io.File(path)
+        require(kf.exists() && kf.length() in 1..8192) { "key 文件不存在或过大: $path" }
+        val text = kf.readText()
+        require(text.contains("PRIVATE KEY")) { "不是合法私钥: $path" }
+        return text
+    }
 
     fun saveAsr(c: AsrConfig) {
         prefs.edit()
@@ -80,6 +123,9 @@ class SettingsStore(ctx: Context) {
     }
 
     companion object {
+        /** 过渡期 host 配置(adb push;重启清零,reboot 后重跑 scripts/setup-mac-host.sh)。 */
+        const val HOSTS_JSON = "/data/local/tmp/xreal_hosts.json"
+
         private const val K_SSH_HOST = "ssh_host"
         private const val K_SSH_PORT = "ssh_port"
         private const val K_SSH_USER = "ssh_user"

@@ -227,6 +227,17 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 | 局部设置 commit 身份 | `git config user.name "Evan" && git config user.email "kevinfitzroy715@gmail.com"` | 详见 §8;不动 global |
 | 普通 commit | `git commit -m "..."` 带 `Co-Authored-By: Claude` trailer | 详见 §7 |
 
+### 10.6 测试工具:把本机 Mac 配成真 host + 电脑打字直通手机终端
+
+调试期持续测试手机 terminal 显示用。详情见两个脚本头部注释。
+
+| 操作 | 命令 | 备注 |
+|---|---|---|
+| 一键搭测试 host | `./scripts/setup-mac-host.sh [项目目录]` | 幂等:起 tmux(`main` 跑真 claude / `shell`)、adb reverse(SSH)+forward(relay)、push key+hosts.json、重启 app。reboot 后(`/data/local/tmp` 清零)重跑 |
+| 电脑打字直通手机终端 | `python3 scripts/term-relay.py` | 先在手机上进入一个 project 终端;raw 模式键盘→手机,`Ctrl+]` 退出。底层是往 app 的 DebugInputServer(:8889)发裸字节 |
+
+> 机制:`loadHosts()` 读 `/data/local/tmp/xreal_hosts.json`(无则空,走 mock)。`DebugInputServer` 只在 **debug build + hosts.json 存在**时监听 `127.0.0.1:8889`(生产/未配置不监听)。私钥文件须 `chmod 644`(app uid 要能读,600 会 EACCES)。
+
 ---
 
 ## 11. 何时去读 upstream docs

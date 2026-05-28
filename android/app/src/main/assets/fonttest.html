@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+<link rel="stylesheet" href="xterm.css">
+<style>
+  @font-face{ font-family:'SarasaTerm'; src:url('sarasa-term.ttf') format('truetype'); font-display:block; }
+  html,body{margin:0;height:100%;background:#11131a;}
+  #term{position:absolute;inset:0;padding:8px;}
+  .xterm-viewport{background-color:transparent!important;}
+</style></head>
+<body>
+  <div id="term"></div>
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script src="addon-webgl.js"></script>
+  <script>
+  // 隔离测试:WebGL + 单一 Sarasa Nerd 字体,渲染中文/powerline/box-drawing/Latin。
+  // 关键(避开 xterm #3280「改字体后不重渲」):**等字体就绪后再创建终端**。
+  const TEST =
+    "Latin: Hello WebGL 123 |=>+-\r\n" +
+    "中文: 你好世界 中文宽度测试 abc混排\r\n" +
+    "对齐(│夹中文,应 2:1 不串行):\r\n" +
+    "│中文中文│\r\n" +
+    "│abcdef│\r\n" +
+    "powerline:    master  \r\n" +
+    "git dot: ●  box: ┌──┐ │x│ └──┘\r\n" +
+    "DONE_MARKER\r\n";
+  function boot(){
+    const term=new Terminal({ fontFamily:"'SarasaTerm','Noto Sans CJK SC',monospace", fontSize:16, lineHeight:1.2,
+      theme:{ background:'#11131a', foreground:'#e6e6e6' } });
+    const fit=new FitAddon.FitAddon(); term.loadAddon(fit);
+    term.open(document.getElementById('term'));
+    let webgl=null; try{ webgl=new WebglAddon.WebglAddon(); term.loadAddon(webgl); document.title='renderer=WebGL'; }
+    catch(e){ document.title='renderer=DOM(webgl failed)'; }
+    try{ fit.fit(); }catch(e){}
+    term.write("font SarasaTerm loaded="+ (document.fonts&&document.fonts.check?document.fonts.check("16px 'SarasaTerm'"):'?') +" | "+document.title+"\r\n");
+    term.write(TEST);
+    // 双保险:字体若仍在 settle,重建图集 + 刷新
+    setTimeout(()=>{ try{ webgl&&webgl.clearTextureAtlas(); }catch(e){} try{ term.refresh(0,term.rows-1); }catch(e){} }, 150);
+  }
+  // 先确保字体加载,再 boot —— 根治 atlas 缓存空字形
+  if(document.fonts&&document.fonts.load){
+    document.fonts.load("16px 'SarasaTerm'").then(boot, boot);
+  } else { boot(); }
+  </script>
+</body></html>

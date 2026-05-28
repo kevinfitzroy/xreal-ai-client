@@ -1,7 +1,7 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-29(0.3 状态探测 + per-project 真 SSH 终端,均真机端到端跑通;列表→活 Claude Code 一条龙打通)
+> **最近更新**:2026-05-29(真 host + 电脑打字直通手机终端;终端中文/powerline 显示修复——根因 tmux 非 UTF-8;Meslo+Sarasa 字体)
 
 ---
 
@@ -29,7 +29,22 @@
 
 - git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3 → `bfa83f0` 状态探测 pipeline → `4e11c1b` 0.3+BC/PATH+校准 →(per-project SSH 终端 这次 commit)。
 
-**仍 mock / 待接**:列表默认 mock(状态探测 + per-project SSH 终端真机均已验证可用,但常驻需 **host 录入 UI + `loadHosts` 持久化**——目前靠 dev-host hack 临时验证);真豆包 ASR 待 creds。重跑 demo 的步骤(reverse + push key + 临时 loadHosts)见上方 0.3 段。
+**✅ 真 host 持久化 + 电脑打字直通手机终端(R.1-3,测试工具)**:
+- `loadHosts()` 现读 `/data/local/tmp/xreal_hosts.json`(过渡持久化,无录入 UI 期间;无文件→空→mock)。schema 见 SettingsStore。`readPemSafe` 校验 keyPath 防路径遍历。
+- `DebugInputServer`:**debug build + hosts.json 存在**才监听 `127.0.0.1:8889`,把裸字节写进活动 channel(= 在手机上敲键)。
+- `scripts/setup-mac-host.sh`(幂等搭 host:tmux+claude、adb reverse/forward、push key+hosts.json、重启 app)+ `scripts/term-relay.py`(raw 键盘→socket→手机终端)。命令见 CLAUDE.md §10.6。
+- **真机实测**:`setup-mac-host.sh` → 列表出现真 host `mac`(claude-main/shell)→ 开 claude-main → 电脑 `printf 'echo X' | nc :8889` → 文字实时出现在手机 Claude 输入框。整条 Mac→手机打字链路通。
+- **坑(已修)**:push 的 key 必须 `chmod 644`,600 会让 app uid 读不到(EACCES)→ loadHosts 静默返回空 → poller/relay 都不起。
+
+**✅ 终端中文 + powerline 显示修复(D.1,真机验证)** —— 一场长 debug,根因藏得深:
+- **根因:tmux 客户端没在 UTF-8 模式**(`utf8=0`),把所有多字节(中文 + powerline 字形)在**远端就降级成 `_`** —— 字节根本没以 UTF-8 到达 app(十六进制 log 显示 `中` 进来是 `5f`=下划线,不是 `e4b8ad`)。**修:`tmux -u` + `export LANG/LC_ALL=*.UTF-8`**(见 MainActivity.tmuxAttachCommand / HostClient / setup-mac-host.sh)。tmux server 也必须在 UTF-8 locale 下创建。
+- **字体(WebGL,与 VS Code 终端同款)**:Meslo LG S(用户 iTerm 同款,Latin+powerline,`meslo-powerline.otf`)主字体 + Sarasa Term SC Nerd 子集(`sarasa-term.ttf`,7.95MB,CJK 2:1)回退。
+- **xterm WebGL 两个真机坑(都修了)**:① **字体异步加载完再创建终端**(`fontReady.then(initTerm)`),否则字形图集建在空字体态 → 空白(clearTextureAtlas 救不回);② 容器须可见时 open(惰性建在首次 showTerminal)。`allowFileAccessFromFileURLs=true` 让 file:// @font-face 能加载。
+- **方法论教训**:别靠截图猜,在数据链路上打**十六进制 log** 一步分清"远端字节问题 vs 前端渲染问题"。我前期陷入"每轮换一个变量"的失控循环,被 WebGL 带偏,其实是 locale。
+
+- git:… → `4e11c1b` 0.3+BC/校准 → `994199e` per-project SSH 终端 →(真 host+打字直通 R.1-3 + 字体/locale 修复 D.1 这次 commit)。
+
+**仍 mock / 待接(默认无配置时)**:没 push hosts.json 时列表走 index.html mock;host 录入 **UI** 仍缺(现靠 adb push hosts.json);真豆包 ASR 待 creds。中文回退用 Sarasa(用户 iTerm 的 PingFang 是 Apple 专有打不了包)。`fonttest.html` 留作字体诊断工具。
 
 ---
 

@@ -53,6 +53,8 @@ class MainActivity : Activity() {
     private lateinit var hosts: List<HostConfig>
     // 状态探测:host 列表非空时才启动(目前 loadHosts() 返回空 → 不启,列表走 JS mock)
     private var poller: StatusPoller? = null
+    // 调试输入直通:仅 debug build + 有 host 配置时起(电脑经 adb 打字进终端,见 scripts/term-relay.py)
+    private var dbgInput: DebugInputServer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +94,8 @@ class MainActivity : Activity() {
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
+                @Suppress("DEPRECATION")
+                allowFileAccessFromFileURLs = true   // 让 file:// 页面能加载 @font-face 字体(sarasa-term.ttf)
             }
             webViewClient = WebViewClient()
             addJavascriptInterface(bridge, TerminalBridge.JS_NAME)
@@ -127,6 +131,10 @@ class MainActivity : Activity() {
                     }
                 },
             )
+            // 调试输入直通:只在 debug build + 有真 host 配置(= 正在用 dev-host 测试)时监听
+            if (BuildConfig.DEBUG) {
+                dbgInput = DebugInputServer(sink = { activeChannel }).also { it.start() }
+            }
         }
     }
 
@@ -199,9 +207,13 @@ class MainActivity : Activity() {
         return h to p
     }
 
-    /** attach-or-create 该 project 的 tmux session;PATH 前缀解非交互 exec 找不到 tmux(同 HostClient)。 */
+    /**
+     * attach-or-create 该 project 的 tmux session。
+     * - LANG/LC_ALL=UTF-8 + `tmux -u`:强制 UTF-8 客户端,否则 tmux 把多字节(中文/powerline)降级成 `_`。
+     * - PATH 前缀:非交互 exec 的 PATH 太窄找不到 tmux(同 HostClient)。
+     */
     private fun tmuxAttachCommand(session: String): String =
-        "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; exec tmux new -A -s '$session'"
+        "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; exec tmux -u new -A -s '$session'"
 
     private fun materializeKey(h: HostConfig): java.io.File =
         java.io.File(filesDir, "term_${h.name}.pem").apply {
@@ -311,6 +323,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         readerGen++   // 让所有 reader 失效
+        dbgInput?.stop()
         poller?.shutdown()
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()
         runCatching { activeChannel.close() }

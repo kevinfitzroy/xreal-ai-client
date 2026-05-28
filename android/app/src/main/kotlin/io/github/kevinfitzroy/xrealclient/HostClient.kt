@@ -50,10 +50,11 @@ class HostClient(
         val safe = sessions.filter { SAFE.matches(it) }
         if (safe.isEmpty()) return emptyMap()
         return try {
-            // 非交互 SSH exec 的 PATH 很窄,常缺 tmux 所在目录 → 显式补常见 bin 路径
-            val pathPrefix = "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"\n"
-            val script = pathPrefix + safe.joinToString("\n") { s ->
-                "echo '$DELIM_OPEN$s$DELIM_CLOSE'; tmux capture-pane -p -t '$s' 2>&1 || echo '$NO_SESSION_SENTINEL'"
+            // LANG/LC_ALL=UTF-8 + `tmux -u`:capture-pane 输出 UTF-8(否则多字节降级成 `_`)。
+            // PATH 前缀:非交互 SSH exec 的 PATH 很窄,常缺 tmux 所在目录。
+            val envPrefix = "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"\n"
+            val script = envPrefix + safe.joinToString("\n") { s ->
+                "echo '$DELIM_OPEN$s$DELIM_CLOSE'; tmux -u capture-pane -p -t '$s' 2>&1 || echo '$NO_SESSION_SENTINEL'"
             }
             val out = runExec(script)
             parse(out, safe)
