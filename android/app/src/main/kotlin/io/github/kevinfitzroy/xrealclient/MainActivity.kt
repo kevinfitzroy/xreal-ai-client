@@ -35,17 +35,22 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var bridge: TerminalBridge
     private lateinit var voiceDaemon: VoiceDaemon
-    private val channel: PtyChannel = LocalEchoChannel()
+
+    // 当前活动终端通道:进 project 时热切到真 SshConnection,回列表/无配置时是 LocalEchoChannel
+    @Volatile private var activeChannel: PtyChannel = LocalEchoChannel()
 
     private enum class View { LIST, TERMINAL }
     @Volatile private var view = View.LIST
 
-    private var readerThread: Thread? = null
-    @Volatile private var stopReader = false
+    // reader 线程代数:切 channel 时 ++,旧 reader(可能阻塞在 read)被 close 解阻塞后凭此静默退出
+    @Volatile private var readerGen = 0
+    // open 序号:快速 open→back→open 时,在途 SSH 连接凭此判断自己是否已 obsolete(advisor 抓的 race)
+    @Volatile private var openSeq = 0
 
     private var backupVoiceDigit = -1
     private var backupVoiceKey = -1
 
+    private lateinit var hosts: List<HostConfig>
     // 状态探测:host 列表非空时才启动(目前 loadHosts() 返回空 → 不启,列表走 JS mock)
     private var poller: StatusPoller? = null
 
@@ -62,7 +67,7 @@ class MainActivity : Activity() {
         WebView.setWebContentsDebuggingEnabled(true)
 
         bridge = TerminalBridge(
-            initial = channel,
+            initial = activeChannel,
             onOpenProject = ::onOpenProject,
             onVoice = { down, lang ->
                 val kc = if (lang == "en") VoiceDaemon.KEY_F14 else VoiceDaemon.KEY_F13
@@ -94,7 +99,7 @@ class MainActivity : Activity() {
         setContentView(webView)
         webView.loadUrl("file:///android_asset/index.html")
 
-        voiceDaemon = VoiceDaemon(webView = webView, initialChannel = channel)
+        voiceDaemon = VoiceDaemon(webView = webView, initialChannel = activeChannel)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED
@@ -104,10 +109,10 @@ class MainActivity : Activity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
         }
 
-        startReaderThread()
+        startReaderFor(activeChannel)
 
         // 状态探测:有真实 host 配置才建 poller(空配置时 list 用 index.html mock 演示)
-        val hosts = SettingsStore(this).loadHosts()
+        hosts = SettingsStore(this).loadHosts()
         if (hosts.isNotEmpty()) {
             poller = StatusPoller(
                 hosts = hosts,
@@ -135,25 +140,94 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    /** JS 列表 Enter 进入 project(当前 mock:仅切视图;真 SSH 连接后续接) */
+    /**
+     * JS 列表 Enter 进入 project:查到真实 host 配置 → 后台连 SSH(attach 该 project 的 tmux
+     * session)→ 热切 channel;查不到(mock 数据)→ 回退干净 LocalEcho 演示。
+     */
     private fun onOpenProject(host: String, name: String, type: String) {
         Log.i(TAG, "openProject host=$host name=$name type=$type")
+        val seq = ++openSeq
         view = View.TERMINAL
         runOnUiThread {
-            val n = org.json.JSONObject.quote(name)
-            val t = org.json.JSONObject.quote(type)
-            webView.evaluateJavascript("window.showTerminal($n, $t)", null)
+            webView.evaluateJavascript(
+                "window.showTerminal(${org.json.JSONObject.quote(name)}, ${org.json.JSONObject.quote(type)})", null,
+            )
         }
-        // TODO(状态探测/真SSH):按 host+name 查配置 → SshConnection.connect → bridge.channel = ssh
+
+        val match = findProject(host, name)
+        if (match == null) {
+            switchTo(LocalEchoChannel())   // mock / 无配置:本地 echo,demo 不卡
+            return
+        }
+        val (h, p) = match
+        writeToTerm("连接 ${h.ssh.user}@${h.ssh.host}:${h.ssh.port} … (${p.sessionName})\r\n")
+        thread(name = "ssh-connect", isDaemon = true) {
+            try {
+                val ssh = SshConnection(
+                    host = h.ssh.host, port = h.ssh.port, user = h.ssh.user,
+                    privateKeyPath = materializeKey(h).absolutePath,
+                    startupCommand = tmuxAttachCommand(p.sessionName),
+                    knownHostsFile = java.io.File(filesDir, "known_hosts"),
+                )
+                ssh.connect(80, 24)   // 初始尺寸;showTerminal 的 fit 会触发 onResize 校正
+                runOnUiThread {
+                    if (seq == openSeq && view == View.TERMINAL) switchTo(ssh)
+                    else runCatching { ssh.close() }   // 用户已走开 → 关掉,别泄漏连接
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ssh connect 失败: ${e.message}")
+                runOnUiThread {
+                    if (seq == openSeq) {
+                        switchTo(LocalEchoChannel())
+                        writeToTerm("\r\nSSH 连接失败: ${e.message}\r\n")
+                    }
+                }
+            }
+        }
     }
 
     private fun backToList() {
+        openSeq++   // 让在途的 SSH 连接知道自己已 obsolete(回来后别再错切)
         view = View.LIST
         runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
+        switchTo(LocalEchoChannel())   // 断开当前 project 的 SSH(switchTo 关掉旧 channel)
+    }
+
+    private fun findProject(host: String, name: String): Pair<HostConfig, ProjectConfig>? {
+        val h = hosts.firstOrNull { it.name == host } ?: return null
+        val p = h.projects.firstOrNull { it.displayName == name } ?: return null
+        return h to p
+    }
+
+    /** attach-or-create 该 project 的 tmux session;PATH 前缀解非交互 exec 找不到 tmux(同 HostClient)。 */
+    private fun tmuxAttachCommand(session: String): String =
+        "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; exec tmux new -A -s '$session'"
+
+    private fun materializeKey(h: HostConfig): java.io.File =
+        java.io.File(filesDir, "term_${h.name}.pem").apply {
+            writeText(h.ssh.privateKeyPem); setReadable(false, false); setReadable(true, true)
+        }
+
+    /** 热切活动 channel:更新 bridge/voiceDaemon 引用、起新 reader、关旧 channel(解阻塞旧 reader)。 */
+    private fun switchTo(newChannel: PtyChannel) {
+        val old = activeChannel
+        activeChannel = newChannel
+        bridge.channel = newChannel
+        voiceDaemon.channel = newChannel
+        startReaderFor(newChannel)
+        if (old !== newChannel) runCatching { old.close() }
+        // 关键:把当前 xterm 尺寸重推给新通道。showTerminal 的 fit→onResize 早在 SSH 连上前就
+        // 触发过(那时打到的是 LocalEcho),不重推 SSH PTY 会停在初始 80x24 → tmux 内容画不满。
+        runOnUiThread { if (::webView.isInitialized) webView.evaluateJavascript("window.syncSize && window.syncSize()", null) }
+    }
+
+    private fun writeToTerm(s: String) {
+        val b64 = Base64.encodeToString(s.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        runOnUiThread { if (::webView.isInitialized) webView.evaluateJavascript("window.writeToTerm('$b64')", null) }
     }
 
     private fun writeChannelByte(b: Int) {
-        runCatching { channel.outputStream().write(b); channel.outputStream().flush() }
+        runCatching { activeChannel.outputStream().write(b); activeChannel.outputStream().flush() }
     }
 
     /** 是否接了外置物理键盘(8BitDo 在键盘模式会算 QWERTY)→ 决定虚拟键盘显隐 */
@@ -216,30 +290,30 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startReaderThread() {
-        stopReader = false
-        readerThread = thread(start = true, name = "pty-reader", isDaemon = true) {
+    /** 为某个 channel 起 reader 线程(各自 generation);切换时旧 reader 因 gen 失配 + 旧 channel 被关而退出。 */
+    private fun startReaderFor(ch: PtyChannel) {
+        val gen = ++readerGen
+        thread(start = true, name = "pty-reader-$gen", isDaemon = true) {
             val buf = ByteArray(4096)
             try {
-                val ins = channel.inputStream()
-                while (!stopReader) {
+                val ins = ch.inputStream()
+                while (gen == readerGen) {
                     val n = ins.read(buf)
                     if (n <= 0) break
                     val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
                     runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$b64')", null) }
                 }
             } catch (e: Exception) {
-                if (!stopReader) Log.w(TAG, "pty-reader stopped: ${e.message}")
+                if (gen == readerGen) Log.w(TAG, "pty-reader[$gen] stopped: ${e.message}")
             }
         }
     }
 
     override fun onDestroy() {
-        stopReader = true
+        readerGen++   // 让所有 reader 失效
         poller?.shutdown()
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()
-        runCatching { channel.close() }
-        readerThread?.interrupt()
+        runCatching { activeChannel.close() }
         if (::webView.isInitialized) webView.destroy()
         super.onDestroy()
     }

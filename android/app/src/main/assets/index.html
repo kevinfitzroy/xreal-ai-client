@@ -296,6 +296,8 @@
   term.onData(d=>{ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d)))); });
   term.onResize(({cols,rows})=>{ if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(cols,rows); });
   window.writeToTerm=function(b64){ const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); term.write(u); };
+  // 热切 channel 后由 Kotlin 调:把当前 xterm 尺寸重新推给新通道(否则刚连上的 SSH PTY 停在初始 80x24)
+  window.syncSize=function(){ try{ fitAddon.fit(); }catch(e){} if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(term.cols, term.rows); };
   window.showOverlay=function(s,t){ document.getElementById('overlay-status').innerText=s||''; document.getElementById('overlay-text').innerText=t||''; document.getElementById('voice-overlay').style.display='block'; };
   window.hideOverlay=function(){ document.getElementById('voice-overlay').style.display='none'; };
 

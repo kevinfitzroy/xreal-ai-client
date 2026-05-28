@@ -1,7 +1,7 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-29(task 0.3 真机跑通状态探测端到端 + detector 校准 + sshj BC 修复)
+> **最近更新**:2026-05-29(0.3 状态探测 + per-project 真 SSH 终端,均真机端到端跑通;列表→活 Claude Code 一条龙打通)
 
 ---
 
@@ -22,9 +22,14 @@
 - **0.3 路上修的两个真 bug(都已修,是 keeper)**:① sshj 在 Android 报 `no such algorithm: X25519 for provider BC` —— Android 自带精简 BC 遮蔽完整 bcprov;`Crypto.ensureFullBouncyCastle()`(MainActivity.onCreate 首行调)移除系统 BC 插完整版修复。**这同时干掉了 Stage A.2 的主要风险**。② 非交互 SSH exec 的 PATH 太窄找不到 tmux → HostClient 脚本前置 `export PATH=...:/usr/local/bin:...`。
 - **怎么重跑这个 demo**(loadHosts 现返回 `emptyList()`,poller 默认休眠):① Mac 起 tmux session + `claude`;② `adb reverse tcp:2222 tcp:22`;③ `adb push ~/.ssh/xreal_phase0 /data/local/tmp/`;④ 临时把 `SettingsStore.loadHosts()` 改成读 `/data/local/tmp/xreal_phase0` + 返回 mac-dev host(见 git `bfa83f0..` 之后那次 0.3 commit 的 diff 里有现成代码)。**测完改回 emptyList()**。
 
-- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3 → `bfa83f0` 状态探测 pipeline →(0.3 真机验证 + BC/PATH 修复 + 校准 这次 commit)。
+**✅ per-project 真 SSH 终端落地 + 真机端到端(T.1)**:
+- `onOpenProject` 查 `hosts` 配置 → 后台连 `SshConnection`(`tmux new -A -s <session>` attach 该 project)→ `switchTo` 热切活动 channel;查不到(mock)→ 回退 `LocalEchoChannel`。`switchTo` 用 reader generation + 关旧 channel 解阻塞;`openSeq` 防快速 open→back→open 错绑(advisor 抓的 race)。
+- **真机实测**:Beam Pro 列表 → 开 proj-claude → SSH attach 真 tmux → **活的 Claude Code v2.1.153 渲染进 xterm**;打字流回 Claude(它开始 working);BACK → 列表,SSH 断开但 **tmux session 持久存活**(Claude 后台继续)。完整生命周期通。
+- **修的 bug**:热切后 PTY 停在初始 80x24 → tmux 内容画不满。因为 `showTerminal` 的 fit→onResize 早在 SSH 连上前就触发(打到 LocalEcho)。修法:`switchTo` 后调 `window.syncSize()` 把当前 xterm 尺寸重推给新通道(实测 client 变 94x11,内容填满)。
 
-**仍 mock / 待接**:列表默认 mock(状态探测真机已验证可用,但常驻需 host 录入 UI + `loadHosts` 持久化);进项目后终端走 LocalEchoChannel(per-project 真 SSH 终端还没接,SshConnection 也该吃 `Crypto` 修复);真豆包 ASR 待 creds。
+- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3 → `bfa83f0` 状态探测 pipeline → `4e11c1b` 0.3+BC/PATH+校准 →(per-project SSH 终端 这次 commit)。
+
+**仍 mock / 待接**:列表默认 mock(状态探测 + per-project SSH 终端真机均已验证可用,但常驻需 **host 录入 UI + `loadHosts` 持久化**——目前靠 dev-host hack 临时验证);真豆包 ASR 待 creds。重跑 demo 的步骤(reverse + push key + 临时 loadHosts)见上方 0.3 段。
 
 ---
 
