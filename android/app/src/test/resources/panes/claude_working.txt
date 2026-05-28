@@ -1,0 +1,50 @@
+/Users/foxer/.zshrc:source:102: no such file or directory: .bash_alias
+(base)  foxer@ip-192-168-43-4  ~/claude/xreal-ai-client   master  cd ~/claude/xreal-ai-client && claude
+ ▐▛███▜▌   Claude Code v2.1.153
+▝▜█████▛▘  Opus 4.7 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/claude/xreal-ai-client
+
+
+❯ summarize docs/background.md in one sentence
+
+✽ Doing…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  esc to interrupt                                                                                tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

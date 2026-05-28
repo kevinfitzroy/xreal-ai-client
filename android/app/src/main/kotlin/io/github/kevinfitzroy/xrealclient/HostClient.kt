@@ -50,12 +50,15 @@ class HostClient(
         val safe = sessions.filter { SAFE.matches(it) }
         if (safe.isEmpty()) return emptyMap()
         return try {
-            val script = safe.joinToString("\n") { s ->
+            // 非交互 SSH exec 的 PATH 很窄,常缺 tmux 所在目录 → 显式补常见 bin 路径
+            val pathPrefix = "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"\n"
+            val script = pathPrefix + safe.joinToString("\n") { s ->
                 "echo '$DELIM_OPEN$s$DELIM_CLOSE'; tmux capture-pane -p -t '$s' 2>&1 || echo '$NO_SESSION_SENTINEL'"
             }
             val out = runExec(script)
             parse(out, safe)
         } catch (e: Exception) {
+            android.util.Log.w("HostClient", "captureAll($host:$port) 失败: ${e.javaClass.simpleName}: ${e.message}")
             runCatching { close() }
             safe.associateWith { NO_SESSION_SENTINEL }
         }

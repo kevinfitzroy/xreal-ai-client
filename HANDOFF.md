@@ -1,7 +1,7 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-28(产品重塑为 Agent Deck + UI/虚拟键盘真机验证完成)
+> **最近更新**:2026-05-29(task 0.3 真机跑通状态探测端到端 + detector 校准 + sshj BC 修复)
 
 ---
 
@@ -15,15 +15,16 @@
 - **SPA 导航**:DPAD_CENTER 进项目,⌂返回/硬件BACK 回列表(键盘专用:已去掉卡片点击 + 终端 ‹返回 触摸按钮)。
 - **虚拟键盘 v3**(在 v2 之后):一行 13 键,列表+终端**共用**(列表态淡化终端专用键),固定高度;overlay 改 `position:absolute` 锚内容区,永不压键盘。
 
-**状态探测 pipeline 已落地(2026-05-28,但 markers 未校准 / poller 休眠)**:
-- 代码完整:`AgentModels`(Host→Project 模型 + Status enum)、`AgentStatusDetector`(纯函数启发式 parser)、`HostClient`(per-host 单次 exec 批量 `tmux capture-pane`,`===session===` 分隔)、`StatusPoller`(协程轮询→序列化→`window.setHosts` 推 WebView)。
-- **验证到哪**:`./gradlew test` **9 个单测全过**(护住 parser 分支逻辑);headless 验证了 Kotlin↔JS `setHosts` 契约(真实 shape 的 JSON 能正确渲染:状态色 / preview / age 空值守卫)。
-- **没验到 / 必须 own**:`ClaudeCodeMarkers` 里的签名串(`esc to interrupt` / `❯ 1.` / `(y/n)` 等)是**对 Claude Code TUI 的假设,未对真实 `tmux capture-pane` 校准**。pipeline 是对的,能否正确分类**真** agent 取决于这些 marker。→ **task 0.3 跑通后**:真起一个 Claude Code,在 4 状态各抓一份 pane 存 `app/src/test/resources/panes/`,把测试样本换成真数据,逐条核对 markers(优先收紧太通用的 `Continue?`)。
-- **为何 poller 不跑**:`SettingsStore.loadHosts()` 现返回 `emptyList()`(还没 host 录入 UI)→ poller 不启 → 列表保留 `index.html` 的 mock 演示。等 0.3 + host 录入 UI 落地后,`loadHosts` 反序列化真配置即自动激活。
+**状态探测 pipeline 落地 + 真机端到端验证 + detector 已校准(2026-05-28/29,task 0.3)**:
+- 代码:`AgentModels`(Host→Project 模型 + Status enum)、`AgentStatusDetector`(纯函数启发式 parser)、`HostClient`(per-host 单次 exec 批量 `tmux capture-pane`,`===session===` 分隔)、`StatusPoller`(协程轮询→序列化→`window.setHosts` 推 WebView)、`Crypto`(BC provider 修复)。
+- **✅ detector 已对 Claude Code v2.1.153 实测校准**:真快照存 `app/src/test/resources/panes/`(idle/working/waiting/ssh),`ClaudeCodePaneCalibrationTest` 锁 4 状态分类。**13 个单测全过**。关键结论:WORKING 靠 `esc to interrupt`(spinner 词随机:Osmosing/Hashing/Mulling/Doing);WAITING 靠 `Do you want to proceed?`+`❯ 1.`;`✻` 既在 spinner 也在完成行。
+- **✅ 真机端到端跑通(0.3)**:Beam Pro 经 `adb reverse tcp:2222 tcp:22` → Mac sshd → sshj → tmux capture → detector → 列表 UI。实测 IDLE→WORKING 实时翻成「工作中」绿色,fleet 计数同步。
+- **0.3 路上修的两个真 bug(都已修,是 keeper)**:① sshj 在 Android 报 `no such algorithm: X25519 for provider BC` —— Android 自带精简 BC 遮蔽完整 bcprov;`Crypto.ensureFullBouncyCastle()`(MainActivity.onCreate 首行调)移除系统 BC 插完整版修复。**这同时干掉了 Stage A.2 的主要风险**。② 非交互 SSH exec 的 PATH 太窄找不到 tmux → HostClient 脚本前置 `export PATH=...:/usr/local/bin:...`。
+- **怎么重跑这个 demo**(loadHosts 现返回 `emptyList()`,poller 默认休眠):① Mac 起 tmux session + `claude`;② `adb reverse tcp:2222 tcp:22`;③ `adb push ~/.ssh/xreal_phase0 /data/local/tmp/`;④ 临时把 `SettingsStore.loadHosts()` 改成读 `/data/local/tmp/xreal_phase0` + 返回 mac-dev host(见 git `bfa83f0..` 之后那次 0.3 commit 的 diff 里有现成代码)。**测完改回 emptyList()**。
 
-- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3+去触摸+overlay+pill →(状态探测 pipeline 这次 commit)。
+- git:`8599d2c` 脚手架 → `e8260a5` 产品重塑 → `94a321d` 键盘 v2 → `4ca6637` 键盘 v3 → `bfa83f0` 状态探测 pipeline →(0.3 真机验证 + BC/PATH 修复 + 校准 这次 commit)。
 
-**仍 mock / 待接**:列表 mock 数据(状态探测 pipeline 在位但休眠,待 0.3+录入 UI);进项目后终端走 LocalEchoChannel(per-project 真 SSH 连接还没接);真豆包 ASR 待 creds。
+**仍 mock / 待接**:列表默认 mock(状态探测真机已验证可用,但常驻需 host 录入 UI + `loadHosts` 持久化);进项目后终端走 LocalEchoChannel(per-project 真 SSH 终端还没接,SshConnection 也该吃 `Crypto` 修复);真豆包 ASR 待 creds。
 
 ---
 

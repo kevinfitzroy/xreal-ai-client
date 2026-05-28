@@ -5,12 +5,11 @@ package io.github.kevinfitzroy.xrealclient
  *
  * 纯函数、无 Android/IO 依赖 → 可在 JVM 单测里直接跑(见 AgentStatusDetectorTest)。
  *
- * ⚠️⚠️ 启发式未校准 ⚠️⚠️
- * [ClaudeCodeMarkers] 里的签名串是对 Claude Code TUI 输出的**假设**,不是从真实
- * capture-pane 抓的。本文件的**管道**(优先级、preview 抽取、抗抖动)是确定的、可测的;
- * 但能否正确分类**真** Claude Code,取决于那些 marker 对不对。
- * 校准步骤(task 0.3 / Phase 1):真机起一个 Claude Code,分别在「跑任务中 / 等确认 /
- * 空闲输入框 / 无 session」抓 4 份快照存 src/test/resources/panes/,对着真数据逐条核对替换。
+ * ✅ 已对 **Claude Code v2.1.153**(Opus 4.7)实测校准(2026-05-28,task 0.3)。
+ * 真快照存 src/test/resources/panes/,ClaudeCodePaneCalibrationTest 锁住 4 状态分类。
+ * 关键结论:WORKING 靠底部 "esc to interrupt"(spinner 词随机:Osmosing/Hashing/Mulling…);
+ * WAITING 靠 "Do you want to proceed?" + "❯ 1.";✻ 既在 spinner 也在完成行,不能只看它。
+ * Claude Code 升版改 TUI 时,重抓快照 + 跑 calibration test 即可发现回归。
  */
 object AgentStatusDetector {
 
@@ -62,8 +61,11 @@ object AgentStatusDetector {
      * 这样 working 态 preview 显示"它在做什么"(如 "Editing X.kt"),而不是每秒变的
      * spinner("✻ Thinking… (12s)")或固定提示("esc to interrupt")—— 避免列表抖动。
      */
-    private fun lastSettledLine(nonEmpty: List<String>): String =
-        clean(nonEmpty.lastOrNull { !isNoiseLine(it) } ?: nonEmpty.last())
+    private fun lastSettledLine(nonEmpty: List<String>): String {
+        // 跳过噪声行,且跳过 clean 后变空的行(纯 ──── 分隔线、空输入框 "❯")
+        val pick = nonEmpty.lastOrNull { !isNoiseLine(it) && clean(it).isNotBlank() }
+        return pick?.let { clean(it) } ?: ""
+    }
 
     private fun isNoiseLine(line: String): Boolean {
         if (isSpinnerLine(line)) return true
@@ -87,8 +89,8 @@ object AgentStatusDetector {
 }
 
 /**
- * Claude Code TUI 输出的【假设】签名串 —— 见 [AgentStatusDetector] 顶部的「未校准」警告。
- * 校准时只需改这一个 object,detect() 不动。
+ * Claude Code TUI 签名串 —— 已对 v2.1.153 实测校准(见 ClaudeCodePaneCalibrationTest)。
+ * 校准/升版适配只需改这一个 object,detect() 不动。
  */
 object ClaudeCodeMarkers {
     /** tmux/SSH 侧表示 session 不在或连不上(HostClient 失败时也会塞 __NOSESSION__)。 */
@@ -97,21 +99,24 @@ object ClaudeCodeMarkers {
         "no sessions", "error connecting",
     )
 
-    /** Claude Code 暂停、等用户确认/选择。(未校准:真实串以实机为准) */
+    /** Claude Code 暂停、等用户确认/选择。"Do you want to proceed?" + "❯ 1." 实测命中。 */
     val WAITING = listOf(
         "Do you want to proceed", "Do you want to", "(y/n)", "(Y/n)", "(y/N)", "[y/N]", "[Y/n]",
-        "❯ 1.", "❯ 2.", "1. Yes", "Press Enter to continue", "Continue?", "Would you like",
+        "❯ 1.", "❯ 2.", "1. Yes", "Press Enter to continue", "Would you like",
     )
 
-    /** Claude Code 正在跑(spinner / 可中断提示)。(未校准) */
+    /**
+     * Claude Code 正在跑。**可靠信号是 "esc to interrupt"**(实测:spinner 词随机,
+     * 见过 Osmosing/Hashing/Mulling/Crunched/Doing,不能靠词判定)。其余词仅作冗余兜底。
+     */
     val WORKING = listOf(
         "esc to interrupt", "to interrupt)", "Thinking…", "Running…",
         "Working…", "Generating…", "Compacting…",
     )
 
     /**
-     * spinner 行的起始 glyph(用于抗抖动跳过)。(未校准)
-     * 注意:不含 ⏺ —— 那是 Claude Code 已完成动作的 bullet(稳定行,适合做 preview)。
+     * spinner 行的起始 glyph(抗抖动跳过)。实测 v2.1.153 用 ✻✢✶✽ 轮换。
+     * 注意:不含 ⏺ —— 那是已完成动作的 bullet(稳定行,适合做 preview)。
      */
     val SPINNER_GLYPHS = listOf("✻", "✢", "✶", "✽")
 }

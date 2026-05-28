@@ -72,6 +72,7 @@ class StatusPoller(
             val snaps = h.projects.map { p ->
                 p to AgentStatusDetector.detect(panes[p.sessionName] ?: HostClient.NO_SESSION_SENTINEL, p.type)
             }
+            android.util.Log.i("StatusPoller", "${h.name}: " + snaps.joinToString { "${it.first.sessionName}=${it.second.status}" })
             arr.put(hostJson(h, snaps))
         }
         return arr.toString()

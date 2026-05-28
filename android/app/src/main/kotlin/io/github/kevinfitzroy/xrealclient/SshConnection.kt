@@ -36,6 +36,7 @@ class SshConnection(
 
     fun connect(cols: Int, rows: Int) {
         check(client == null) { "SshConnection.connect() 已调用过" }
+        Crypto.ensureFullBouncyCastle()   // X25519 KEX 需完整 BC(幂等,见 Crypto)
 
         val verifier: HostKeyVerifier = knownHostsFile?.let { TofuKnownHosts(it) }
             ?: PromiscuousVerifier()

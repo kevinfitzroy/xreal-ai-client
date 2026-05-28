@@ -1,0 +1,50 @@
+/Users/foxer/.zshrc:source:102: no such file or directory: .bash_alias
+(base)  foxer@ip-192-168-43-4  ~/claude/xreal-ai-client   master  cd ~/claude/xreal-ai-client && ls -la docs/
+total 120
+drwxr-xr-x   7 foxer  staff    224  5月 28 01:57 .
+drwxr-xr-x  10 foxer  staff    320  5月 28 22:48 ..
+-rw-r--r--   1 foxer  staff  16665  5月 28 01:55 architecture.md
+-rw-r--r--   1 foxer  staff   7592  5月 28 01:49 background.md
+-rw-r--r--   1 foxer  staff   9733  5月 28 01:53 session-persistence-options.md
+-rw-r--r--   1 foxer  staff   8825  5月 28 01:56 stage-a-experiments.md
+-rw-r--r--   1 foxer  staff   4405  5月 28 01:57 upstream-docs-index.md
+(base)  foxer@ip-192-168-43-4  ~/claude/xreal-ai-client   master 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
