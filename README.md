@@ -12,8 +12,19 @@
 
 一个 Android App 把 SSH client + 现代 terminal UI(WebView + xterm.js)+ 语音输入塞进同一个进程,跑在 **XREAL One Pro AR 眼镜 + Beam Pro** 上,连回你自己的服务器操作 Claude Code。
 
-<!-- 眼镜视角截图:用户随后提供,把下面这行占位替换成 ![XREAL One Pro 眼镜视角](docs/images/glasses-view.png) -->
-> 📸 _XREAL One Pro 眼镜里的实际视角截图 — 待补_
+<div align="center">
+
+<img src="docs/images/hardware-kit.jpg" width="440" alt="便携套件:XREAL One Pro 眼镜 + 8BitDo Micro 手柄 + USB-C 线,装进一个眼镜盒">
+
+<sub>整套「开发工位」装进一个眼镜盒 —— XREAL One Pro 眼镜 · 8BitDo Micro 手柄 · 线材</sub>
+
+<br><br>
+
+<img src="docs/images/glasses-maestro.png" width="32%" alt="眼镜视角:对 Maestro 下指令"> <img src="docs/images/glasses-list.png" width="32%" alt="眼镜视角:项目列表"> <img src="docs/images/glasses-terminal.png" width="32%" alt="眼镜视角:终端里看 Claude Code">
+
+<sub><b>戴上眼镜看到的真实画面</b> —— 左:对 <b>Maestro</b> 说一句就建好项目 · 中:项目列表(一个 host 下管多个 agent) · 右:进终端看 Claude Code 干活</sub>
+
+</div>
 
 > **现状**:Phase 0 完成,核心流程已在 Beam Pro 真机打通 —— 项目列表 → 开 project → 真 SSH 终端(中英文 + powerline 完整显示)→ 键盘/语音输入 → 返回。「代客安装 (Valet Setup)」+ Maestro 编排 + 列表 live-fetch 均已落地、真机验证。详见 [`ROADMAP.md`](ROADMAP.md)。这是一个活跃开发中的原型,不是成品。
 
