@@ -8,9 +8,8 @@ import android.util.Log
 import java.io.ByteArrayOutputStream
 
 /**
- * 16kHz mono PCM_16BIT 录音。start() 后启录音线程持续 read,stop() 返回完整 WAV byte 数组。
- *
- * WAV 包装:加 44 byte RIFF header,让豆包 ASR 直接接受 audio/wav。
+ * 16kHz mono PCM_16BIT 录音,**流式**输出:录音线程把读到的 PCM 攒成 ~200ms 定长块,实时回吐给
+ * [start] 的 onChunk(裸 PCM,无 WAV 头 —— 豆包流式接口 audio-only 包要的就是裸 PCM)。
  *
  * 需要 RECORD_AUDIO 权限 —— 调用方先确认。
  */
@@ -25,14 +24,12 @@ class AudioRecorder(
 
     private var record: AudioRecord? = null
     private var recordingThread: Thread? = null
-    private val pcm = ByteArrayOutputStream()
-
+    private var chunker: PcmChunker? = null
     @Volatile private var recording = false
 
     @SuppressLint("MissingPermission")  // 调用方保证已拿到 RECORD_AUDIO
-    fun start() {
+    fun start(onChunk: (ByteArray) -> Unit) {
         if (recording) return
-        pcm.reset()
         record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
             sampleRate, channels, encoding, bufferSize,
@@ -44,12 +41,13 @@ class AudioRecorder(
             rec.startRecording()
         }
         recording = true
+        val ch = PcmChunker(CHUNK_BYTES, onChunk).also { chunker = it }
         recordingThread = Thread({
             val buf = ByteArray(bufferSize)
             try {
                 while (recording) {
                     val n = record?.read(buf, 0, buf.size) ?: -1
-                    if (n > 0) synchronized(pcm) { pcm.write(buf, 0, n) }
+                    if (n > 0) ch.add(buf, n)
                     else if (n < 0) { Log.w(TAG, "AudioRecord.read=$n"); break }
                 }
             } catch (e: Exception) {
@@ -58,22 +56,22 @@ class AudioRecorder(
         }, "audio-recorder").also { it.start() }
     }
 
-    /** @return WAV bytes(44 byte header + PCM body),失败返回空 array */
-    fun stop(): ByteArray {
-        if (!recording) return ByteArray(0)
+    /** 停止采集:join 录音线程后冲出尾块(线程已死,无并发),释放。 */
+    fun stop() {
+        if (!recording) return
         recording = false
         runCatching {
             record?.stop()
             record?.release()
         }
         recordingThread?.join(500)
+        chunker?.flush()
+        chunker = null
         record = null
         recordingThread = null
-        val pcmBytes = synchronized(pcm) { pcm.toByteArray() }
-        return wrapWav(pcmBytes, sampleRate, channelCount = 1, bitsPerSample = 16)
     }
 
-    /** 取消录音不返回数据(用于 ESC) */
+    /** 取消:丢弃尾块,不回吐(用于 ESC / 重按)。 */
     fun cancel() {
         recording = false
         runCatching {
@@ -81,43 +79,42 @@ class AudioRecorder(
             record?.release()
         }
         recordingThread?.interrupt()
+        chunker = null
         record = null
         recordingThread = null
-        pcm.reset()
     }
 
     companion object {
         private const val TAG = "AudioRecorder"
+        /** 200ms @ 16kHz·16bit·mono = 6400 bytes(豆包推荐单包 200ms 性能最优)。 */
+        private const val CHUNK_BYTES = 6400
+    }
+}
 
-        /** 包 PCM 成 WAV(44 byte header)。豆包 ASR 接受 audio/wav。 */
-        fun wrapWav(
-            pcm: ByteArray, sampleRate: Int, channelCount: Int, bitsPerSample: Int,
-        ): ByteArray {
-            val byteRate = sampleRate * channelCount * bitsPerSample / 8
-            val blockAlign = channelCount * bitsPerSample / 8
-            val dataSize = pcm.size
-            val totalSize = 36 + dataSize
-            val out = ByteArrayOutputStream(44 + dataSize)
-            fun le16(v: Int) { out.write(v and 0xff); out.write((v shr 8) and 0xff) }
-            fun le32(v: Int) {
-                out.write(v and 0xff); out.write((v shr 8) and 0xff)
-                out.write((v shr 16) and 0xff); out.write((v shr 24) and 0xff)
-            }
-            out.write("RIFF".toByteArray())
-            le32(totalSize)
-            out.write("WAVE".toByteArray())
-            out.write("fmt ".toByteArray())
-            le32(16)             // fmt chunk size
-            le16(1)              // PCM
-            le16(channelCount)
-            le32(sampleRate)
-            le32(byteRate)
-            le16(blockAlign)
-            le16(bitsPerSample)
-            out.write("data".toByteArray())
-            le32(dataSize)
-            out.write(pcm)
-            return out.toByteArray()
+/**
+ * 把任意大小的 PCM read 攒成固定 [size] 的块回吐给 [sink];尾部不足一块的留到 [flush]。
+ * 纯逻辑、无 Android 依赖 —— 见 PcmChunkerTest。
+ */
+internal class PcmChunker(private val size: Int, private val sink: (ByteArray) -> Unit) {
+    private val buf = ByteArrayOutputStream()
+
+    fun add(data: ByteArray, len: Int) {
+        buf.write(data, 0, len)
+        if (buf.size() < size) return
+        val all = buf.toByteArray()
+        buf.reset()
+        var off = 0
+        while (all.size - off >= size) {
+            sink(all.copyOfRange(off, off + size))
+            off += size
         }
+        if (off < all.size) buf.write(all, off, all.size - off)
+    }
+
+    /** 冲出尾部不足一块的残留(录音正常结束时调一次)。 */
+    fun flush() {
+        val rest = buf.toByteArray()
+        buf.reset()
+        if (rest.isNotEmpty()) sink(rest)
     }
 }

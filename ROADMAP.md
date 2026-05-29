@@ -36,7 +36,7 @@
 | P1.1 | Host 接入 = 代客安装 (Valet Setup),**无 UI** | ✅ 基本完成 | **刻意不做设置 UI**。Valet agent 经 adb push key+config → staging,app 导入私有存储(`SettingsStore.importStagingIfPresent`:key 设 600、原子写、用完删 staging、legacy 回退)。引导:`docs/agent-setup-guide.md`。剩 host 录入 UI 永不做 |
 | P1.1b | Maestro CLAUDE.md + manifest 契约 | ✅ 文档 | `docs/orchestrator-CLAUDE.md` 定义角色 + manifest schema(`<base>/.xreal/projects.json`,Maestro写 app 读)。base path 存 app 配置(Valet 写),不存 manifest(防循环信任) |
 | P1.1c | app live-fetch manifest | ✅ 真机验证 | `ManifestFetcher` 经 `HostClient.catFile` 拉 `<basePath>/.xreal/projects.json` → `liveProjects`(findProject 按 **session** 查、seed 兜底)→ `pushHostList` 内容去重防闪烁。**刷新 = 事件驱动零空轮询**:列表首显 / back-to-list / onStart 各拉一次(`fetchExec` 单线程串行 + `fetchGen` 防乱序;拉取失败保留当前列表)。Maestro 改 manifest → 回列表即现 |
-| P1.2 | 真豆包 ASR(替 mock) | ⬜ | 需 Volcengine creds。`VoiceDaemon` 已留 ASR 接口,接真实 AudioRecord→Opus→豆包 |
+| P1.2 | 真豆包 ASR(替 mock) | ✅ 真机验证 | **真双向流式**(`bigmodel_async` WS,`VolcFrame` 二进制协议+gzip)。按住即连 WS、`AudioRecorder` 边录边吐 200ms 裸 PCM 块(非 Opus)、中间结果实时上屏、松手发负包拿 final。会话式 `Asr` seam(`open/send/finish/cancel`+回调);race 防御=generation counter + `cancelled`/`done`。creds 走 Valet `asr.json`(无 UI)。`VolcFrame`/`PcmChunker` 有 JVM 单测 |
 | P1.3 | session 驻留可配置(abduco/tmux/screen) | ⬜ | `tmuxAttachCommand` 现在硬编 tmux;agent 类需 tmux(capture-pane),纯 SSH 可 abduco。做成 per-project 配置 |
 | P1.4 | host 分组头展示 | ✅(已有) | index.html `<div class="host">` 按 host 分组。**non-core 但有用**,先留着;若将来嫌乱可降级 |
 

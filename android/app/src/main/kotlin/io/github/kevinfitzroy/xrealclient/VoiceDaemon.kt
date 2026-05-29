@@ -3,32 +3,24 @@ package io.github.kevinfitzroy.xrealclient
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.view.KeyEvent
 import android.webkit.WebView
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * Phase 0.6 骨架:状态机 + overlay 控制 + 文本注入。
+ * 语音输入状态机(真流式):按住说话,边录边传,识别结果实时上屏。
  *
- * 真实路径(Stage B 之后):
- *   F13/F14 down → AudioRecord 开始 → Opus 编码缓冲
- *   F13/F14 up   → 停录 → 豆包 ASR HTTP/WS → 文本回来
- *   Enter        → 文本写 channel.outputStream() → IDLE
- *   Esc          → 取消 → IDLE
+ *   F13/F14 down → 开 ASR 会话(连 WS)+ 开录音,PCM chunk 实时喂入 → state STREAMING
+ *   识别中间结果 → onPartial → 实时刷 overlay(全量文本替换)
+ *   F13/F14 up   → 停录 + 发最后一包(负包) → state ASR_PENDING(等最终结果补包)
+ *   onFinal      → state PREVIEW(等用户确认)
+ *   Enter        → 把文本写 channel.outputStream() → IDLE(不 auto-\n:语音误识安全网,再按 Enter 才执行)
+ *   Esc / 重按   → 取消会话 → IDLE
  *
- * Phase 0.6 mock:跳过 AudioRecord / 豆包,ASR 用 [MockAsr] 直接返回固定串。
- * 验证目的:状态机迁移 + overlay show/hide + Enter 路径(byte 写到 PtyChannel)。
+ * **late-callback race**:重按 / 取消后旧 WS reader 线程可能还喷 partial。两层防御 ——
+ * generation counter([asrGen],与 [ManifestFetcher] 同套路)+ [VolcEngineAsr] 内部 cancelled flag。
  *
- * keycode:
- *   F13 (zh) = 326,F14 (en) = 327。Stage A.1 真机验证 8BitDo Micro 是否真发这俩。
- *   备路径:Ctrl+Alt+1/2(待 0.7 加)。
+ * keycode:F13 (zh) = 326,F14 (en) = 327。虚拟语音键经 bridge 直接调 [onKeyDown]/[onKeyUp]
+ * (不经 OS 输入层,绕开 F13 KeyEvent 投递问题);物理键经 dispatchKeyEvent 进来。
  */
 class VoiceDaemon(
     private val webView: WebView,
@@ -37,54 +29,77 @@ class VoiceDaemon(
     initialRecorder: AudioRecorder? = null,
     private val mainHandler: Handler = Handler(Looper.getMainLooper()),
 ) {
-    // 这三个字段允许 MainActivity 在 runtime swap(SSH connect / RECORD_AUDIO 权限拿到 / config 改 ASR)。
-    // 不重建 VoiceDaemon —— 重建会丢状态、且没必要。
+    // MainActivity 在 runtime swap(SSH connect / 麦克风权限 / config 改 ASR)。不重建 VoiceDaemon。
     @Volatile var channel: PtyChannel = initialChannel
     @Volatile var asr: Asr = initialAsr
-    /** null = 没有麦克风权限或 mock 模式;录音逻辑跳过,ASR 拿空 bytes(MockAsr 不影响,Volc 直接返回空) */
     @Volatile var recorder: AudioRecorder? = initialRecorder
 
-    enum class State { IDLE, RECORDING, ASR_PENDING, PREVIEW }
+    enum class State { IDLE, STREAMING, ASR_PENDING, PREVIEW }
 
     @Volatile private var state: State = State.IDLE
     @Volatile private var currentText: String? = null
-
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var asrJob: Job? = null
+    @Volatile private var stream: AsrStream? = null
+    /** 会话代数:每次 onKeyDown/onEsc ++,回调凭捕获的 gen 比对,过滤上一个会话的迟到回调。 */
+    @Volatile private var asrGen = 0
 
     fun currentState(): State = state
 
-    /** 按键路由从 dispatchKeyEvent 进来。这里只处理 F13/F14;Enter/Esc 走 [onEnter]/[onEsc]。 */
     fun onKeyDown(keyCode: Int) {
         if (keyCode != KEY_F13 && keyCode != KEY_F14) return
         val lang = if (keyCode == KEY_F13) "zh" else "en"
-        // 任意状态按 F13/F14 都是"开始(重新)录音"
-        asrJob?.cancel()
-        recorder?.cancel()  // 取消之前可能在跑的录音
+
+        asrGen++
+        val gen = asrGen
+        stream?.cancel()
+        recorder?.cancel()
         currentText = null
-        state = State.RECORDING
-        showOverlay("🎤 录音中… (${lang})", "")
-        recorder?.start()
-        Log.d(TAG, "RECORDING start lang=$lang recorder=${recorder != null}")
+        state = State.STREAMING
+        showOverlay("🎤 聆听中…", "")
+
+        val cb = object : AsrCallback {
+            override fun onPartial(text: String) = onAsrPartial(gen, text)
+            override fun onFinal(text: String) = onAsrFinal(gen, text)
+            override fun onError(reason: String) = onAsrError(gen, reason)
+        }
+        stream = asr.open(lang, cb)
+        recorder?.start { chunk -> if (gen == asrGen) stream?.send(chunk) }
+        Log.d(TAG, "STREAMING start lang=$lang recorder=${recorder != null}")
     }
 
     fun onKeyUp(keyCode: Int) {
         if (keyCode != KEY_F13 && keyCode != KEY_F14) return
-        if (state != State.RECORDING) return
-        val lang = if (keyCode == KEY_F13) "zh" else "en"
-        val audio = recorder?.stop() ?: ByteArray(0)
+        if (state != State.STREAMING) return
+        recorder?.stop()      // 停止采集,冲出尾块
+        stream?.finish()      // 发最后一包(负包),等最终结果
         state = State.ASR_PENDING
-        showOverlay("识别中…", "")
-        asrJob = scope.launch {
-            val text = asr.recognize(audio, lang)
-            if (state == State.ASR_PENDING) {  // 没被取消
-                currentText = text
-                state = if (text.isBlank()) State.IDLE else State.PREVIEW
-                if (text.isBlank()) hideOverlay()
-                else showOverlay("🎤 已识别", text)
-                Log.d(TAG, "PREVIEW text='$text'")
-            }
+        showOverlay("识别中…", currentText ?: "")
+    }
+
+    private fun onAsrPartial(gen: Int, text: String) {
+        if (gen != asrGen) return
+        if (state != State.STREAMING && state != State.ASR_PENDING) return
+        currentText = text
+        val status = if (state == State.STREAMING) "🎤 聆听中…" else "识别中…"
+        showOverlay(status, text)
+    }
+
+    private fun onAsrFinal(gen: Int, text: String) {
+        if (gen != asrGen) return
+        if (state != State.STREAMING && state != State.ASR_PENDING) return
+        if (text.isBlank()) {
+            resetIdle()
+        } else {
+            currentText = text
+            state = State.PREVIEW
+            showOverlay("🎤 已识别", text)
         }
+        Log.d(TAG, "FINAL text='$text'")
+    }
+
+    private fun onAsrError(gen: Int, reason: String) {
+        if (gen != asrGen) return
+        Log.w(TAG, "ASR error: $reason")
+        resetIdle()
     }
 
     /** @return true = overlay 接管 Enter(写文本);false = 透传到 WebView/xterm */
@@ -101,10 +116,11 @@ class VoiceDaemon(
         return true
     }
 
-    /** @return true = 拦截(取消录音/preview);false = 透传 */
+    /** @return true = 拦截(取消会话/preview);false = 透传 */
     fun onEsc(): Boolean {
         if (state == State.IDLE) return false
-        asrJob?.cancel()
+        asrGen++              // 作废当前会话的迟到回调
+        stream?.cancel()
         recorder?.cancel()
         resetIdle()
         Log.d(TAG, "ESC cancel")
@@ -112,55 +128,79 @@ class VoiceDaemon(
     }
 
     fun shutdown() {
-        scope.cancel()
+        asrGen++
+        stream?.cancel()
+        recorder?.cancel()
         hideOverlay()
     }
 
     private fun resetIdle() {
         state = State.IDLE
         currentText = null
+        stream = null
         hideOverlay()
     }
 
     private fun showOverlay(status: String, text: String) {
         val s = JSONObject.quote(status)
         val t = JSONObject.quote(text)
-        mainHandler.post {
-            webView.evaluateJavascript("window.showOverlay($s, $t)", null)
-        }
+        mainHandler.post { webView.evaluateJavascript("window.showOverlay($s, $t)", null) }
     }
 
     private fun hideOverlay() {
-        mainHandler.post {
-            webView.evaluateJavascript("window.hideOverlay()", null)
-        }
+        mainHandler.post { webView.evaluateJavascript("window.hideOverlay()", null) }
     }
 
     companion object {
         private const val TAG = "VoiceDaemon"
-        /** KEYCODE_F13 raw int(API 36 引入 KEYCODE_F13 = 326 常量,这里直接写数字保持跨版本) */
         const val KEY_F13 = 326
         const val KEY_F14 = 327
     }
 }
 
 /**
- * ASR 抽象。audio 是 WAV bytes(16kHz mono PCM_16BIT + 44 byte header);
- * mock 实现可以忽略。
+ * 流式 ASR 抽象。一次"按住说话"对应一个 [AsrStream] 会话。
+ * 回调可能在任意线程(WS reader / 定时器),实现方保证线程安全;UI marshal 由调用方负责。
  */
 interface Asr {
-    /** @param lang "zh" 或 "en";@param audio WAV bytes(mock 可忽略) */
-    suspend fun recognize(audio: ByteArray, lang: String): String
+    /** 开会话。[lang] "zh"/"en"(部分实现自动判语种则忽略)。 */
+    fun open(lang: String, callback: AsrCallback): AsrStream
 }
 
-/** Phase 0.6 mock — 不调 API,直接返回固定串。500ms 模拟网络延迟。 */
+interface AsrStream {
+    /** 实时音频块(裸 PCM16LE 16k mono)。 */
+    fun send(pcmChunk: ByteArray)
+    /** 录音结束:发最后一包(负包),触发最终结果。 */
+    fun finish()
+    /** 取消:关连接,之后不再回调。 */
+    fun cancel()
+}
+
+/** 回调可能在任意线程。[onPartial] 携带全量文本(可直接替换显示)。 */
+interface AsrCallback {
+    fun onPartial(text: String)
+    fun onFinal(text: String)
+    fun onError(reason: String)
+}
+
+/** emulator / 无凭证:假装流式 —— 300ms 出 partial,finish 后 300ms 出 final。忽略真实音频。 */
 class MockAsr : Asr {
-    override suspend fun recognize(audio: ByteArray, lang: String): String {
-        delay(500)
-        return when (lang) {
-            "zh" -> "ls -la\n"
-            "en" -> "pwd\n"
-            else -> "echo mock\n"
+    override fun open(lang: String, callback: AsrCallback): AsrStream = object : AsrStream {
+        private val handler = Handler(Looper.getMainLooper())
+        @Volatile private var cancelled = false
+        private val text = if (lang == "en") "pwd" else "ls -la"
+
+        init {
+            handler.postDelayed({ if (!cancelled) callback.onPartial(text) }, 300)
+        }
+
+        override fun send(pcmChunk: ByteArray) {}
+        override fun finish() {
+            handler.postDelayed({ if (!cancelled) callback.onFinal(text) }, 300)
+        }
+        override fun cancel() {
+            cancelled = true
+            handler.removeCallbacksAndMessages(null)
         }
     }
 }
