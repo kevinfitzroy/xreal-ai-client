@@ -173,7 +173,7 @@
     <button class="kc" data-act="right"><span class="kl">→</span></button>
     <button class="kc" data-act="enter"><span class="kl">↵</span><span class="ks">Enter</span></button>
     <button class="kc term-only" data-act="esc"><span class="kl">⎋</span><span class="ks">Esc</span></button>
-    <button class="kc term-only" data-act="delword"><span class="kl">⌫</span><span class="ks">删词</span></button>
+    <button class="kc term-only" data-act="delword" data-repeat><span class="kl">⌫</span><span class="ks">删词</span></button>
     <button class="kc term-only" data-act="tab"><span class="kl">⇥</span><span class="ks">Tab</span></button>
     <button class="kc term-only" data-act="shifttab"><span class="kl">⇧⇥</span><span class="ks">模式</span></button>
     <button class="kc term-only" data-act="ctrlc"><span class="kl">^C</span><span class="ks">中断</span></button>
@@ -307,12 +307,37 @@
   window.showOverlay=function(s,t){ document.getElementById('overlay-status').innerText=s||''; document.getElementById('overlay-text').innerText=t||''; document.getElementById('voice-overlay').style.display='block'; };
   window.hideOverlay=function(){ document.getElementById('voice-overlay').style.display='none'; };
 
-  /* ========== 全局键盘:列表态自己处理↑↓↵;终端态交给 xterm ========== */
+  /* 方向键导航:按卡片**真实像素位置**找该方向最近的一张(列表是多列网格 + 每 host 各自一块网格 +
+     末行不满,纯线性 ±1 会"跳到右边而非下面"。用几何最近邻才贴合物理位置)。 */
+  function move(dir){
+    const cards=[...document.querySelectorAll('.card')]; if(!cards.length) return;
+    const cur=cards[focusIdx]||cards[0], cr=cur.getBoundingClientRect();
+    const cx=cr.left+cr.width/2, cy=cr.top+cr.height/2;
+    let best=-1, bestScore=Infinity;
+    cards.forEach((el,i)=>{
+      if(i===focusIdx) return;
+      const r=el.getBoundingClientRect(), dx=(r.left+r.width/2)-cx, dy=(r.top+r.height/2)-cy;
+      let primary, secondary;
+      if(dir==='down'){ if(dy<=1) return; primary=dy; secondary=Math.abs(dx); }
+      else if(dir==='up'){ if(dy>=-1) return; primary=-dy; secondary=Math.abs(dx); }
+      else if(dir==='right'){ if(dx<=1) return; primary=dx; secondary=Math.abs(dy); }
+      else { if(dx>=-1) return; primary=-dx; secondary=Math.abs(dy); }   // left
+      const score=primary + secondary*2;   // 主方向距离为主、偏移加权 → 同列/同行优先
+      if(score<bestScore){ bestScore=score; best=i; }
+    });
+    if(best>=0) setFocus(best);   // 该方向到边界则原地不动(物理导航不绕回)
+  }
+
+  /* ========== 全局键盘:列表态自己处理方向/Enter;终端态交给 xterm ========== */
   document.addEventListener('keydown', e=>{
     if(currentView!=='list') return;  // 终端态:不拦截,xterm/Kotlin 处理
     switch(e.key){
-      case 'ArrowDown': case 'ArrowRight': case 'j': setFocus(focusIdx+1); e.preventDefault(); break;
-      case 'ArrowUp':   case 'ArrowLeft':  case 'k': setFocus(focusIdx-1); e.preventDefault(); break;
+      case 'ArrowDown':  move('down');  e.preventDefault(); break;
+      case 'ArrowUp':    move('up');    e.preventDefault(); break;
+      case 'ArrowRight': move('right'); e.preventDefault(); break;
+      case 'ArrowLeft':  move('left');  e.preventDefault(); break;
+      case 'j': setFocus(focusIdx+1); e.preventDefault(); break;   // vim 线性兜底(带绕回)
+      case 'k': setFocus(focusIdx-1); e.preventDefault(); break;
       case 'Enter': openFocused(); e.preventDefault(); break;
     }
   });
@@ -334,8 +359,7 @@
     // 返回 home 两个视图都可用
     if(a==='home'){ if(window.Bridge&&window.Bridge.goHome) window.Bridge.goHome(); else showList(); return; }
     if(currentView==='list'){
-      if(a==='up'||a==='left') setFocus(focusIdx-1);
-      else if(a==='down'||a==='right') setFocus(focusIdx+1);
+      if(a==='up'||a==='down'||a==='left'||a==='right') move(a);
       else if(a==='enter') openFocused();
       return;  // 列表态忽略其它键
     }
@@ -353,7 +377,17 @@
       case 'ctrlc':    writeChannel('\x03'); break;     // Ctrl+C 中断
     }
   }
-  document.querySelectorAll('#vkeyboard .kc[data-act]').forEach(b=>b.addEventListener('click',()=>vkey(b.dataset.act)));
+  // 普通键:click 触发。标了 data-repeat 的键(如删词)走"按住连发",不绑 click(避免双触发)。
+  document.querySelectorAll('#vkeyboard .kc[data-act]:not([data-repeat])').forEach(b=>b.addEventListener('click',()=>vkey(b.dataset.act)));
+  document.querySelectorAll('#vkeyboard .kc[data-repeat]').forEach(b=>{
+    let active=false, hold=null, rep=null;
+    const stop=()=>{ active=false; clearTimeout(hold); clearInterval(rep); hold=rep=null; };
+    const start=e=>{ e.preventDefault(); if(active) return; active=true;
+      vkey(b.dataset.act);                                                  // 按下立即一次
+      hold=setTimeout(()=>{ rep=setInterval(()=>vkey(b.dataset.act),100); }, 400); };  // 400ms 后 100ms/次 连发
+    b.addEventListener('touchstart',start,{passive:false}); b.addEventListener('touchend',stop); b.addEventListener('touchcancel',stop);
+    b.addEventListener('mousedown',start); b.addEventListener('mouseup',stop); b.addEventListener('mouseleave',stop);
+  });
   document.querySelectorAll('#vkeyboard .kc[data-voice]').forEach(b=>{
     const lang=b.dataset.voice;
     const down=e=>{ e.preventDefault(); b.classList.add('held'); if(window.Bridge&&window.Bridge.voiceDown) window.Bridge.voiceDown(lang); };

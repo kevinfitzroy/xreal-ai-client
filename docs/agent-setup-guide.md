@@ -120,8 +120,18 @@ adb shell "mkdir -p $STAGING" \
 ```
 
 app 启动时会:把 key 拷进私有存储(`filesDir/keys/<host>.pem`,600)、写私有 `hosts.json`;
-若有 `asr.json`,校验后也落私有存储(语音键即用真豆包 ASR)。`resourceId` 默认即豆包流式 2.0 小时版,
-通常不用改。**`asr.json` 含明文 token,和 key 一样靠第 6 步 `adb shell rm` 清 staging。**
+若有 `asr.json`,校验后也落私有存储(语音键即用真豆包 ASR)。
+
+**ASR 用哪个模型 / 凭证从哪来**:
+- 模型 = **豆包大模型流式语音识别 · 双向流式优化版**,`Resource ID = volc.seedasr.sauc.duration`(即「豆包流式语音识别模型 2.0 · 小时版」)。`asr.json` 的 `resourceId` 默认即此,通常不用改。
+- 需要两项:`appid`(= 鉴权头 `X-Api-App-Key`)、`token`(= `X-Api-Access-Key`)。从**火山引擎控制台**拿:
+  1. 开通服务:控制台 → **语音技术 → 大模型流式语音识别**,创建应用、开通该资源(`volc.seedasr.sauc.duration`)。
+  2. 取 App ID / Access Token:参考 [控制台 FAQ-Q1](https://www.volcengine.com/docs/6561/196768);新版控制台在 [API Keys 页](https://console.volcengine.com/speech/new/setting/apikeys)。
+- 这个端点鉴权是 **header 直传,不需要 secret key**;用户 `.env` 里那把 `secret_key` 此处用不上。
+
+**⚠️ 凭证安全(必读)**:`appid` / `token` / `secret key` 都是明文敏感信息。
+- staging 里的 `asr.json` 含明文 token,和私钥一样靠第 6 步 `adb shell rm` 清掉。
+- **绝不要把真实凭证 commit 进 git**。本仓库已 gitignore `.env` / `*.pem` / `refs/`;不要在代码、文档、commit message、示例里粘贴真实 appid/token/secret —— 要举例一律用占位符(如 `<APP_ID>`)。
 
 ## 第 6 步 — 验证,然后**你来清 staging**(关键)
 
