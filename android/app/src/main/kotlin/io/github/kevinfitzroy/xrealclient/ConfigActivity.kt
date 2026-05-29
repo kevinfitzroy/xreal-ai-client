@@ -33,7 +33,7 @@ class ConfigActivity : Activity() {
     private lateinit var asrProviderEdit: EditText
     private lateinit var asrAppidEdit: EditText
     private lateinit var asrTokenEdit: EditText
-    private lateinit var asrClusterEdit: EditText
+    private lateinit var asrResourceEdit: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,7 +67,7 @@ class ConfigActivity : Activity() {
         asrProviderEdit = root.addInput(getString(R.string.config_asr_provider), asr.provider.name)
         asrAppidEdit = root.addInput(getString(R.string.config_asr_appid), asr.appid)
         asrTokenEdit = root.addInput(getString(R.string.config_asr_token), asr.token)
-        asrClusterEdit = root.addInput(getString(R.string.config_asr_cluster), asr.cluster)
+        asrResourceEdit = root.addInput(getString(R.string.config_asr_resource), asr.resourceId)
 
         root.addView(Button(this).apply {
             text = getString(R.string.config_save)
@@ -93,7 +93,7 @@ class ConfigActivity : Activity() {
             }.getOrDefault(AsrProvider.MOCK),
             appid = asrAppidEdit.text.toString().trim(),
             token = asrTokenEdit.text.toString().trim(),
-            cluster = asrClusterEdit.text.toString().trim(),
+            resourceId = asrResourceEdit.text.toString().trim().ifBlank { AsrConfig.DEFAULT_RESOURCE_ID },
         )
         store.saveSsh(ssh)
         store.saveAsr(asr)

@@ -14,7 +14,7 @@
     <string name="config_asr_provider">ASR provider(mock/volc/none)</string>
     <string name="config_asr_appid">Volcengine appid</string>
     <string name="config_asr_token">Volcengine access token</string>
-    <string name="config_asr_cluster">Volcengine cluster id(可选)</string>
+    <string name="config_asr_resource">Volcengine resource id(默认豆包流式2.0)</string>
     <string name="mic_permission_denied">麦克风权限被拒,语音功能不可用</string>
     <string name="ssh_connecting">正在连接 SSH…</string>
     <string name="ssh_connected">已连接</string>

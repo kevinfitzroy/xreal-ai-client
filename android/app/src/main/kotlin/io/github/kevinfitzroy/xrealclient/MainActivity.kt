@@ -129,7 +129,17 @@ class MainActivity : Activity() {
 
         startReaderFor(activeChannel)
 
-        hosts = SettingsStore(this).loadHosts()
+        val settings = SettingsStore(this)
+        hosts = settings.loadHosts()   // 先跑:会触发 Valet staging 导入(hosts/keys/asr.json → 私有存储)
+
+        // ASR provider:配了 Volc 凭证(Valet 导入或 ConfigActivity)就接真豆包流式,否则留 MockAsr。
+        settings.loadAsr().let { asr ->
+            if (asr.isVolcConfigured()) {
+                voiceDaemon.asr = VolcEngineAsr(asr.appid, asr.token, asr.resourceId)
+                android.util.Log.i(TAG, "ASR = VolcEngineAsr(resource=${asr.resourceId})")
+            }
+        }
+
         if (hosts.isNotEmpty()) {
             // 核心流程:真实 host/project 静态枚举(onPageFinished 推)。Enter→findProject 靠它开真终端。
             pendingHostListJson = StatusPoller.staticListJson(hosts)

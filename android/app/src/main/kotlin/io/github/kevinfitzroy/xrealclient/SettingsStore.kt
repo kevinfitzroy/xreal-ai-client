@@ -22,12 +22,17 @@ enum class AsrProvider { NONE, MOCK, VOLC }
 
 data class AsrConfig(
     val provider: AsrProvider = AsrProvider.MOCK,
-    val appid: String = "",
-    val token: String = "",
-    val cluster: String = "",
+    val appid: String = "",          // X-Api-App-Key
+    val token: String = "",          // X-Api-Access-Key
+    val resourceId: String = DEFAULT_RESOURCE_ID,   // X-Api-Resource-Id
 ) {
     fun isVolcConfigured(): Boolean =
         provider == AsrProvider.VOLC && appid.isNotBlank() && token.isNotBlank()
+
+    companion object {
+        /** 豆包流式语音识别模型 2.0 小时版。 */
+        const val DEFAULT_RESOURCE_ID = "volc.seedasr.sauc.duration"
+    }
 }
 
 class SettingsStore(ctx: Context) {
@@ -55,14 +60,37 @@ class SettingsStore(ctx: Context) {
             .apply()
     }
 
-    fun loadAsr(): AsrConfig = AsrConfig(
-        provider = runCatching {
-            AsrProvider.valueOf(prefs.getString(K_ASR_PROVIDER, AsrProvider.MOCK.name)!!)
-        }.getOrDefault(AsrProvider.MOCK),
-        appid = prefs.getString(K_ASR_APPID, "") ?: "",
-        token = prefs.getString(K_ASR_TOKEN, "") ?: "",
-        cluster = prefs.getString(K_ASR_CLUSTER, "") ?: "",
-    )
+    /**
+     * ASR 配置来源优先级:
+     *   1. Valet 经 adb 推、导入到私有存储的 [PRIVATE_ASR](无 UI 通道,与 hosts/keys 同构)。
+     *   2. SharedPreferences(ConfigActivity 的 dev fallback)。
+     *   3. 都没有 → 默认 MOCK。
+     * 假设 [loadHosts]/[importStagingIfPresent] 已先跑过(MainActivity 顺序保证),staging 里的 asr.json 已落私有。
+     */
+    fun loadAsr(): AsrConfig {
+        val privateAsr = java.io.File(filesDir, PRIVATE_ASR)
+        if (privateAsr.exists()) {
+            runCatching {
+                val o = org.json.JSONObject(privateAsr.readText())
+                return AsrConfig(
+                    provider = runCatching { AsrProvider.valueOf(o.optString("provider", "VOLC").uppercase()) }
+                        .getOrDefault(AsrProvider.VOLC),
+                    appid = o.optString("appid"),
+                    token = o.optString("token"),
+                    resourceId = o.optString("resourceId", AsrConfig.DEFAULT_RESOURCE_ID),
+                )
+            }.onFailure { android.util.Log.w("SettingsStore", "私有 asr.json 解析失败,回退 prefs: ${it.message}") }
+        }
+        return AsrConfig(
+            provider = runCatching {
+                AsrProvider.valueOf(prefs.getString(K_ASR_PROVIDER, AsrProvider.MOCK.name)!!)
+            }.getOrDefault(AsrProvider.MOCK),
+            appid = prefs.getString(K_ASR_APPID, "") ?: "",
+            token = prefs.getString(K_ASR_TOKEN, "") ?: "",
+            resourceId = prefs.getString(K_ASR_RESOURCE_ID, AsrConfig.DEFAULT_RESOURCE_ID)
+                ?: AsrConfig.DEFAULT_RESOURCE_ID,
+        )
+    }
 
     /**
      * Agent Deck 的 host/project 列表。来源优先级:
@@ -133,41 +161,57 @@ class SettingsStore(ctx: Context) {
     private fun importStagingIfPresent() {
         val staging = java.io.File(STAGING_DIR)
         val stagedHosts = java.io.File(staging, "hosts.json")
-        if (!stagedHosts.exists()) return
+        val stagedAsr = java.io.File(staging, "asr.json")
+        if (!stagedHosts.exists() && !stagedAsr.exists()) return
 
-        val keysDir = java.io.File(filesDir, "keys").apply { mkdirs() }
         // 清理上次崩溃残留的半成品(原子写的 .tmp)
+        val keysDir = java.io.File(filesDir, "keys").apply { mkdirs() }
         filesDir.listFiles { _, n -> n.endsWith(".tmp") }?.forEach { it.delete() }
         keysDir.listFiles { _, n -> n.endsWith(".tmp") }?.forEach { it.delete() }
 
-        val arr = org.json.JSONArray(stagedHosts.readText())
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            val safeName = o.getString("name").replace(Regex("[^A-Za-z0-9_.-]"), "_")
-            val keyName = o.getString("key")
-            require(
-                keyName.isNotBlank() && !keyName.contains('/') && !keyName.contains("..") &&
-                    !java.io.File(keyName).isAbsolute,
-            ) { "key 必须是 staging 内的纯文件名(防路径遍历): $keyName" }
-            val stagedKey = java.io.File(staging, keyName)
-            require(stagedKey.exists() && stagedKey.length() in 1..8192) { "staging 私钥不存在或过大: $keyName" }
-            val pem = stagedKey.readText()
-            require(pem.contains("PRIVATE KEY")) { "不是合法私钥: $keyName" }
+        var hostCount = 0
+        if (stagedHosts.exists()) {
+            val arr = org.json.JSONArray(stagedHosts.readText())
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val safeName = o.getString("name").replace(Regex("[^A-Za-z0-9_.-]"), "_")
+                val keyName = o.getString("key")
+                require(
+                    keyName.isNotBlank() && !keyName.contains('/') && !keyName.contains("..") &&
+                        !java.io.File(keyName).isAbsolute,
+                ) { "key 必须是 staging 内的纯文件名(防路径遍历): $keyName" }
+                val stagedKey = java.io.File(staging, keyName)
+                require(stagedKey.exists() && stagedKey.length() in 1..8192) { "staging 私钥不存在或过大: $keyName" }
+                val pem = stagedKey.readText()
+                require(pem.contains("PRIVATE KEY")) { "不是合法私钥: $keyName" }
 
-            val destKey = java.io.File(keysDir, "$safeName.pem")
-            writeAtomic(destKey, pem)
-            destKey.setReadable(false, false); destKey.setReadable(true, true)   // 600:仅 app uid 可读
-            destKey.setWritable(false, false); destKey.setWritable(true, true)
+                val destKey = java.io.File(keysDir, "$safeName.pem")
+                writeAtomic(destKey, pem)
+                destKey.setReadable(false, false); destKey.setReadable(true, true)   // 600:仅 app uid 可读
+                destKey.setWritable(false, false); destKey.setWritable(true, true)
 
-            o.put("keyPath", destKey.absolutePath)
-            o.remove("key")
+                o.put("keyPath", destKey.absolutePath)
+                o.remove("key")
+            }
+            writeAtomic(java.io.File(filesDir, PRIVATE_HOSTS), arr.toString())
+            hostCount = arr.length()
         }
-        writeAtomic(java.io.File(filesDir, PRIVATE_HOSTS), arr.toString())
+
+        // ASR 凭证:校验 JSON 合法后原子落私有存储(无 UI 通道,与 hosts/keys 同构)。
+        var asrImported = false
+        if (stagedAsr.exists()) {
+            val raw = stagedAsr.readText()
+            require(stagedAsr.length() in 1..4096) { "asr.json 过大" }
+            org.json.JSONObject(raw)   // 解析失败即抛,不落坏文件
+            writeAtomic(java.io.File(filesDir, PRIVATE_ASR), raw)
+            asrImported = true
+        }
+
         // best-effort 清 staging;app 通常无权删 /data/local/tmp(SELinux)→ 权威清理由 Valet 做。
         val wiped = staging.deleteRecursively() && !staging.exists()
         android.util.Log.i(
             "SettingsStore",
-            "Valet 导入完成:${arr.length()} host → 私有存储" +
+            "Valet 导入完成:$hostCount host" + (if (asrImported) " + ASR 凭证" else "") + " → 私有存储" +
                 if (wiped) ",staging 已清" else "(staging 残留,需 Valet 清:adb shell rm -rf $STAGING_DIR)",
         )
     }
@@ -196,7 +240,7 @@ class SettingsStore(ctx: Context) {
             .putString(K_ASR_PROVIDER, c.provider.name)
             .putString(K_ASR_APPID, c.appid)
             .putString(K_ASR_TOKEN, c.token)
-            .putString(K_ASR_CLUSTER, c.cluster)
+            .putString(K_ASR_RESOURCE_ID, c.resourceId)
             .apply()
     }
 
@@ -205,6 +249,8 @@ class SettingsStore(ctx: Context) {
         const val STAGING_DIR = "/data/local/tmp/xreal_import"
         /** 导入后的私有真相来源(app 私有目录,reboot 不丢)。 */
         const val PRIVATE_HOSTS = "hosts.json"
+        /** Valet 导入的 ASR 凭证(app 私有目录)。 */
+        const val PRIVATE_ASR = "asr.json"
         /** legacy 过渡期 host 配置(dev rig 用;adb push,reboot 清零,重跑 scripts/setup-mac-host.sh)。 */
         const val HOSTS_JSON = "/data/local/tmp/xreal_hosts.json"
 
@@ -217,6 +263,6 @@ class SettingsStore(ctx: Context) {
         private const val K_ASR_PROVIDER = "asr_provider"
         private const val K_ASR_APPID = "asr_appid"
         private const val K_ASR_TOKEN = "asr_token"
-        private const val K_ASR_CLUSTER = "asr_cluster"
+        private const val K_ASR_RESOURCE_ID = "asr_resource_id"
     }
 }

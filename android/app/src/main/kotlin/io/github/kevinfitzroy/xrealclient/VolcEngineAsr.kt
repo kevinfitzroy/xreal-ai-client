@@ -1,115 +1,158 @@
 package io.github.kevinfitzroy.xrealclient
 
-import android.util.Base64
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 /**
- * 火山引擎(豆包)短语音识别 REST 客户端。
+ * 火山引擎(豆包)大模型流式语音识别 —— 双向流式(优化版)WebSocket client。
  *
- * **API 端点细节会随 Volcengine 文档变更**;这个实现按 2024-2025 期间公开的
- * "极速版"/"录音文件识别" REST 接口写。User 拿到 console 给的具体端点 + appid + token
- * 后,可能需要微调 [endpoint]、[buildRequest] 或 [parseResponse]。
+ * 接口:`wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`(协议见 [VolcFrame] 与
+ * refs/大模型流式语音识别API.md)。鉴权走 HTTP header(旧版控制台路径,无签名)。
  *
- * 文档参考:https://www.volcengine.com/docs/6561/80816
+ * **录音回放模式**:VoiceDaemon 是"按住说话"——松手才拿到完整 WAV。这里把已录好的 PCM 按
+ * 200ms 分包、间隔 ~50ms 喂进流式接口(吃到流式低延迟,又不触发"发包过小")。真·边录边传是
+ * Phase 2+ 的事,届时 [Asr] seam 再演进(需要真麦,emulator 测不了)。
  *
- * 用法:
- *   val asr = VolcEngineAsr(appid="...", token="...", cluster="volcengine_input_common")
- *   val text = asr.recognize("zh")  // 内部需要喂 WAV bytes —— 重载见 [recognizeAudio]
+ * 失败语义:任何错误(连不上 / 错误帧 / 超时 / 空音频)都返回 ""。VoiceDaemon 收到空串即回 IDLE,
+ * 用户重按 F13/F14 重试 —— 不做 reconnect / retry。
+ *
+ * @param appid    X-Api-App-Key(火山控制台 APP ID)
+ * @param token    X-Api-Access-Key(火山控制台 Access Token)
+ * @param resourceId X-Api-Resource-Id,默认豆包流式 2.0 小时版
  */
 class VolcEngineAsr(
     private val appid: String,
     private val token: String,
-    private val cluster: String = "volcengine_input_common",
-    private val endpoint: String = "https://openspeech.bytedance.com/api/v1/asr",
+    private val resourceId: String = "volc.seedasr.sauc.duration",
 ) : Asr {
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)   // WS 长连,自管超时(withTimeoutOrNull)
         .build()
 
-    /**
-     * 真实 ASR 请求。Body 结构按 Volcengine REST API(可能与你 console 看到的略不同 —
-     * 需要核对响应字段名 `result.text` vs `payload_msg.results[0].text` 等)。
-     */
-    override suspend fun recognize(audio: ByteArray, lang: String): String = withContext(Dispatchers.IO) {
-        if (audio.isEmpty()) return@withContext ""
-        val wav = audio
-        val reqJson = JSONObject().apply {
-            put("app", JSONObject().apply {
-                put("appid", appid)
-                put("cluster", cluster)
-                put("token", token)
-            })
-            put("user", JSONObject().apply {
-                put("uid", "xreal-client")
-            })
-            put("audio", JSONObject().apply {
-                put("format", "wav")
-                put("rate", 16000)
-                put("bits", 16)
-                put("channel", 1)
-                put("language", if (lang == "en") "en-US" else "zh-CN")
-                put("data", Base64.encodeToString(wav, Base64.NO_WRAP))
-            })
-            put("request", JSONObject().apply {
-                put("reqid", UUID.randomUUID().toString())
-                put("nbest", 1)
-                put("show_utterances", false)
-                put("result_type", "full")
-            })
-        }
-        val body = reqJson.toString().toRequestBody("application/json".toMediaType())
-        val req = Request.Builder()
-            .url(endpoint)
-            .addHeader("Authorization", "Bearer; $token")
-            .post(body)
-            .build()
-        try {
-            http.newCall(req).execute().use { resp ->
-                val text = resp.body?.string().orEmpty()
-                if (!resp.isSuccessful) {
-                    Log.w(TAG, "HTTP ${resp.code}: $text")
-                    return@withContext ""
+    override suspend fun recognize(audio: ByteArray, lang: String): String {
+        if (audio.size <= WAV_HEADER) return ""           // 空音频:不开 WS
+        val pcm = audio.copyOfRange(WAV_HEADER, audio.size)
+
+        val result = withTimeoutOrNull(TIMEOUT_MS) {
+            suspendCancellableCoroutine { cont ->
+                val resolved = AtomicBoolean(false)
+                fun finish(ws: WebSocket?, text: String) {
+                    if (resolved.compareAndSet(false, true)) {
+                        ws?.close(1000, null)
+                        cont.resume(text)
+                    }
                 }
-                parseResponse(text)
+
+                var best = ""   // 仅 listener(reader)线程访问
+                var sender: Thread? = null
+
+                val listener = object : WebSocketListener() {
+                    override fun onOpen(ws: WebSocket, response: Response) {
+                        Log.d(TAG, "WS open logid=${response.header("X-Tt-Logid")}")
+                        sender = Thread({ runCatching { streamPcm(ws, pcm) } }, "volc-asr-send").also { it.start() }
+                    }
+
+                    override fun onMessage(ws: WebSocket, bytes: ByteString) {
+                        when (val f = VolcFrame.parse(bytes.toByteArray())) {
+                            is VolcFrame.Parsed.Server -> {
+                                extractText(f.payloadJson).takeIf { it.isNotBlank() }?.let { best = it }
+                                if (f.isLast) finish(ws, best.trim())
+                            }
+                            is VolcFrame.Parsed.Err -> {
+                                Log.w(TAG, "server error code=${f.code} msg=${f.message}")
+                                finish(ws, "")
+                            }
+                            is VolcFrame.Parsed.Unknown -> Log.w(TAG, "unknown msg type=${f.type}")
+                        }
+                    }
+
+                    override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                        // httpCode 区分握手失败(401/403=凭证/resourceId 错)vs 协议层失败。
+                        Log.w(TAG, "WS failure: ${t.message} httpCode=${response?.code} logid=${response?.header("X-Tt-Logid")}")
+                        finish(null, "")
+                    }
+
+                    override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                        finish(null, best.trim())   // 兜底:服务端先关而没发 last 包
+                    }
+                }
+
+                val req = Request.Builder()
+                    .url(ENDPOINT)
+                    .addHeader("X-Api-App-Key", appid)
+                    .addHeader("X-Api-Access-Key", token)
+                    .addHeader("X-Api-Resource-Id", resourceId)
+                    .addHeader("X-Api-Connect-Id", UUID.randomUUID().toString())
+                    .addHeader("X-Api-Request-Id", UUID.randomUUID().toString())
+                    .build()
+                val ws = http.newWebSocket(req, listener)
+
+                cont.invokeOnCancellation {
+                    sender?.interrupt()
+                    ws.close(1000, "cancelled")   // ESC / 连按 F13:真关 WS,别让旧回调污染下一次
+                }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "request failed: ${e.message}")
-            ""
+        }
+        return result ?: ""
+    }
+
+    /** 发 full client request,再把 PCM 按 200ms 分包喂入(间隔 50ms)。最后一包打 last 标记。 */
+    private fun streamPcm(ws: WebSocket, pcm: ByteArray) {
+        ws.send(VolcFrame.buildFullClientRequest(buildRequestJson().toByteArray()).toByteString())
+        var off = 0
+        while (off < pcm.size) {
+            val end = (off + CHUNK).coerceAtMost(pcm.size)
+            val last = end >= pcm.size
+            ws.send(VolcFrame.buildAudio(pcm.copyOfRange(off, end), last).toByteString())
+            off = end
+            if (!last) Thread.sleep(SEND_INTERVAL_MS)
         }
     }
 
-    private fun parseResponse(json: String): String {
-        // Volcengine 响应结构可能是:
-        //   { "code": 1000, "result": [{ "text": "..." }] }  (一种)
-        //   { "payload_msg": { "result": [{ "text": "..." }] } }  (另一种,流式版本)
-        // 这里两种都试,取第一个非空 text。
-        val text = try {
-            val obj = JSONObject(json)
-            obj.optJSONArray("result")?.optJSONObject(0)?.optString("text")?.takeIf { it.isNotBlank() }
-                ?: obj.optJSONObject("payload_msg")
-                    ?.optJSONArray("result")?.optJSONObject(0)?.optString("text").orEmpty()
-        } catch (e: Exception) {
-            Log.w(TAG, "parse response failed: ${e.message}\nraw=$json")
-            return ""
-        }
-        if (text.isBlank()) {
-            // 第一次接 user 的 Volc account 时这里多半会触发 ——
-            // 给 user 看 raw response 让他能对照 Volcengine console 文档调 endpoint/fields
-            Log.w(TAG, "empty parse — raw response: $json")
-        }
-        return text
+    /** 命令场景:关 itn(防"一七"→"17")、关标点(防句号污染命令)、关顺滑。bigmodel_async 不收 language。 */
+    private fun buildRequestJson(): String = JSONObject().apply {
+        put("user", JSONObject().put("uid", "xreal-client"))
+        put("audio", JSONObject().apply {
+            put("format", "pcm"); put("codec", "raw")
+            put("rate", 16000); put("bits", 16); put("channel", 1)
+        })
+        put("request", JSONObject().apply {
+            put("model_name", "bigmodel")
+            put("enable_itn", false)
+            put("enable_punc", false)
+            put("enable_ddc", false)
+            put("result_type", "full")
+        })
+    }.toString()
+
+    private fun extractText(json: String): String = try {
+        JSONObject(json).optJSONObject("result")?.optString("text").orEmpty()
+    } catch (e: Exception) {
+        Log.w(TAG, "parse result failed: ${e.message} raw=$json")
+        ""
     }
 
-    companion object { private const val TAG = "VolcEngineAsr" }
+    companion object {
+        private const val TAG = "VolcEngineAsr"
+        private const val ENDPOINT = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+        private const val WAV_HEADER = 44
+        private const val CHUNK = 6400              // 200ms @ 16kHz·16bit·mono
+        private const val SEND_INTERVAL_MS = 50L
+        private const val TIMEOUT_MS = 10_000L
+    }
 }

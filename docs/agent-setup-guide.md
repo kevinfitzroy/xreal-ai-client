@@ -97,16 +97,31 @@ cat > /tmp/xreal_hosts.json <<JSON
 ]
 JSON
 
+# ── OPTIONAL:语音(豆包流式 ASR)凭证 ────────────────────────────────
+# 不推这个文件 → app 用 MockAsr(语音键返回固定串),不影响 SSH/终端。
+# 推了 → app 接真豆包双向流式 ASR(按住 F13/F14 说话 → 识别 → 注入 SSH)。
+# 凭证问用户拿(火山引擎控制台:语音技术 → 流式语音识别),全局一份(不分 host)。
+cat > /tmp/xreal_asr.json <<JSON
+{ "provider": "volc",
+  "appid": "<火山 APP ID = X-Api-App-Key>",
+  "token": "<火山 Access Token = X-Api-Access-Key>",
+  "resourceId": "volc.seedasr.sauc.duration" }
+JSON
+
 # ⚠️ 严格顺序:push 必须全部完成,再 force-stop + start。用 && 串起来,别并行。
+# 不配 ASR → 删掉下面那行 `adb push ... asr.json`。
 adb shell "mkdir -p $STAGING" \
   && adb push "$KEY" "$STAGING/$KEY_FILE" \
   && adb push /tmp/xreal_hosts.json "$STAGING/hosts.json" \
+  && adb push /tmp/xreal_asr.json "$STAGING/asr.json" \
   && adb shell am force-stop io.github.kevinfitzroy.xrealclient \
   && adb shell input keyevent KEYCODE_WAKEUP \
   && adb shell am start -n io.github.kevinfitzroy.xrealclient/.MainActivity
 ```
 
-app 启动时会:把 key 拷进私有存储(`filesDir/keys/<host>.pem`,600)、写私有 `hosts.json`。
+app 启动时会:把 key 拷进私有存储(`filesDir/keys/<host>.pem`,600)、写私有 `hosts.json`;
+若有 `asr.json`,校验后也落私有存储(语音键即用真豆包 ASR)。`resourceId` 默认即豆包流式 2.0 小时版,
+通常不用改。**`asr.json` 含明文 token,和 key 一样靠第 6 步 `adb shell rm` 清 staging。**
 
 ## 第 6 步 — 验证,然后**你来清 staging**(关键)
 
@@ -125,6 +140,6 @@ adb shell ls /data/local/tmp/xreal_import 2>&1  # 应为 "No such file or direct
 
 ## 收尾 & 安全提醒
 
-- 删掉 Mac 上的临时文件:`rm -f /tmp/xreal_hosts.json`。专用私钥 `$KEY` 留着(app 用的就是它)。
+- 删掉 Mac 上的临时文件:`rm -f /tmp/xreal_hosts.json /tmp/xreal_asr.json`(后者含明文 token)。专用私钥 `$KEY` 留着(app 用的就是它)。
 - 一台 host 一把专用 key。要加第二台 host?重跑第 1–6 步,换 `HOST_NAME`。
 - 这把 key 只配了这台 host 的访问,丢了单独吊销即可。**全程没碰用户的主 key。**
