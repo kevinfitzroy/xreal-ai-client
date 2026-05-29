@@ -10,8 +10,8 @@ import android.webkit.JavascriptInterface
  * 编码:bytes 走 Base64(URL/特殊字符安全)。性能足够 SSH < 100 KB/s。
  * Stage A.3 如果发现大输出场景卡顿,fallback 到 localhost WebSocket(~30 行切换)。
  *
- * 注意:@JavascriptInterface 方法在 WebView 的 IO 线程(非 main),
- * 直接写 PtyChannel 的 outputStream 安全(sshj / PipedStream 都是线程安全的)。
+ * 注意:@JavascriptInterface 方法在 WebView 的 IO 线程(非 main)。写入走 [PtyChannel.write]
+ * (内部加锁串行化)—— sshj ChannelOutputStream 跨线程并发 write/flush 会损坏内部缓冲,不能裸写。
  */
 class TerminalBridge(
     initial: PtyChannel,
@@ -51,10 +51,7 @@ class TerminalBridge(
     @JavascriptInterface
     fun onInput(b64: String) {
         try {
-            val bytes = Base64.decode(b64, Base64.NO_WRAP)
-            val ch = channel
-            ch.outputStream().write(bytes)
-            ch.outputStream().flush()
+            channel.write(Base64.decode(b64, Base64.NO_WRAP))   // 原子 write+flush(串行化,见 PtyChannel)
         } catch (e: Exception) {
             Log.w(TAG, "onInput failed: ${e.message}")
         }

@@ -46,7 +46,7 @@ class VolcEngineAsr(
         @Volatile private var cancelled = false
         private val done = AtomicBoolean(false)
         private var connected = false
-        private var finishRequested = false
+        @Volatile private var finishRequested = false   // onMessage(WS 线程)也读它 → volatile
         private val pending = ArrayDeque<ByteArray>()   // onOpen 前缓冲的音频块(连接延迟竞态)
         @Volatile private var best = ""
         private val watchdog = Handler(Looper.getMainLooper())
@@ -84,7 +84,12 @@ class VolcEngineAsr(
                     is VolcFrame.Parsed.Server -> {
                         val t = extractText(f.payloadJson)
                         if (t.isNotBlank()) { best = t; cb.onPartial(t) }
-                        if (f.isLast) resolveFinal()
+                        // 按住期间(finishRequested=false)服务端的 isLast = VAD 判停/分句,不当会话结束 —— 继续流,
+                        // 只在松手发了负包后(finishRequested=true)才真正收尾。否则停顿几秒就被切。
+                        if (f.isLast) {
+                            Log.d(TAG, "server isLast (finishRequested=$finishRequested)")
+                            if (finishRequested) resolveFinal()
+                        }
                     }
                     is VolcFrame.Parsed.Err -> {
                         Log.w(TAG, "server error code=${f.code} msg=${f.message}")
@@ -96,11 +101,12 @@ class VolcEngineAsr(
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 if (cancelled) return
-                Log.w(TAG, "WS failure: ${t.message} httpCode=${response?.code} logid=${response?.header("X-Tt-Logid")}")
+                Log.w(TAG, "WS failure (finishRequested=$finishRequested): ${t.message} httpCode=${response?.code} logid=${response?.header("X-Tt-Logid")}")
                 resolveError(t.message ?: "ws failure")
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "WS onClosing code=$code reason=$reason (finishRequested=$finishRequested)")
                 if (!cancelled) resolveFinal()   // 服务端先关而没发 last 包:已有中间结果当 final
             }
         }

@@ -158,7 +158,7 @@
       <div id="voice-overlay">
         <div id="overlay-status">🎤 录音中…</div>
         <div id="overlay-text"></div>
-        <div id="overlay-hint">Enter 发送 · Esc 撤销 · F13/F14 重说</div>
+        <div id="overlay-hint">Enter 发送 · Esc 撤销</div>
       </div>
     </div>
   </div>
@@ -188,6 +188,7 @@
   <script src="addon-fit.js"></script>
   <script src="addon-webgl.js"></script>
   <script src="addon-search.js"></script>
+  <script src="addon-unicode11.js"></script>
   <script>
   /* ========== 列表数据 + 渲染 ========== */
   const ICONS = {
@@ -287,9 +288,13 @@
   let term, fitAddon, webglAddon=null;
   function initTerm(){
     term=new Terminal({ fontFamily:"'MesloLGS','SarasaTerm',monospace", fontSize:14, lineHeight:1.2, cursorBlink:true, scrollback:10000,
+      allowProposedApi:true,   // unicode11 addon 注册宽度表需要
       theme:{ background:'#11131a', foreground:'#e6e6e6', cursor:'#94e0b2', selectionBackground:'#3a4760' } });
     fitAddon=new FitAddon.FitAddon();
     term.loadAddon(fitAddon); term.loadAddon(new SearchAddon.SearchAddon());
+    // Unicode 11 宽度表:让 xterm 把 emoji(如语音 marker 🎤)算 2 列,与远端 tmux+Claude Code(string-width)一致。
+    // 否则 xterm 默认 Unicode 6 表把 emoji 算 1 列,光标移动经过 🎤 时两边错位 → 整行显示乱。
+    try{ term.loadAddon(new Unicode11Addon.Unicode11Addon()); term.unicode.activeVersion='11'; }catch(e){ console.warn('[xreal] unicode11 不可用',e); }
     term.open(document.getElementById('term'));
     try{ webglAddon=new WebglAddon.WebglAddon(); term.loadAddon(webglAddon); }catch(e){ console.warn('[xreal] WebGL 不可用,回退 DOM',e); }
     term.onData(d=>{ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d)))); });
@@ -397,9 +402,9 @@
   });
   let hwkb=false;  // 是否接了外置物理键盘
   function updateBottomBar(){
-    // 虚拟键盘:无外接键盘时,列表+终端两视图都常驻(一行);有外接键盘则换 slim hint
-    document.getElementById('vkeyboard').hidden=hwkb;
-    document.getElementById('hint-footer').hidden=!hwkb;
+    // 默认有 8BitDo:底部虚拟键盘 + 说明条都不显示(全靠物理键 + 语音)
+    document.getElementById('vkeyboard').hidden=true;
+    document.getElementById('hint-footer').hidden=true;
     // CSS 上下文 class 与 currentView 同步(列表态淡化终端专用键)
     document.body.classList.toggle('ctx-list', currentView==='list');
     document.body.classList.toggle('ctx-term', currentView==='term');

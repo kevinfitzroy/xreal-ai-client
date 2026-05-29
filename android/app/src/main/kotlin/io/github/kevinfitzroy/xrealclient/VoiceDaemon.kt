@@ -13,7 +13,7 @@ import org.json.JSONObject
  *   识别中间结果 → onPartial → 实时刷 overlay(全量文本替换)
  *   F13/F14 up   → 停录 + 发最后一包(负包) → state ASR_PENDING(等最终结果补包)
  *   onFinal      → state PREVIEW(等用户确认)
- *   Enter        → 把文本写 channel.outputStream() → IDLE(不 auto-\n:语音误识安全网,再按 Enter 才执行)
+ *   Enter        → 把文本写 channel.write() → IDLE(不 auto-\n:语音误识安全网,再按 Enter 才执行)
  *   Esc / 重按   → 取消会话 → IDLE
  *
  * **late-callback race**:重按 / 取消后旧 WS reader 线程可能还喷 partial。两层防御 ——
@@ -76,8 +76,8 @@ class VoiceDaemon(
 
     fun onKeyUp(keyCode: Int) {
         if (keyCode != KEY_F13 && keyCode != KEY_F14) return
+        recorder?.stop()      // 总是停采集(防 mic 卡死:即便 state 已被服务端回调提前改动)
         if (state != State.STREAMING) return
-        recorder?.stop()      // 停止采集,冲出尾块
         stream?.finish()      // 发最后一包(负包),等最终结果
         state = State.ASR_PENDING
         showOverlay("识别中…", currentText ?: "")
@@ -116,8 +116,7 @@ class VoiceDaemon(
         val text = currentText ?: run { resetIdle(); return false }
         val payload = if (voiceMarkerEnabled) VOICE_MARKER + text else text
         try {
-            channel.outputStream().write(payload.toByteArray(Charsets.UTF_8))
-            channel.outputStream().flush()
+            channel.write(payload.toByteArray(Charsets.UTF_8))   // 原子 write+flush(串行化,见 PtyChannel)
         } catch (e: Exception) {
             Log.w(TAG, "write injected text failed: ${e.message}")
         }

@@ -307,7 +307,7 @@ class MainActivity : Activity() {
     }
 
     private fun writeChannelByte(b: Int) {
-        runCatching { activeChannel.outputStream().write(b); activeChannel.outputStream().flush() }
+        runCatching { activeChannel.write(byteArrayOf(b.toByte())) }   // 原子 write+flush(串行化,见 PtyChannel)
     }
 
     /** 是否接了外置物理键盘(8BitDo 在键盘模式会算 QWERTY)→ 决定虚拟键盘显隐 */

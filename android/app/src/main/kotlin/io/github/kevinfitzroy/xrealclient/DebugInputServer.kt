@@ -57,9 +57,7 @@ class DebugInputServer(
                     val n = ins.read(buf)
                     if (n <= 0) break
                     // 每次现取活动 channel:用户中途切了 project 也跟得上;写已关闭的 channel 抛异常 → 外层静默
-                    val out = sink().outputStream()
-                    out.write(buf, 0, n)
-                    out.flush()
+                    sink().write(buf.copyOf(n))   // 原子 write+flush(串行化,见 PtyChannel)
                 }
             }
         } catch (e: Exception) {

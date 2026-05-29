@@ -34,7 +34,7 @@ class LocalEchoChannel : PtyChannel {
     }
 
     override fun inputStream(): InputStream = pipeIn
-    override fun outputStream(): OutputStream = writeStream
+    @Synchronized override fun write(data: ByteArray) { writeStream.write(data); writeStream.flush() }
     override fun resize(cols: Int, rows: Int) { /* echo mode 不关心 */ }
     override fun isConnected(): Boolean = true
     override fun close() {
