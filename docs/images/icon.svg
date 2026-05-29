@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <!-- app launcher icon:终端提示符 >_ ,与 res/ic_launcher_foreground.xml 一致 -->
+  <rect width="108" height="108" rx="24" fill="#0D0F16"/>
+  <path d="M36,36 L54,54 L36,72" fill="none" stroke="#94E0B2" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M60,66 L78,66" fill="none" stroke="#94E0B2" stroke-width="8" stroke-linecap="round"/>
+</svg>

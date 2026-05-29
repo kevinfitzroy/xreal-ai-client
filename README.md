@@ -1,6 +1,14 @@
+<div align="center">
+
+<img src="docs/images/icon.png" width="112" alt="xreal-ai-client">
+
 # xreal-ai-client
 
-**一套戴在脸上的远程开发终端。** 用 AR 眼镜 + 口袋安卓主机 + 语音,在通勤路上 / 咖啡馆 / 公园里指挥一支跑在云端的 Claude Code「agent 舰队」—— 不用笔记本,不用鼠标,不用触摸。
+**一套戴在脸上的远程开发终端** —— 用 AR 眼镜 + 口袋安卓主机 + 语音,在通勤路上 / 咖啡馆 / 公园里指挥一支跑在云端的 Claude Code「agent 舰队」。不用笔记本,不用鼠标,不用触摸。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-94e0b2.svg)](LICENSE) ![Platform](https://img.shields.io/badge/platform-Android%2014-3ddc84.svg) ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20xterm.js-7f52ff.svg) ![Status](https://img.shields.io/badge/status-Phase%200%20prototype-1f6feb.svg) ![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-d97757.svg)
+
+</div>
 
 一个 Android App 把 SSH client + 现代 terminal UI(WebView + xterm.js)+ 语音输入塞进同一个进程,跑在 **XREAL One Pro AR 眼镜 + Beam Pro** 上,连回你自己的服务器操作 Claude Code。
 
@@ -17,15 +25,17 @@
 
 ![8BitDo Micro 键位图](docs/images/8bitdo-keymap.png)
 
-| 物理键 | 发送键码 | 在 app 里的作用 |
+| 物理键 | 发送键码 | app 自定义语义 |
 |---|---|---|
-| 十字键 ↑ ↓ ← → | 方向键 | 列表导航 / 终端光标移动 |
-| A | `Enter` | 打开选中项目 / 终端回车 / 语音确认注入 |
+| 十字键 ↑ ↓ ← → | 方向键 | — |
+| A | `Enter` | — |
 | B | `F1`(131) | **按住 = 语音输入**(松手结束识别,中英自动判别) |
-| 右下特殊键 | `F2`(132) | 终端 → 返回项目列表 |
-| L2 / L / R | `Tab` / `Esc` / `Shift` | 终端补全 / 取消 / 切模式 |
-| R2 | `Back` | 备用返回 |
-| `-` / `+` | `!` / `/` | 终端文本(`/` = Claude Code 斜杠命令,`!` = bash 模式) |
+| 右下特殊键 | `F2`(132) | **终端 → 返回项目列表** |
+| L2 / L / R | `Tab` / `Esc` / `Shift` | — |
+| R2 | `Backspace` | — |
+| `-` / `+` | `!` / `/` | — |
+
+> 除 `F1`/`F2` 是 app 自定义键外,其余都是标准键盘键 —— 由终端 / Claude Code 按常规处理,无 app 特定行为。
 
 > **为什么是 `F1`/`F2` 而不是 `F13`/`F14`(Stage A.1 真机实测)**:最初设计用 `F13`–`F15` 这些「冷门」功能键(8BitDo 官方支持、不与打字冲突)。但 Beam Pro 真机实测发现 —— 它的 8BitDo HID 键盘走系统的 `/system/usr/keylayout/Generic.kl`,而该布局里 **`F13`–`F24`(scancode 183+)全被注释掉**,Android 映射不出 keycode,会在送达 app *之前*把键丢弃(`getevent` 能看到 `KEY_F13`,但 `dispatchKeyEvent` 收不到任何东西)。`/system` 只读、无 root 改不了。而 `F1`–`F12` 在 `Generic.kl` 里是活跃的(→ `KEYCODE_F1`=131…),8BitDo 也能稳定发出,所以改用 `F1`/`F2`(避开 `F5`/`F11`/`F12` —— WebView 可能拿去做刷新/全屏/devtools)。屏幕虚拟键盘上的 🎤 走 JSBridge 直调,和物理 `F1` 互不冲突,两种触发同时可用。
 
@@ -129,6 +139,7 @@ Beam Pro 上的单个 APK
 .
 ├── CLAUDE.md            ← 项目主指南(也是 Claude Code cold-start 的入口)
 ├── README.md            ← 本文件
+├── LICENSE              ← MIT
 ├── ROADMAP.md           ← 分级需求跟踪(P0 核心 / P1 可用性 / P2 体验增强)
 ├── HANDOFF.md           ← 动态状态:当前进度 + 下一步
 ├── docs/
@@ -140,12 +151,27 @@ Beam Pro 上的单个 APK
 │   ├── projects.example.json    ← 项目清单 manifest 示例
 │   ├── session-persistence-options.md  ← tmux / abduco 等驻留方案调研
 │   ├── stage-a-experiments.md   ← 物理设备到位后的验证实验 + fallback
-│   └── upstream-docs-index.md   ← 上游 term-on-demand docs 导航
+│   ├── upstream-docs-index.md   ← 上游 term-on-demand docs 导航
+│   └── images/                  ← README 用图(app icon、8BitDo 键位图、眼镜视角)
 └── android/             ← Android Studio 项目(Kotlin,minSdk/targetSdk 34)
 ```
 
 - **人类想了解为什么 / 怎么实现**:按 `docs/background.md` → `docs/architecture.md` → `ROADMAP.md` 的顺序读。
 - **这个项目大量由 Claude Code 协作开发**:`CLAUDE.md` 是 agent 的 cold-start 入口(角色、约束、协作偏好都在那)。
+
+---
+
+## 开发 / 贡献
+
+```bash
+cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+> JDK 必须用 Android Studio 自带的 JBR 21(系统默认 java 8 不支持 AGP 8.x);上面命令已带上 `JAVA_HOME`。单元测试:`./gradlew test`(`VolcFrame` / `PcmChunker` / `Hotwords` 有 JVM 覆盖)。
+
+- 本项目大量由 **Claude Code** 协作开发 —— [`CLAUDE.md`](CLAUDE.md) 是 agent 的 cold-start 入口(角色 / 约束 / 协作偏好);动手前先读它和 [`ROADMAP.md`](ROADMAP.md)。
+- 欢迎 issue / PR。架构经多轮收敛(见 CLAUDE.md §5「关键约束」),改动前先对齐这些约束。
 
 ---
 
@@ -157,4 +183,6 @@ Beam Pro 上的单个 APK
 
 ## License
 
-待定 (TBD)。
+[MIT](LICENSE) © 2026 Evan
+
+随便用 —— 复制、修改、商用、再发布都可以,保留版权声明即可。
