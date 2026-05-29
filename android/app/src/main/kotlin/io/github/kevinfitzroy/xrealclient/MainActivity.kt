@@ -351,8 +351,28 @@ class MainActivity : Activity() {
         if (event.action == KeyEvent.ACTION_UP && event.keyCode == backupVoiceDigit) {
             voiceDaemon.onKeyUp(backupVoiceKey); backupVoiceDigit = -1; return true
         }
+        // Beam Pro 实测(Stage A.1):8BitDo 经 Android Generic.kl,F13–F24(scancode 183+)全被注释 →
+        // 映射不出 keycode,系统在送达前丢弃,到不了 app。改用已映射的 F1/F2 作主路径。
+        // F13/F14/F15 分支保留:其它设备 / 未来 .kl 若认 F13+ 仍可用,无害。
+        if (event.keyCode == KeyEvent.KEYCODE_F1) {        // F1 = 语音(hold-to-talk)
+            when (event.action) {
+                // 按住时 ACTION_DOWN 会自动重复 → 只在首次按下开 ASR,否则每帧重启会话
+                KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) voiceDaemon.onKeyDown(VoiceDaemon.KEY_F13)
+                KeyEvent.ACTION_UP -> voiceDaemon.onKeyUp(VoiceDaemon.KEY_F13)
+            }
+            return true
+        }
+        if (event.keyCode == KeyEvent.KEYCODE_F2) {        // F2 = 返回列表
+            if (event.action == KeyEvent.ACTION_UP) backToList()
+            return true
+        }
         if (event.keyCode == VoiceDaemon.KEY_F13 || event.keyCode == VoiceDaemon.KEY_F14) {
             routeVoiceKey(event.action, event.keyCode); return true
+        }
+        // F15 → 返回列表(吞掉 down+up,别漏进 xterm;backToList 在 up 触发一次)
+        if (event.keyCode == KEYCODE_F15) {
+            if (event.action == KeyEvent.ACTION_UP) backToList()
+            return true
         }
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
@@ -404,5 +424,8 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQ_MIC = 0x101
+        // F15(API 34 起 KEYCODE_F15=328,裸 int):终端→返回列表的专用功能键。
+        // 用它代替语义不定的 BACK —— 8BitDo 的 "BACK" 标签发什么键码由固件决定,F15 是确定的。
+        private const val KEYCODE_F15 = 328
     }
 }

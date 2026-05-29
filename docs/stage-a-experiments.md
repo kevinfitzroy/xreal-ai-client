@@ -6,6 +6,8 @@
 
 ## A.1(1 天)8BitDo Micro F13/F14 在 Android 14 上的 keycode 实测
 
+> ✅ **已执行(2026-05-29,Beam Pro 真机)— 假设 FAIL,已切 Fallback**:`getevent` 能看到 8BitDo Keyboard 子设备正确发出 `KEY_F13`,但 Beam Pro 的 `/system/usr/keylayout/Generic.kl` 里 **`F13`–`F24`(scancode 183+)全被 `#` 注释** → Android 映射不出 keycode,在送达 `dispatchKeyEvent` *之前*丢弃(连 keycode 0 都不给)。`/system` 只读、无 root,改不了。**`F1`–`F12` 在 Generic.kl 活跃**(→ `KEYCODE_F1`=131…)→ 主路径改用 **F1=语音(hold-to-talk)/ F2=返回列表**(避开 F5/F11/F12 被 WebView 拦截),真机端到端验证 F1 触发真豆包 ASR。代码里 F13/F14/F15 分支保留作其它设备兜底,Ctrl+Alt+1/2 备路径仍可用。下文为原始实验设计,留作记录。
+
 ### 假设要验证
 
 8BitDo Ultimate Software 官方支持 F13-F24,且 Android 14 通过蓝牙 HID 能正确接收为 `KEYCODE_F13` (= 326) / `KEYCODE_F14` (= 327)。

@@ -68,7 +68,7 @@ Phase 0(emulator 跑通骨架)+ Stage B(真 SSH / 真 AudioRecord / 真豆包 AS
 **没跑过的事**:
 - Emulator 端到端演示(本机内存压力 ~328 MB unused / 需要 5 GB,emulator 启时 QEMU CPU 线程一律 exit 139)
 - 真 SSH 连通验证(user 还没开 Mac sshd / 装 abduco / 给 SSH key)
-- 真 8BitDo F13/F14 keycode(Phase 1 真机)
+- ~~真 8BitDo F13/F14 keycode~~ → ✅ 已实测(2026-05-29):F13/F14 在 Beam Pro 到不了 app(Generic.kl 注释),改用 **F1/F2**,真机验证通过
 - 真豆包 ASR(user 没给 appid/token,且 endpoint 路径要按 Volcengine console 微调)
 
 ---

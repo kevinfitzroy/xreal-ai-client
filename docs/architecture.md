@@ -38,7 +38,7 @@
 │         │ Voice Daemon 直接调 outputStream.write(text)   │
 │         │                                                │
 │  ┌─ Voice Daemon(Foreground Service)──────────┐       │
-│  │  HID 按键监听(F13/F14)                       │       │
+│  │  HID 按键监听(F1/F2 实测;F13/F14 兜底)       │       │
 │  │  AudioRecord → Opus → 豆包 ASR                │       │
 │  │  WebView.evaluateJavascript("showOverlay(..)") │      │
 │  │  Enter → sshSession.outputStream.write(text)  │       │
@@ -81,7 +81,7 @@
     <div id="overlay-status">🎤 录音中...</div>
     <div id="overlay-text" style="margin-top: 8px; color: #94e0b2;"></div>
     <div style="margin-top: 12px; font-size: 12px; color: #888;">
-      Enter 发送 · Esc 撤销 · F13/F14 重说
+      Enter 发送 · Esc 撤销
     </div>
   </div>
   <script src="xterm.js"></script>

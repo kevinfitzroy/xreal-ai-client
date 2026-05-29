@@ -4,7 +4,30 @@
 
 一个 Android App 把 SSH client + 现代 terminal UI(WebView + xterm.js)+ 语音输入塞进同一个进程,跑在 **XREAL One Pro AR 眼镜 + Beam Pro** 上,连回你自己的服务器操作 Claude Code。
 
+<!-- 眼镜视角截图:用户随后提供,把下面这行占位替换成 ![XREAL One Pro 眼镜视角](docs/images/glasses-view.png) -->
+> 📸 _XREAL One Pro 眼镜里的实际视角截图 — 待补_
+
 > **现状**:Phase 0 完成,核心流程已在 Beam Pro 真机打通 —— 项目列表 → 开 project → 真 SSH 终端(中英文 + powerline 完整显示)→ 键盘/语音输入 → 返回。「代客安装 (Valet Setup)」+ Maestro 编排 + 列表 live-fetch 均已落地、真机验证。详见 [`ROADMAP.md`](ROADMAP.md)。这是一个活跃开发中的原型,不是成品。
+
+---
+
+## ⌨️ 操作:6 个键 + 语音,没有鼠标和触摸
+
+戴着眼镜,全部操作压缩到 **8BitDo Micro**(~6 键蓝牙手柄)的物理键 + 语音。用官方 [8BitDo Ultimate Software](https://app.8bitdo.com/Ultimate-Software-V2/) 把手柄配成下图(真机实测后的最终映射):
+
+![8BitDo Micro 键位图](docs/images/8bitdo-keymap.png)
+
+| 物理键 | 发送键码 | 在 app 里的作用 |
+|---|---|---|
+| 十字键 ↑ ↓ ← → | 方向键 | 列表导航 / 终端光标移动 |
+| A | `Enter` | 打开选中项目 / 终端回车 / 语音确认注入 |
+| B | `F1`(131) | **按住 = 语音输入**(松手结束识别,中英自动判别) |
+| 右下特殊键 | `F2`(132) | 终端 → 返回项目列表 |
+| L2 / L / R | `Tab` / `Esc` / `Shift` | 终端补全 / 取消 / 切模式 |
+| R2 | `Back` | 备用返回 |
+| `-` / `+` | `!` / `/` | 终端文本(`/` = Claude Code 斜杠命令,`!` = bash 模式) |
+
+> **为什么是 `F1`/`F2` 而不是 `F13`/`F14`(Stage A.1 真机实测)**:最初设计用 `F13`–`F15` 这些「冷门」功能键(8BitDo 官方支持、不与打字冲突)。但 Beam Pro 真机实测发现 —— 它的 8BitDo HID 键盘走系统的 `/system/usr/keylayout/Generic.kl`,而该布局里 **`F13`–`F24`(scancode 183+)全被注释掉**,Android 映射不出 keycode,会在送达 app *之前*把键丢弃(`getevent` 能看到 `KEY_F13`,但 `dispatchKeyEvent` 收不到任何东西)。`/system` 只读、无 root 改不了。而 `F1`–`F12` 在 `Generic.kl` 里是活跃的(→ `KEYCODE_F1`=131…),8BitDo 也能稳定发出,所以改用 `F1`/`F2`(避开 `F5`/`F11`/`F12` —— WebView 可能拿去做刷新/全屏/devtools)。屏幕虚拟键盘上的 🎤 走 JSBridge 直调,和物理 `F1` 互不冲突,两种触发同时可用。
 
 ---
 
@@ -30,10 +53,10 @@
 |---|---|
 | **XREAL One Pro**(AR 眼镜) | 把一块桌面级虚拟大屏投到眼前(横屏、宽幅,接近 MacBook 16:10 的可视区),让你不用盯着手机小屏 |
 | **Beam Pro**(口袋安卓主机,X4100 / Android 14 / Snapdragon) | 驱动眼镜显示 + 跑这个 App;自带方向键/按键 |
-| **8BitDo Micro**(~6 键蓝牙手柄) | 主输入设备:方向键导航、确认/返回;`F13`/`F14` 映射成中/英语音键(按住说话) |
+| **8BitDo Micro**(~6 键蓝牙手柄) | 主输入设备:方向键导航、`Enter` 确认;`F1` 映射成语音键(按住说话,中英自动识别)、`F2` 映射成「返回列表」 |
 | **海外 Ubuntu 服务器**(你自己的) | 跑 tmux + Claude Code,被 app 经原生 SSH(22 端口)连入 |
 
-App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"来设计。输入只走物理键 + 语音,系统软键盘被刻意禁用(会挡半屏)。
+App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"来设计。输入只走物理键 + 语音(键位见上方「操作」章节),系统软键盘被刻意禁用(会挡半屏)。
 
 ---
 

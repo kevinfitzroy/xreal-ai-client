@@ -100,7 +100,7 @@ Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告
 | **Overlay = WebView 内 HTML** | 不要用 `SYSTEM_ALERT_WINDOW` 权限。Voice 预览 overlay 就是 WebView 里的 `<div>`,通过 JSBridge show/hide |
 | **Voice → SSH 直写** | Voice Daemon 拿到 ASR 文本,**直接写 ssh.outputStream**,字符走 SSH 到远端 shell,shell echo 回送,xterm.js 渲染。Voice 路径不需要知道 xterm.js 存在 |
 | **不用 Accessibility / IME** | 不需要这两个权限。同 app 内事件路由用 `Activity.dispatchKeyEvent` |
-| **F13/F14 keycode 主路径,Ctrl+Alt+1/2 备路径** | 8BitDo Ultimate Software 官方支持 F13-F24,但 Beam Pro 真机是否收到 KeyEvent 326/327 是 Phase 1 实测项;Phase 0 代码两条都写,优先 F13/F14 |
+| **F1/F2 物理键主路径**(2026-05-29 Stage A.1 实测改定) | 原设计 F13/F14(326/327),但 Beam Pro 的 8BitDo 走 `/system/usr/keylayout/Generic.kl`,其中 F13–F24 全被注释 → keycode 映射不出、到不了 app。改用 **F1=语音(hold-to-talk)、F2=返回列表**(F1–F12 在 Generic.kl 活跃);Ctrl+Alt+1/2 备路径保留,F13/F14 代码分支留作其它设备兜底。详见 README「操作」章节 + memory `beam-pro-device` |
 | **session 驻留:agent 用 tmux,纯 SSH 可 abduco**(2026-05-28 修订)| 原决策是默认 abduco(单终端场景,client 自己管 scrollback)。但产品升级成"AI agent 集群指挥台"后,**状态探测 + 最近命令预览需要 `tmux capture-pane -p`,abduco 无等价能力** → agent 类 project 改用 tmux。纯 SSH project 不需要探测,abduco/tmux 均可。`SshConnection` 启动命令本就可配置。详见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md) 和 memory `product-vision` |
 | **优雅降级** | 任何组件挂了,用户能退回 Termius / Termux 继续工作。App 不是必需品 |
 
@@ -110,7 +110,7 @@ Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告
 
 Phase 0 写的代码,等用户拿到物理设备后,跑这 3 个 ~1 周的实验决定 80% 架构风险:
 
-- **A.1**(1 天)8BitDo Micro F13/F14 在 Beam Pro / Android 14 上 KeyEvent 是否收到 326/327
+- **A.1** ✅ 已实测(2026-05-29):8BitDo F13/F14 在 Beam Pro **到不了 app**(`Generic.kl` 注释掉 F13–F24)→ 改用 **F1/F2**;真机端到端验证 F1 hold-to-talk 触发豆包 ASR
 - **A.2**(2 天)sshj 0.39+ 在 Beam Pro 真机上 BouncyCastle 加载是否通
 - **A.3**(2 天)WebView + xterm.js + JSBridge 在 Snapdragon 7 Gen 2 GPU 上 60fps 大输出是否流畅
 
@@ -205,8 +205,8 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 |---|---|---|
 | 启动 emulator | `$HOME/Library/Android/sdk/emulator/emulator -avd Pixel_8a &` | 用全路径(emulator 不在 PATH);AVD 名按实际:当前 user 有 `Pixel_8a`(target android-37,arm64-v8a)|
 | adb 设备列表 | `adb devices` | |
-| 模拟 F13(KEYCODE 326) | `adb shell input keyevent 326` | Stage A.1 之前只能这样模拟;真机 8BitDo → F13 是否被收到要 Phase 1 验 |
-| 模拟 F14(KEYCODE 327) | `adb shell input keyevent 327` | 同上 |
+| 模拟 F1=语音(KEYCODE 131) | `adb shell input keyevent 131` | 主路径(真机 8BitDo B 键发 F1)。**F13/F14(326/327)在 Beam Pro 到不了 app**(Generic.kl 注释掉),别再用 |
+| 模拟 F2=返回列表(KEYCODE 132) | `adb shell input keyevent 132` | 终端 → 列表 |
 | 看 app 日志(过滤) | `adb logcat -s VoiceDaemon:V SshConnection:V TerminalBridge:V` | tag 名按 Kotlin 代码里实际声明 |
 | 清空 logcat | `adb logcat -c` | |
 
