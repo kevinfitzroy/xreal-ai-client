@@ -220,10 +220,12 @@ class MainActivity : Activity() {
 
         val match = findProject(host, session)
         if (match == null) {
-            switchTo(LocalEchoChannel())   // mock / 无配置:本地 echo,demo 不卡
+            applyProjectHotwords(null)     // mock / 无配置:语音热词回退 BASE
+            switchTo(LocalEchoChannel())   // 本地 echo,demo 不卡
             return
         }
         val (h, p) = match
+        applyProjectHotwords(p)            // 进 project:BASE + 该 project 的热词
         writeToTerm("连接 ${h.ssh.user}@${h.ssh.host}:${h.ssh.port} … (${p.sessionName})\r\n")
         thread(name = "ssh-connect", isDaemon = true) {
             try {
@@ -253,9 +255,17 @@ class MainActivity : Activity() {
     private fun backToList() {
         openSeq++   // 让在途的 SSH 连接知道自己已 obsolete(回来后别再错切)
         view = View.LIST
+        applyProjectHotwords(null)     // 回列表:语音热词回退 BASE
         runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
         switchTo(LocalEchoChannel())   // 断开当前 project 的 SSH(switchTo 关掉旧 channel)
         refreshManifests()   // 回列表即拉一次:刚让 Maestro 建的新项目此刻出现(主刷新时机)
+    }
+
+    /** 设当前 project 的语音上下文:热词(BASE 继承 + per-project)+ 是否加 🎤 marker(仅 AI-agent 类)。 */
+    private fun applyProjectHotwords(p: ProjectConfig?) {
+        voiceDaemon.hotwords = if (p == null) Hotwords.BASE else Hotwords.merge(p.hotwords)
+        voiceDaemon.voiceMarkerEnabled = p?.type?.isAiAgent() ?: false
+        Log.d(TAG, "voice ctx: hotwords=${voiceDaemon.hotwords.size} marker=${voiceDaemon.voiceMarkerEnabled} (project=${p?.sessionName ?: "none"})")
     }
 
     /** 按 session 查(name 可能重复)。真相来源:最近一次 manifest 拉到的 liveProjects,无则 seed。 */

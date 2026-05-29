@@ -100,6 +100,20 @@ cmd_new() {
   fi
 
   mkdir -p "$dir"
+  # AI-agent 项目:若工作目录还没有 CLAUDE.md,seed 一份「语音输入约定」(见 orchestrator-CLAUDE.md §6.2)。
+  # 已有 CLAUDE.md(自带的 repo)则不动 —— 由 Maestro 自行把那段追加进去,别覆盖人家的。
+  if { [ "$type" = claude ] || [ "$type" = agent ]; } && [ ! -e "$dir/CLAUDE.md" ]; then
+    cat > "$dir/CLAUDE.md" <<'MD'
+## 语音输入约定(xreal-ai-client)
+
+本会话的用户用 AR 眼镜 + 语音操作。以 `🎤 ` 开头的用户消息 = **语音转写**,可能有同音字 / 断词 / 专名识别错误。
+
+- **按意图理解,主动纠错**:别照字面执行明显是识别错的内容;不确定时先复述你的理解再动手。
+- **专名反复错** → 主动提示用户:"要把『X』加进这个项目的热词表吗?" 用户同意后,让 Maestro 把它加进本项目 manifest 的 `hotwords`。热词表是 **project 级**的,各项目独立。
+- 非 `🎤 ` 开头的消息是键盘输入,正常对待。
+MD
+    echo "seed 了语音约定 CLAUDE.md @ $dir/CLAUDE.md"
+  fi
   if tmux has-session -t "$session" 2>/dev/null; then
     echo "tmux session '$session' 已存在,复用(不重起程序)"
   elif [ -n "$startup" ]; then

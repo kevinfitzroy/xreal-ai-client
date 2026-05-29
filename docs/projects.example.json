@@ -15,7 +15,8 @@
       "type": "claude",
       "dir": "/home/evan/work/xreal-ai-client",
       "group": "work",
-      "startup": "claude --resume"
+      "startup": "claude --resume",
+      "hotwords": ["sshj", "xterm", "WebView", "abduco", "Volcengine"]
     },
     {
       "session": "blog-rewrite",

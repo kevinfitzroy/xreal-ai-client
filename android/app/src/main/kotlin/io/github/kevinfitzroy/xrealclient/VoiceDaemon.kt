@@ -33,6 +33,14 @@ class VoiceDaemon(
     @Volatile var channel: PtyChannel = initialChannel
     @Volatile var asr: Asr = initialAsr
     @Volatile var recorder: AudioRecorder? = initialRecorder
+    /** 当前 project 的语音热词(进 project 时 MainActivity 设;默认 = 继承的 [Hotwords.BASE])。 */
+    @Volatile var hotwords: List<String> = Hotwords.BASE
+    /**
+     * 注入语音文本时是否加 [VOICE_MARKER] 前缀。仅 AI-agent 类 project 开(让接收端 Claude Code
+     * 知道"这条是语音、按意图纠错",配合 sub-project CLAUDE.md 的常驻指导)。
+     * 普通 SSH shell **必须** false —— 前缀打进 bash 就是废命令。
+     */
+    @Volatile var voiceMarkerEnabled: Boolean = false
 
     enum class State { IDLE, STREAMING, ASR_PENDING, PREVIEW }
 
@@ -61,9 +69,9 @@ class VoiceDaemon(
             override fun onFinal(text: String) = onAsrFinal(gen, text)
             override fun onError(reason: String) = onAsrError(gen, reason)
         }
-        stream = asr.open(lang, cb)
+        stream = asr.open(lang, hotwords, cb)
         recorder?.start { chunk -> if (gen == asrGen) stream?.send(chunk) }
-        Log.d(TAG, "STREAMING start lang=$lang recorder=${recorder != null}")
+        Log.d(TAG, "STREAMING start lang=$lang recorder=${recorder != null} hotwords=${hotwords.size}")
     }
 
     fun onKeyUp(keyCode: Int) {
@@ -106,8 +114,9 @@ class VoiceDaemon(
     fun onEnter(): Boolean {
         if (state != State.PREVIEW) return false
         val text = currentText ?: run { resetIdle(); return false }
+        val payload = if (voiceMarkerEnabled) VOICE_MARKER + text else text
         try {
-            channel.outputStream().write(text.toByteArray(Charsets.UTF_8))
+            channel.outputStream().write(payload.toByteArray(Charsets.UTF_8))
             channel.outputStream().flush()
         } catch (e: Exception) {
             Log.w(TAG, "write injected text failed: ${e.message}")
@@ -155,6 +164,8 @@ class VoiceDaemon(
         private const val TAG = "VoiceDaemon"
         const val KEY_F13 = 326
         const val KEY_F14 = 327
+        /** 注入 AI-agent 会话时的语音前缀。与 sub-project CLAUDE.md 的约定一致(见 orchestrator-CLAUDE.md)。 */
+        const val VOICE_MARKER = "🎤 "
     }
 }
 
@@ -163,8 +174,8 @@ class VoiceDaemon(
  * 回调可能在任意线程(WS reader / 定时器),实现方保证线程安全;UI marshal 由调用方负责。
  */
 interface Asr {
-    /** 开会话。[lang] "zh"/"en"(部分实现自动判语种则忽略)。 */
-    fun open(lang: String, callback: AsrCallback): AsrStream
+    /** 开会话。[lang] "zh"/"en"(部分实现自动判语种则忽略);[hotwords] 提升识别准确率(可空)。 */
+    fun open(lang: String, hotwords: List<String>, callback: AsrCallback): AsrStream
 }
 
 interface AsrStream {
@@ -185,7 +196,7 @@ interface AsrCallback {
 
 /** emulator / 无凭证:假装流式 —— 300ms 出 partial,finish 后 300ms 出 final。忽略真实音频。 */
 class MockAsr : Asr {
-    override fun open(lang: String, callback: AsrCallback): AsrStream = object : AsrStream {
+    override fun open(lang: String, hotwords: List<String>, callback: AsrCallback): AsrStream = object : AsrStream {
         private val handler = Handler(Looper.getMainLooper())
         @Volatile private var cancelled = false
         private val text = if (lang == "en") "pwd" else "ls -la"

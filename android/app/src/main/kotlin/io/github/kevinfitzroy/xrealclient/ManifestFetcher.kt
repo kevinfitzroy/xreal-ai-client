@@ -48,8 +48,12 @@ class ManifestFetcher(
                     val p = arr.getJSONObject(i)
                     val session = p.optString("session")
                     val type = runCatching { ProjectType.valueOf(p.optString("type").uppercase()) }.getOrNull()
+                    if (p.has("hotwords") && p.optJSONArray("hotwords") == null)
+                        android.util.Log.w("ManifestFetcher", "$hostName: '$session' 的 hotwords 不是 JSON 数组,已忽略(应为 [\"词1\",\"词2\"])")
+                    val hotwords = p.optJSONArray("hotwords")
+                        ?.let { hw -> (0 until hw.length()).map { hw.getString(it) } } ?: emptyList()
                     val cfg = if (type != null && session.isNotBlank())
-                        ProjectConfig(session, p.optString("name", session), type) else null
+                        ProjectConfig(session, p.optString("name", session), type, hotwords) else null
                     if (cfg == null || !cfg.isSessionNameSafe()) {
                         android.util.Log.w("ManifestFetcher", "$hostName: 跳过非法项目 session='$session' type='${p.optString("type")}'")
                         null

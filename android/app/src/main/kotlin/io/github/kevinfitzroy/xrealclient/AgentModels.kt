@@ -13,6 +13,9 @@ package io.github.kevinfitzroy.xrealclient
 
 enum class ProjectType { SSH, CLAUDE, AGENT, MAESTRO }   // MAESTRO = host orchestrator(每 host 一个,pin 首位)
 
+/** AI agent 类(对话端是 Claude Code,可领会语音意图);SSH 是裸 shell。决定语音注入是否加 🎤 marker。 */
+fun ProjectType.isAiAgent(): Boolean = this != ProjectType.SSH
+
 enum class ProjectStatus { WORKING, WAITING_FEEDBACK, IDLE, DISCONNECTED }
 
 /** 一个远端 project = 一个持久 tmux session + 类型。 */
@@ -20,6 +23,8 @@ data class ProjectConfig(
     val sessionName: String,
     val displayName: String,
     val type: ProjectType,
+    /** 该 project 的语音热词(manifest 带,可空)。与 [Hotwords.BASE] 合并后喂 ASR。 */
+    val hotwords: List<String> = emptyList(),
 ) {
     /** session 名只允许进 shell 命令的安全字符(HostClient 会拼进 exec 脚本)。 */
     fun isSessionNameSafe(): Boolean = SAFE_SESSION.matches(sessionName)
