@@ -64,12 +64,17 @@ BASE=/home/evan/work                        # 用户给的 base path
 scp -i "$KEY" docs/orchestrator-CLAUDE.md <user>@<host>:"$BASE/CLAUDE.md"
 ssh -i "$KEY" <user>@<host> "mkdir -p '$BASE/.xreal'"
 scp -i "$KEY" docs/xreal-project.sh <user>@<host>:"$BASE/.xreal/xreal-project.sh"
+# 起 Maestro **必须走 xreal-project.sh,别裸 `tmux new claude`**:脚本的 maestro 启动命令带自愈保活
+# (`while :; do claude --continue 2>/dev/null || claude; sleep 1; done`)—— claude 意外退出/崩溃/误 `/exit`
+# 会自动重启(--continue 续上次对话),否则掉回 bash 就再也管不了项目。脚本同时把 maestro 登记进 manifest,
+# 无需手写空清单。
 ssh -i "$KEY" <user>@<host> "
   chmod +x '$BASE/.xreal/xreal-project.sh'
-  printf '%s\n' '{ \"version\": 1, \"projects\": [] }' > '$BASE/.xreal/projects.json'   # 合法空清单
-  cd '$BASE' && tmux -u new -d -s maestro 'claude'                                       # 常驻 Maestro
+  XREAL_BASE='$BASE' bash '$BASE/.xreal/xreal-project.sh' new maestro maestro Maestro
 "
 ```
+
+> **首次 trust**:保活循环第一次起 claude 时,Claude Code 会问「Is this a project you trust?」。在 app 的 Maestro 终端里按一次 Enter 确认(信任的是你自己的 base 目录);确认后写进 `~/.claude.json`,之后保活重启 `--continue` 不再询问。**部署完别忘了这一步,否则保活循环会一直停在 trust 提示。**
 
 ## 第 5 步 — 拼 import bundle 并推到 app staging
 

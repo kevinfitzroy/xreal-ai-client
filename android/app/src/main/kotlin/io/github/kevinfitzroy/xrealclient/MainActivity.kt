@@ -226,7 +226,7 @@ class MainActivity : Activity() {
         }
         val (h, p) = match
         applyProjectHotwords(p)            // 进 project:BASE + 该 project 的热词
-        writeToTerm("连接 ${h.ssh.user}@${h.ssh.host}:${h.ssh.port} … (${p.sessionName})\r\n")
+        writeToTerm("连接 ${h.name} … (${p.sessionName})\r\n")   // 用别名,不打真 IP(防截图泄漏)
         thread(name = "ssh-connect", isDaemon = true) {
             try {
                 val ssh = SshConnection(

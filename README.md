@@ -37,7 +37,11 @@
 
 > 除 `F1`/`F2` 是 app 自定义键外,其余都是标准键盘键 —— 由终端 / Claude Code 按常规处理,无 app 特定行为。
 
-> **为什么是 `F1`/`F2` 而不是 `F13`/`F14`(Stage A.1 真机实测)**:最初设计用 `F13`–`F15` 这些「冷门」功能键(8BitDo 官方支持、不与打字冲突)。但 Beam Pro 真机实测发现 —— 它的 8BitDo HID 键盘走系统的 `/system/usr/keylayout/Generic.kl`,而该布局里 **`F13`–`F24`(scancode 183+)全被注释掉**,Android 映射不出 keycode,会在送达 app *之前*把键丢弃(`getevent` 能看到 `KEY_F13`,但 `dispatchKeyEvent` 收不到任何东西)。`/system` 只读、无 root 改不了。而 `F1`–`F12` 在 `Generic.kl` 里是活跃的(→ `KEYCODE_F1`=131…),8BitDo 也能稳定发出,所以改用 `F1`/`F2`(避开 `F5`/`F11`/`F12` —— WebView 可能拿去做刷新/全屏/devtools)。屏幕虚拟键盘上的 🎤 走 JSBridge 直调,和物理 `F1` 互不冲突,两种触发同时可用。
+<details>
+<summary><b>为什么是 <code>F1</code>/<code>F2</code> 而不是 <code>F13</code>/<code>F14</code>?</b> — Stage A.1 真机实测的坑</summary>
+
+最初设计用 `F13`–`F15` 这些「冷门」功能键(8BitDo 官方支持、不与打字冲突)。但 Beam Pro 真机实测发现 —— 它的 8BitDo HID 键盘走系统的 `/system/usr/keylayout/Generic.kl`,而该布局里 **`F13`–`F24`(scancode 183+)全被注释掉**,Android 映射不出 keycode,会在送达 app *之前*把键丢弃(`getevent` 能看到 `KEY_F13`,但 `dispatchKeyEvent` 收不到任何东西)。`/system` 只读、无 root 改不了。而 `F1`–`F12` 在 `Generic.kl` 里是活跃的(→ `KEYCODE_F1`=131…),8BitDo 也能稳定发出,所以改用 `F1`/`F2`(避开 `F5`/`F11`/`F12` —— WebView 可能拿去做刷新/全屏/devtools)。屏幕虚拟键盘上的 🎤 走 JSBridge 直调,和物理 `F1` 互不冲突,两种触发同时可用。
+</details>
 
 ---
 
@@ -63,7 +67,7 @@
 |---|---|
 | **XREAL One Pro**(AR 眼镜) | 把一块桌面级虚拟大屏投到眼前(横屏、宽幅,接近 MacBook 16:10 的可视区),让你不用盯着手机小屏 |
 | **Beam Pro**(口袋安卓主机,X4100 / Android 14 / Snapdragon) | 驱动眼镜显示 + 跑这个 App;自带方向键/按键 |
-| **8BitDo Micro**(~6 键蓝牙手柄) | 主输入设备:方向键导航、`Enter` 确认;`F1` 映射成语音键(按住说话,中英自动识别)、`F2` 映射成「返回列表」 |
+| **8BitDo Micro**(~6 键蓝牙手柄) | 主输入设备(方向键 + `Enter` + 语音键 + 返回)—— 完整键位见上方「操作」章节 |
 | **海外 Ubuntu 服务器**(你自己的) | 跑 tmux + Claude Code,被 app 经原生 SSH(22 端口)连入 |
 
 App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"来设计。输入只走物理键 + 语音(键位见上方「操作」章节),系统软键盘被刻意禁用(会挡半屏)。
