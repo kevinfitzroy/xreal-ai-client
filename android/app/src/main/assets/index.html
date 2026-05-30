@@ -71,6 +71,10 @@
   .s-idle .status .sd{ background:var(--idle); }
   .s-offline .status { color:var(--offline); background:rgba(224,108,117,.10); }
   .s-offline .status .sd{ background:var(--offline); }
+  /* loading:首屏拉 manifest 时,状态徽章(on duty 那格)显示转圈 */
+  .s-loading .status { color:var(--fg-dim); background:rgba(123,162,247,.10); }
+  .s-loading .status .sd{ background:transparent; position:relative; }
+  .s-loading .status .sd::after{ content:""; position:absolute; inset:-2px; border-radius:50%; border:1.5px solid var(--fg-dim); border-top-color:transparent; animation:spin .8s linear infinite; }
   .subline { margin-top:6px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--fg-faint); letter-spacing:.04em; }
   .subline .type { text-transform:uppercase; letter-spacing:.1em; } .subline .sep { opacity:.5; }
   .preview { margin-top:8px; font-size:15px; color:var(--fg-dim); display:flex; gap:8px; align-items:baseline; white-space:nowrap; overflow:hidden; }
@@ -228,9 +232,10 @@
       const projects=[...h.projects].sort((a,b)=>(b.type==='maestro'?1:0)-(a.type==='maestro'?1:0));
       projects.forEach(p=>{
         const isMaestro=p.type==='maestro';
-        const st = isMaestro ? {cls:'',label:'on duty'} : STATUS[p.status];
-        // 暂时:idle 不显示状态 tag(实时状态搁置时全是"未激活",噪音)。Maestro/工作中/等待 仍显示
-        const statusHtml = (isMaestro || p.status!=='idle') ? `<span class="status"><span class="sd"></span>${st.label}</span>` : '';
+        // loading(首屏冷加载 manifest 中)→ 在 on-duty/状态徽章那一格显示"加载中"转圈;拉到后变真状态
+        const st = p.loading ? {cls:'s-loading',label:'加载中'} : isMaestro ? {cls:'',label:'on duty'} : STATUS[p.status];
+        // 暂时:idle 不显示状态 tag(实时状态搁置时全是"未激活",噪音)。loading/Maestro/工作中/等待 仍显示
+        const statusHtml = (p.loading || isMaestro || p.status!=='idle') ? `<span class="status"><span class="sd"></span>${st.label}</span>` : '';
         const pv = p.preview ? `<div class="preview"><span class="glyph">${p.preview.glyph}</span><span class="txt ${p.preview.cur?'cur':''}">${esc(p.preview.text)}</span></div>` : '';
         html+=`<div class="card ${st.cls} t-${p.type}" data-idx="${idx}" style="animation-delay:${delay}ms">
           <span class="cursor">▸</span><span class="rail"></span>
@@ -402,9 +407,10 @@
   });
   let hwkb=false;  // 是否接了外置物理键盘
   function updateBottomBar(){
-    // 默认有 8BitDo:底部虚拟键盘 + 说明条都不显示(全靠物理键 + 语音)
-    document.getElementById('vkeyboard').hidden=true;
-    document.getElementById('hint-footer').hidden=true;
+    // 有外接物理键盘(8BitDo 等)→ 只留 slim hint,全靠物理键 + 语音;
+    // 没有 → 常驻一行虚拟键盘(没蓝牙手柄时也能导航/输入)。
+    document.getElementById('vkeyboard').hidden=hwkb;
+    document.getElementById('hint-footer').hidden=true;   // 不显示提示条(连键盘时底部保持干净)
     // CSS 上下文 class 与 currentView 同步(列表态淡化终端专用键)
     document.body.classList.toggle('ctx-list', currentView==='list');
     document.body.classList.toggle('ctx-term', currentView==='term');

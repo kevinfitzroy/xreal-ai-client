@@ -3,7 +3,6 @@ package io.github.kevinfitzroy.xrealclient
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.SessionChannel
-import android.util.Log
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import java.io.File
@@ -29,11 +28,14 @@ class SshConnection(
     private val privateKeyPath: String,
     private val startupCommand: String = "abduco -A dev bash",
     private val knownHostsFile: File? = null,
+    /** 非空 → 经该跳板 ProxyJump 连 [host](端到端认证到 host,跳板只转发)。见 [SshJump]。 */
+    private val jump: JumpSpec? = null,
 ) : PtyChannel {
 
     private var client: SSHClient? = null
     private var session: Session? = null
     private var channel: Session.Command? = null
+    private var sshJump: SshJump? = null
 
     // 所有网络 I/O(write/resize)都丢到这个单线程上跑。两个原因:
     //   1) **绝不能在主线程写 socket** —— dispatchKeyEvent(硬件 Enter/方向键、语音注入)在主线程,
@@ -46,14 +48,25 @@ class SshConnection(
         check(client == null) { "SshConnection.connect() 已调用过" }
         Crypto.ensureFullBouncyCastle()   // X25519 KEX 需完整 BC(幂等,见 Crypto)
 
-        val verifier: HostKeyVerifier = knownHostsFile?.let { TofuKnownHosts(it) }
-            ?: PromiscuousVerifier()
+        // 多跳:有 jump 则先建跳板转发,真正连 127.0.0.1:localPort(终点 host key 无法 TOFU → Promiscuous)。
+        val connectHost: String; val connectPort: Int; val verifier: HostKeyVerifier
+        if (jump != null) {
+            val j = SshJump.open(jump, host, port).also { sshJump = it }
+            connectHost = "127.0.0.1"; connectPort = j.localPort; verifier = PromiscuousVerifier()
+        } else {
+            connectHost = host; connectPort = port
+            verifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
+        }
 
         val c = SSHClient().apply {
+            // connect 超时:VPN 掉线时 socket 连接会长时间挂死(ssh-connect 线程静默卡住,日志只剩"连接…"
+            // 后再无下文)。给个上限 → 快速抛 SocketTimeout,onOpenProject 能捕获 + 落日志。
+            connectTimeout = CONNECT_TIMEOUT_MS
             addHostKeyVerifier(verifier)
-            connect(host, port)
+            connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)
         }
+        AppLog.i(TAG, "tcp+auth ok${if (jump != null) " via jump ${jump.host}" else ""} (user=$user pty=${cols}x${rows})")
         val s = c.startSession().apply {
             allocatePTY("xterm-256color", cols, rows, 0, 0, emptyMap())
         }
@@ -72,7 +85,7 @@ class SshConnection(
         val ch = channel ?: return   // 未连接/已关:静默丢弃(切 project 在途的残留写入)
         ioExec.execute {
             runCatching { ch.outputStream.write(data); ch.outputStream.flush() }
-                .onFailure { Log.w(TAG, "channel write failed: ${it.javaClass.simpleName} ${it.message}") }
+                .onFailure { AppLog.w(TAG, "channel write failed: ${it.javaClass.simpleName} ${it.message}") }
         }
     }
 
@@ -86,14 +99,20 @@ class SshConnection(
     override fun isConnected(): Boolean = client?.isConnected == true
 
     override fun close() {
+        AppLog.i(TAG, "close()")
         ioExec.shutdownNow()
         runCatching { channel?.close() }
         runCatching { session?.close() }
         runCatching { client?.disconnect() }
+        runCatching { sshJump?.close() }   // 关跳板转发 + 断跳板连接
         channel = null
         session = null
         client = null
+        sshJump = null
     }
 
-    private companion object { const val TAG = "SshConnection" }
+    private companion object {
+        const val TAG = "SshConnection"
+        const val CONNECT_TIMEOUT_MS = 12_000
+    }
 }

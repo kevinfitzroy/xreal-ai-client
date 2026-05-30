@@ -147,6 +147,7 @@ class SettingsStore(ctx: Context) {
                     }
                 },
                 basePath = o.optString("basePath", ""),
+                via = o.optString("via").ifBlank { null },   // 多跳跳板 host 名(无则直连)
             )
         }
     } catch (e: Exception) {

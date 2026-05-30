@@ -209,6 +209,8 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 | 模拟 F2=返回列表(KEYCODE 132) | `adb shell input keyevent 132` | 终端 → 列表 |
 | 看 app 日志(过滤) | `adb logcat -s VoiceDaemon:V SshConnection:V TerminalBridge:V` | tag 名按 Kotlin 代码里实际声明 |
 | 清空 logcat | `adb logcat -c` | |
+| **拉持久化崩溃/连接日志** | `adb pull /sdcard/Android/data/io.github.kevinfitzroy.xrealclient/files/logs/app.log` | `AppLog` 写的文件日志(生命周期/SSH 连接/display 增删/WebView render-gone/全局未捕获崩溃栈)。NebulaOS 直接 pull,不需 run-as。超 512KB 滚一份 `app.log.1` |
+| **重开后看上次为啥崩** | `adb logcat -s AppLogPrev` | app 一启动就把上一会话(上次进程)日志尾部重喷 logcat。闪退在眼镜上发生、当时没接电脑也能事后复盘 |
 
 ### 10.4 服务端验证(Phase 0 用 Mac 本机 sshd)
 

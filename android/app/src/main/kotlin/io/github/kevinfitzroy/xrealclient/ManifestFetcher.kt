@@ -14,19 +14,32 @@ class ManifestFetcher(
 ) {
     private val clients = HashMap<String, HostClient>()
 
-    private fun clientFor(h: HostConfig): HostClient = clients.getOrPut(h.name) {
-        val keyFile = File(keyDir, "manifest_${h.name}.pem").apply {
+    /** 物化某 host 的私钥到 keyDir,返回路径(manifest/jump 共用)。 */
+    private fun keyPathFor(h: HostConfig): String =
+        File(keyDir, "manifest_${h.name}.pem").apply {
             writeText(h.ssh.privateKeyPem); setReadable(false, false); setReadable(true, true)
-        }
-        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyFile.absolutePath, knownHostsFile)
+        }.absolutePath
+
+    private fun clientFor(h: HostConfig, jump: JumpSpec?): HostClient = clients.getOrPut(h.name) {
+        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyPathFor(h), knownHostsFile, jump)
     }
 
-    /** 阻塞(在后台线程调):逐 host 拉 manifest,返回更新 projects 后的 HostConfig。无 basePath / 拉取失败的 host 原样返回。 */
-    fun fetch(hosts: List<HostConfig>): List<HostConfig> = hosts.map { h ->
+    /** 阻塞(在后台线程调):逐 host **串行**拉 manifest,返回更新 projects 后的 HostConfig。无 basePath / 拉取失败的 host 原样返回。
+     *  串行 = 任一 host 不可达(如 VPN 关时的内网 host)会卡满其 connect 超时(8s)并拖住后面所有 host →
+     *  每个 host 单独打耗时,慢在哪个 host 一眼可见。 */
+    fun fetch(hosts: List<HostConfig>): List<HostConfig> {
+      val byName = hosts.associateBy { it.name }
+      return hosts.map { h ->
         if (h.basePath.isBlank()) return@map h
-        val raw = clientFor(h).catFile("${h.basePath.trimEnd('/')}/.xreal/projects.json")
+        val jump = h.via?.let { byName[it] }?.let { jh ->
+            JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile)
+        }
+        val t0 = System.currentTimeMillis()
+        val raw = clientFor(h, jump).catFile("${h.basePath.trimEnd('/')}/.xreal/projects.json")
+        AppLog.i("ManifestFetcher", "${h.name} manifest ${System.currentTimeMillis() - t0}ms ${if (raw == null) "(失败/超时)" else "ok"}")
         val projects = raw?.let { parseManifest(it, h.name) }
         if (projects == null) h else h.copy(projects = projects)
+      }
     }
 
     fun close() {

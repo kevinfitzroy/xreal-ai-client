@@ -42,6 +42,9 @@ data class HostConfig(
     val projects: List<ProjectConfig>,
     /** Maestro 工作根目录;manifest 在 `<basePath>/.xreal/projects.json`。空 = 不 live-fetch(仅用 seed)。 */
     val basePath: String = "",
+    /** 多跳:经哪个 host 跳板(值 = 另一 host 的 [name])。非空 → SSH 经该跳板 ProxyJump 到本 host。
+     *  典型:OPS(AWS 内网,只 VPN 可达)`via = "TK-ALIYUN"`,由挂着 OpenVPN 的 TK 转发。 */
+    val via: String? = null,
 )
 
 /** detect() 的产出:状态 + 列表预览(glyph + 一行文本)。preview 空 = 列表不显示预览行。 */

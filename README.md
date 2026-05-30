@@ -54,6 +54,22 @@
 最初设计用 `F13`–`F15` 这些「冷门」功能键(8BitDo 官方支持、不与打字冲突)。但 Beam Pro 真机实测发现 —— 它的 8BitDo HID 键盘走系统的 `/system/usr/keylayout/Generic.kl`,而该布局里 **`F13`–`F24`(scancode 183+)全被注释掉**,Android 映射不出 keycode,会在送达 app *之前*把键丢弃(`getevent` 能看到 `KEY_F13`,但 `dispatchKeyEvent` 收不到任何东西)。`/system` 只读、无 root 改不了。而 `F1`–`F12` 在 `Generic.kl` 里是活跃的(→ `KEYCODE_F1`=131…),8BitDo 也能稳定发出,所以改用 `F1`/`F2`(避开 `F5`/`F11`/`F12` —— WebView 可能拿去做刷新/全屏/devtools)。屏幕虚拟键盘上的 🎤 走 JSBridge 直调,和物理 `F1` 互不冲突,两种触发同时可用。
 </details>
 
+### 📜 终端翻页:`Shift`(R 键)+ `↑` / `↓` —— 半页滚动看历史
+
+终端里 Claude Code 输出多、刷得快,要往回看被滚过去的内容(上一屏的回答、之前的命令),用 **`R`(= `Shift`,见上表)+ 十字键 `↑` / `↓`**:
+
+| 组合键 | 作用 |
+|---|---|
+| `Shift` + `↑` | 进入翻阅(tmux copy-mode),向上翻**半页** |
+| `Shift` + `↑`(连按) | 继续向上,一次半页 |
+| `Shift` + `↓` | 向下翻半页(回到更新的内容) |
+| `q` / `Esc` | 退出翻阅,跳回最新输出 |
+
+- **为什么是半页**:AR 眼镜下整页跳太大、容易丢上下文;半页(屏幕一半行数)翻起来眼睛跟得上。
+- **为什么不和 Claude Code 冲突**:翻页走 **tmux 的 root 按键表(`bind -n S-Up/S-Down`)** —— tmux 在把按键交给程序*之前*就拦截这两个组合,所以 Claude Code / vim / shell 根本收不到 `Shift+↑/↓`(它们本身也都不用这俩)。普通方向键、`Shift+Tab`(Claude Code 切模式)、`Ctrl+C` 等照常工作。
+- **底层链路**:`Shift+↑` → xterm.js 编码成 `ESC[1;2A` → 经 SSH 送到远端 tmux → root 表绑定执行 `copy-mode ; send-keys -X halfpage-up`。app 侧**零拦截**(`dispatchKeyEvent` 直接透传方向键),全靠 tmux 配置实现 —— **服务端零增量**(只给已有 tmux 加了几行 `bind`/`set`,无新服务)。绑定 + 配置由 app 的 tmux 启动命令经 `-f` / `source-file` 注入,每次连接幂等重设。
+- **能往回翻多远**:每个 session 的 scrollback = **50000 行**(tmux 默认才 2000),足够翻 4-5 整页乃至更深。注意 tmux 硬限制:**已经在跑的 session 仍是旧的 2000 行**(无法回溯升级已有 window),**重建该 session** 后才是 50000;之后新建的 session 一出生即 50000。
+
 ---
 
 ## 理念

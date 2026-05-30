@@ -23,19 +23,29 @@ class HostClient(
     private val user: String,
     private val privateKeyPath: String,
     private val knownHostsFile: File? = null,
+    /** 非空 → 经该跳板 ProxyJump(端到端认证到 host)。见 [SshJump]。 */
+    private val jump: JumpSpec? = null,
 ) : Closeable {
 
     private var client: SSHClient? = null
+    private var sshJump: SshJump? = null
 
     private fun ensure(): SSHClient {
         client?.let { if (it.isConnected) return it }
-        runCatching { client?.disconnect() }
-        val verifier: HostKeyVerifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
+        teardown()
+        val connectHost: String; val connectPort: Int; val verifier: HostKeyVerifier
+        if (jump != null) {
+            val j = SshJump.open(jump, host, port).also { sshJump = it }
+            connectHost = "127.0.0.1"; connectPort = j.localPort; verifier = PromiscuousVerifier()
+        } else {
+            connectHost = host; connectPort = port
+            verifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
+        }
         val c = SSHClient().apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             timeout = READ_TIMEOUT_MS
             addHostKeyVerifier(verifier)
-            connect(host, port)
+            connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)
         }
         client = c
@@ -100,9 +110,13 @@ class HostClient(
         return sessions.associateWith { result[it] ?: NO_SESSION_SENTINEL }
     }
 
-    override fun close() {
+    override fun close() = teardown()
+
+    private fun teardown() {
         runCatching { client?.disconnect() }
+        runCatching { sshJump?.close() }
         client = null
+        sshJump = null
     }
 
     companion object {

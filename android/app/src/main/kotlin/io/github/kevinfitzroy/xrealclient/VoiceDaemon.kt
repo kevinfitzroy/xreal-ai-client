@@ -106,7 +106,7 @@ class VoiceDaemon(
 
     private fun onAsrError(gen: Int, reason: String) {
         if (gen != asrGen) return
-        Log.w(TAG, "ASR error: $reason")
+        AppLog.w(TAG, "ASR error: $reason")
         resetIdle()
     }
 
@@ -118,7 +118,7 @@ class VoiceDaemon(
         try {
             channel.write(payload.toByteArray(Charsets.UTF_8))   // 原子 write+flush(串行化,见 PtyChannel)
         } catch (e: Exception) {
-            Log.w(TAG, "write injected text failed: ${e.message}")
+            AppLog.w(TAG, "write injected text failed: ${e.javaClass.simpleName}: ${e.message}")
         }
         resetIdle()
         return true

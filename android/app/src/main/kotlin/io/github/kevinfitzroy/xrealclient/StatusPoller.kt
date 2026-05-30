@@ -54,21 +54,27 @@ class StatusPoller(
         scope.cancel()
     }
 
-    private fun clientFor(h: HostConfig): HostClient = clients.getOrPut(h.name) {
-        val keyFile = File(keyDir, "host_${h.name}.pem").apply {
+    private fun keyPathFor(h: HostConfig): String =
+        File(keyDir, "host_${h.name}.pem").apply {
             writeText(h.ssh.privateKeyPem)
             setReadable(false, false); setReadable(true, true)
-        }
+        }.absolutePath
+
+    private fun clientFor(h: HostConfig, jump: JumpSpec?): HostClient = clients.getOrPut(h.name) {
         HostClient(
             host = h.ssh.host, port = h.ssh.port, user = h.ssh.user,
-            privateKeyPath = keyFile.absolutePath, knownHostsFile = knownHostsFile,
+            privateKeyPath = keyPathFor(h), knownHostsFile = knownHostsFile, jump = jump,
         )
     }
 
     private fun pollOnce(): String {
+        val byName = hosts.associateBy { it.name }
         val arr = JSONArray()
         for (h in hosts) {
-            val panes = clientFor(h).captureAll(h.projects.map { it.sessionName })
+            val jump = h.via?.let { byName[it] }?.let { jh ->
+                JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile)
+            }
+            val panes = clientFor(h, jump).captureAll(h.projects.map { it.sessionName })
             val snaps = h.projects.map { p ->
                 p to AgentStatusDetector.detect(panes[p.sessionName] ?: HostClient.NO_SESSION_SENTINEL, p.type)
             }
@@ -80,12 +86,13 @@ class StatusPoller(
 
     /** JSON 形状的唯一来源(对齐 index.html 的 setHosts/HOSTS):{name,addr,up,projects:[...]}。 */
     companion object {
-        private fun projectJson(p: ProjectConfig, s: ProjectSnapshot): JSONObject {
+        private fun projectJson(p: ProjectConfig, s: ProjectSnapshot, loading: Boolean = false): JSONObject {
             val o = JSONObject()
                 .put("session", p.sessionName)   // JS 端 openProject 的主键(name 可能重复)
                 .put("name", p.displayName)
                 .put("type", p.type.jsKey())
                 .put("status", s.status.jsKey())
+                .put("loading", loading)         // 首屏冷加载:状态徽章显示"加载中"转圈,manifest 拉到后变真状态
                 .put("age", "")
             o.put(
                 "preview",
@@ -98,9 +105,9 @@ class StatusPoller(
             return o
         }
 
-        private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>): JSONObject {
+        private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>, loading: Boolean = false): JSONObject {
             val projects = JSONArray()
-            for ((p, s) in snaps) projects.put(projectJson(p, s))
+            for ((p, s) in snaps) projects.put(projectJson(p, s, loading))
             val up = snaps.any { it.second.status != ProjectStatus.DISCONNECTED }
             return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up).put("projects", projects)
         }
@@ -110,10 +117,10 @@ class StatusPoller(
          * 推给 WebView —— 否则列表退回 mock,Enter→findProject 名字匹配不上 → 开不了真终端。
          * 状态一律 IDLE、无 preview(诚实:没探测就别假装有状态)。
          */
-        fun staticListJson(hosts: List<HostConfig>): String {
+        fun staticListJson(hosts: List<HostConfig>, loading: Boolean = false): String {
             val arr = JSONArray()
             val idle = ProjectSnapshot(ProjectStatus.IDLE, "", "")
-            for (h in hosts) arr.put(hostJson(h, h.projects.map { it to idle }))
+            for (h in hosts) arr.put(hostJson(h, h.projects.map { it to idle }, loading))
             return arr.toString()
         }
     }

@@ -2,7 +2,13 @@ package io.github.kevinfitzroy.xrealclient
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.hardware.display.DisplayManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.text.InputType
 import android.util.Base64
@@ -11,6 +17,9 @@ import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.webkit.ConsoleMessage
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -64,6 +73,40 @@ class MainActivity : Activity() {
     private var lastPushedJson: String? = null   // pushHostList 去重:内容不变不重推(避免列表重渲染闪烁)
     private val fetchExec = java.util.concurrent.Executors.newSingleThreadExecutor()   // manifest 拉取串行(HostClient 非并发安全)
 
+    private val displayManager: DisplayManager
+        get() = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+
+    // 监听 display 增删:眼镜↔Beam Pro 走 USB-C DP-Alt,断连=外接 display 移除。把这个事件打上时间戳,
+    // 才能跟「闪退 / SSH 失败」对得上(诊断「眼镜断连」是因还是果)。registerDisplayListener 在 onCreate。
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(id: Int) = AppLog.i(TAG, "display ADDED id=$id ${displayDesc(id)}")
+        override fun onDisplayRemoved(id: Int) = AppLog.w(TAG, "display REMOVED id=$id")
+        override fun onDisplayChanged(id: Int) = AppLog.i(TAG, "display CHANGED id=$id ${displayDesc(id)}")
+    }
+    private fun displayDesc(id: Int): String = runCatching {
+        val d = displayManager.getDisplay(id) ?: return "(gone)"
+        val pt = android.graphics.Point().also { @Suppress("DEPRECATION") d.getRealSize(it) }
+        "name='${d.name}' ${pt.x}x${pt.y} state=${d.state}"
+    }.getOrElse { "(?)" }
+
+    // 网络/VPN 抖动监听:VPN 不稳(GFW 干扰 / 与 Mac 双登录互踢)flap 时,app 的默认网络在 VPN↔WiFi
+    // 间反复切。把这些事件落进 app.log,就能跟 SSH 断流/重连失败对上时间戳 → 自证「VPN 抖 → app 崩」,
+    // 不用再去翻系统 logcat 对时间。registerDefaultNetworkCallback 跟踪的就是 app 实际走的那张网。
+    private val connectivityManager: ConnectivityManager
+        get() = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    @Volatile private var lastNetCap: String? = null
+    private val netCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(n: Network) = AppLog.i(TAG, "net AVAILABLE $n")
+        override fun onLost(n: Network) = AppLog.w(TAG, "net LOST $n (默认网络断 → 在用的 SSH 会被撕掉)")
+        override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) {
+            val sig = "$n vpn=${c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)}" +
+                " wifi=${c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)}" +
+                " internet=${c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)}" +
+                " validated=${c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}"
+            if (sig != lastNetCap) { lastNetCap = sig; AppLog.i(TAG, "net CAP $sig") }   // 去重:cap 回调很频
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Crypto.ensureFullBouncyCastle()   // sshj 用 X25519 KEX 前必须先换上完整 BC(Stage A.2)
@@ -108,8 +151,26 @@ class MainActivity : Activity() {
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     // 页面就绪后才推真实 host/project 列表(window.setHosts 此时才存在)
+                    AppLog.i(TAG, "WebView onPageFinished url=$url")
                     pendingHostListJson?.let { pushHostList(it) }
                     refreshManifests()   // 首屏:静态 seed 先显示,manifest 拉到后替换
+                }
+                // WebView 渲染进程被系统杀(OOM / GPU 上下文丢失 —— xterm.js 用 WebGL,眼镜断连或尺寸
+                // 剧烈 churn 都可能触发)。默认 return false = **直接崩 app**(极可能就是这次「闪退」)。
+                // 改成:落日志 + return true 阻止硬崩 + recreate() 重建 WebView 自恢复(胜过白屏/硬崩)。
+                override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                    AppLog.e(TAG, "WebView RENDER PROCESS GONE didCrash=${detail?.didCrash()} priority=${detail?.rendererPriorityAtExit()} isCurrent=${view === webView}")
+                    runCatching { recreate() }
+                    return true
+                }
+            }
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(m: ConsoleMessage): Boolean {
+                    // JS 侧报错(xterm.js / WebGL / resize)只有这里看得到。只落 WARNING+,避免刷屏。
+                    val lvl = m.messageLevel()
+                    if (lvl == ConsoleMessage.MessageLevel.WARNING || lvl == ConsoleMessage.MessageLevel.ERROR)
+                        AppLog.w(TAG, "JS $lvl: ${m.message()} @${m.sourceId()}:${m.lineNumber()}")
+                    return true
                 }
             }
             addJavascriptInterface(bridge, TerminalBridge.JS_NAME)
@@ -136,13 +197,14 @@ class MainActivity : Activity() {
         settings.loadAsr().let { asr ->
             if (asr.isVolcConfigured()) {
                 voiceDaemon.asr = VolcEngineAsr(asr.appid, asr.token, asr.resourceId)
-                android.util.Log.i(TAG, "ASR = VolcEngineAsr(resource=${asr.resourceId})")
+                AppLog.i(TAG, "ASR = VolcEngineAsr(resource=${asr.resourceId})")
             }
         }
 
         if (hosts.isNotEmpty()) {
             // 核心流程:真实 host/project 静态枚举(onPageFinished 推)。Enter→findProject 靠它开真终端。
-            pendingHostListJson = StatusPoller.staticListJson(hosts)
+            // loading=true:首屏徽章先转圈;manifest 拉到后 refreshManifests 推 loading=false 的真状态。
+            pendingHostListJson = StatusPoller.staticListJson(hosts, loading = true)
 
             // live manifest 拉取(P1.1c):任一 host 配了 basePath 才建 fetcher
             if (hosts.any { it.basePath.isNotBlank() }) {
@@ -164,6 +226,37 @@ class MainActivity : Activity() {
                 dbgInput = DebugInputServer(sink = { activeChannel }).also { it.start() }
             }
         }
+
+        displayManager.registerDisplayListener(displayListener, null)
+        runCatching { connectivityManager.registerDefaultNetworkCallback(netCallback) }
+        AppLog.i(TAG, "onCreate done: hosts=${hosts.size} displays=${displayManager.displays.size}")
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 眼镜断连可能改 display/uiMode → 视 configChanges 声明,要么走这里、要么直接重建 Activity(看
+        // 生命周期日志有没有 onDestroy→onCreate 就知道是哪种)。记下来对得上「断连↔闪退」。
+        AppLog.i(TAG, "onConfigurationChanged orient=${newConfig.orientation} uiMode=${newConfig.uiMode} kbd=${newConfig.keyboard} hardKbdHidden=${newConfig.hardKeyboardHidden}")
+        pushHwKeyboardState()   // 8BitDo 等硬件键盘插拔 → 动态显隐虚拟键盘
+    }
+
+    /** 把"当前有无外接物理键盘"推给 WebView,让它显隐自绘虚拟键盘。8BitDo 连=隐藏 vkey,断=弹出 vkey。 */
+    private fun pushHwKeyboardState() {
+        val present = hasHardwareKeyboard()
+        AppLog.i(TAG, "hwKeyboard present=$present → setHwKeyboard")
+        runOnUiThread {
+            if (::webView.isInitialized) webView.evaluateJavascript("window.setHwKeyboard && window.setHwKeyboard($present)", null)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppLog.i(TAG, "onResume view=$view displays=${displayManager.displays.size}")
+    }
+
+    override fun onPause() {
+        AppLog.i(TAG, "onPause view=$view")
+        super.onPause()
     }
 
     /** 把整批 hosts JSON 推给 WebView 列表。内容不变则不重推(setHosts 会重渲染 + 重放入场动画 → 闪烁)。 */
@@ -195,11 +288,13 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        AppLog.i(TAG, "onStart view=$view")
         poller?.start()
         if (view == View.LIST) refreshManifests()   // 回前台 + 在列表态:刷一次
     }
 
     override fun onStop() {
+        AppLog.i(TAG, "onStop view=$view")
         poller?.stop()
         super.onStop()
     }
@@ -209,7 +304,7 @@ class MainActivity : Activity() {
      * session)→ 热切 channel;查不到(mock 数据)→ 回退干净 LocalEcho 演示。
      */
     private fun onOpenProject(host: String, session: String, name: String, type: String) {
-        Log.i(TAG, "openProject host=$host session=$session name=$name type=$type")
+        AppLog.i(TAG, "openProject host=$host session=$session name=$name type=$type seq=${openSeq + 1}")
         val seq = ++openSeq
         view = View.TERMINAL
         runOnUiThread {
@@ -228,24 +323,34 @@ class MainActivity : Activity() {
         applyProjectHotwords(p)            // 进 project:BASE + 该 project 的热词
         writeToTerm("连接 ${h.name} … (${p.sessionName})\r\n")   // 用别名,不打真 IP(防截图泄漏)
         thread(name = "ssh-connect", isDaemon = true) {
+            AppLog.i(TAG, "ssh-connect start host=${h.name} session=${p.sessionName} via=${h.via ?: "-"} seq=$seq")
             try {
+                // 多跳:via 指向的跳板 host(如 OPS via TK)→ 经它 ProxyJump,端到端认证到本 host。
+                val jump = h.via?.let { viaName ->
+                    hosts.firstOrNull { it.name == viaName }?.let { jh ->
+                        JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, materializeKey(jh).absolutePath, java.io.File(filesDir, "known_hosts"))
+                    } ?: run { AppLog.w(TAG, "via host '$viaName' 未配置 → 退回直连"); null }
+                }
                 val ssh = SshConnection(
                     host = h.ssh.host, port = h.ssh.port, user = h.ssh.user,
                     privateKeyPath = materializeKey(h).absolutePath,
                     startupCommand = tmuxAttachCommand(p.sessionName),
                     knownHostsFile = java.io.File(filesDir, "known_hosts"),
+                    jump = jump,
                 )
                 ssh.connect(80, 24)   // 初始尺寸;showTerminal 的 fit 会触发 onResize 校正
+                AppLog.i(TAG, "ssh connected host=${h.name} session=${p.sessionName} (seq=$seq obsolete=${seq != openSeq})")
                 runOnUiThread {
                     if (seq == openSeq && view == View.TERMINAL) switchTo(ssh)
                     else runCatching { ssh.close() }   // 用户已走开 → 关掉,别泄漏连接
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "ssh connect 失败: ${e.message}")
+                // 异常类名才分得清病因:SocketTimeout/NoRouteToHost=VPN 死,UserAuth=认证,TransportException=host key…
+                AppLog.w(TAG, "ssh connect 失败 host=${h.name}: ${e.javaClass.simpleName}: ${e.message}", e)
                 runOnUiThread {
                     if (seq == openSeq) {
                         switchTo(LocalEchoChannel())
-                        writeToTerm("\r\nSSH 连接失败: ${e.message}\r\n")
+                        writeToTerm("\r\nSSH 连接失败: ${e.javaClass.simpleName}: ${e.message}\r\n")
                     }
                 }
             }
@@ -253,6 +358,7 @@ class MainActivity : Activity() {
     }
 
     private fun backToList() {
+        AppLog.i(TAG, "backToList (from view=$view)")
         openSeq++   // 让在途的 SSH 连接知道自己已 obsolete(回来后别再错切)
         view = View.LIST
         applyProjectHotwords(null)     // 回列表:语音热词回退 BASE
@@ -276,12 +382,31 @@ class MainActivity : Activity() {
     }
 
     /**
-     * attach-or-create 该 project 的 tmux session。
+     * attach-or-create 该 project 的 tmux session,并注入半页翻页绑定 + 大 scrollback。
      * - LANG/LC_ALL=UTF-8 + `tmux -u`:强制 UTF-8 客户端,否则 tmux 把多字节(中文/powerline)降级成 `_`。
      * - PATH 前缀:非交互 exec 的 PATH 太窄找不到 tmux(同 HostClient)。
+     * - **翻页**:Shift+↑/↓ → tmux root 表(-n,Claude Code 收不到 → 不冲突)进 copy-mode 半页滚。
+     *   xterm.js 默认把 Shift+Arrow 编码成 `ESC[1;2A/B` 经 SSH 送达 tmux。
+     * - **scrollback**:history-limit 50000(默认 2000)。经多 agent 实测修正(见 commit):`set -g` 不能
+     *   回溯升级已有 window → 必须用 `-f conf` 在 server 启动那刻加载(新 session 出生即 50000);
+     *   `source-file` 让 bindings 对已运行 server 立即生效。现有运行中的老 window 需重建才升 scrollback。
+     * - conf 用 base64 投递,彻底避开 `;`/`"`/`#{}` 被外层 shell 解释。
      */
-    private fun tmuxAttachCommand(session: String): String =
-        "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; exec tmux -u new -A -s '$session'"
+    private fun tmuxAttachCommand(session: String): String {
+        val conf = buildString {
+            append("source-file -q ~/.tmux.conf\n")   // cold-start 时 -f 会跳过默认加载 → 先把用户配置带回来
+            append("set -g history-limit 50000\n")
+            append("bind -n S-Up \"copy-mode ; send-keys -X halfpage-up\"\n")
+            append("bind -n S-Down 'if -F \"#{pane_in_mode}\" \"send-keys -X halfpage-down\"'\n")
+        }
+        val b64 = Base64.encodeToString(conf.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val c = "/tmp/.xreal-tmux.conf"
+        return "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; " +
+            "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; " +
+            "echo $b64 | base64 -d > $c; " +
+            "tmux source-file $c 2>/dev/null; " +           // 已运行 server:bindings 立即对现有 session 生效
+            "exec tmux -u -f $c new -A -s '$session'"        // cold-start:server 出生即带 conf(50000 + bindings)
+    }
 
     private fun materializeKey(h: HostConfig): java.io.File =
         java.io.File(filesDir, "term_${h.name}.pem").apply {
@@ -291,6 +416,7 @@ class MainActivity : Activity() {
     /** 热切活动 channel:更新 bridge/voiceDaemon 引用、起新 reader、关旧 channel(解阻塞旧 reader)。 */
     private fun switchTo(newChannel: PtyChannel) {
         val old = activeChannel
+        AppLog.d(TAG, "switchTo ${old.javaClass.simpleName} -> ${newChannel.javaClass.simpleName}")
         activeChannel = newChannel
         bridge.channel = newChannel
         voiceDaemon.channel = newChannel
@@ -404,12 +530,15 @@ class MainActivity : Activity() {
                     runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$b64')", null) }
                 }
             } catch (e: Exception) {
-                if (gen == readerGen) Log.w(TAG, "pty-reader[$gen] stopped: ${e.message}")
+                if (gen == readerGen) AppLog.w(TAG, "pty-reader[$gen] stopped: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }
 
     override fun onDestroy() {
+        AppLog.i(TAG, "onDestroy view=$view isFinishing=$isFinishing isChangingConfigurations=$isChangingConfigurations")
+        runCatching { displayManager.unregisterDisplayListener(displayListener) }
+        runCatching { connectivityManager.unregisterNetworkCallback(netCallback) }
         readerGen++   // 让所有 reader 失效
         fetchExec.shutdownNow()
         manifestFetcher?.close()
