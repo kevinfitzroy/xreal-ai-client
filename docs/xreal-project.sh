@@ -120,7 +120,10 @@ MD
     # 启动命令作为 pane 命令直接跑(-u 强制 UTF-8)。**不用 send-keys** —— 它会和用户 shell 的
     # .zshrc/.bashrc 启动竞争,命令可能只被打到 prompt 没执行。命令退出后 `exec bash` 落回交互 shell
     # 保持 session 存活(maestro 的 loop 不会退,claude 项目退出后能在 shell 里手动重开)。
-    tmux -u new -d -s "$session" -c "$dir" "$startup"'; exec bash'
+    # 先 source ~/.profile:tmux 起的是非 login shell,PATH 不含 ~/.local/bin
+    # (claude native 安装默认落这里)。.bashrc 的 PATH 行在交互 guard 之后、非交互够不到,
+    # 而 ~/.profile 无条件加 ~/.local/bin → 这样 maestro 保活循环才找得到 claude。
+    tmux -u new -d -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash'
     echo "建好 '$session' (type=$type) @ $dir  启动: $startup"
   else
     tmux -u new -d -s "$session" -c "$dir"          # 纯交互 shell(ssh 配角终端)

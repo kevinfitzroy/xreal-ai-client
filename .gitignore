@@ -14,3 +14,6 @@
 .env.*
 *.pem
 refs/
+
+# 本地工具 / 个人 skill(与 app 无关,纯本地需求)
+.claude/
