@@ -69,6 +69,66 @@ os.replace(tmp, path)
 PY
 }
 
+# 给一个 AI-agent project 部署「状态上报」:Claude Code hooks → agent-status.sh 写 <base>/.xreal/status.json。
+# session 名烤进 hook 命令(运行时零识别);app 一次性 cat status.json 显示 working/waiting/disconnected。
+# 幂等:agent-status.sh 不存在才写;settings.json 用 python merge(保留已有键,只覆盖我们这几个事件)。
+deploy_status_hooks() {
+  local dir="$1" session="$2" xr="$BASE/.xreal"
+  mkdir -p "$xr"
+  if [ ! -x "$xr/agent-status.sh" ]; then
+    cat > "$xr/agent-status.sh" <<'STATUS_SH'
+#!/usr/bin/env bash
+# Claude Code hook 调用:agent-status.sh <session> <state>。写 status/<session>.json(状态不变保留 since)+ 聚合 status.json。
+set -euo pipefail
+SESSION="${1:?}"; STATE="${2:?}"
+DIR="$(cd "$(dirname "$0")" && pwd)/status"; mkdir -p "$DIR"
+NOW=$(date +%s); F="$DIR/$SESSION.json"; SINCE=$NOW
+if [ -f "$F" ]; then
+  OLD=$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$F" || true)
+  [ "$OLD" = "$STATE" ] && { SINCE=$(sed -n 's/.*"since":\([0-9]*\).*/\1/p' "$F"); [ -n "$SINCE" ] || SINCE=$NOW; }
+fi
+printf '{"session":"%s","state":"%s","since":%s,"updated":%s}' "$SESSION" "$STATE" "$SINCE" "$NOW" > "$F.tmp" && mv "$F.tmp" "$F"
+AGG="$(dirname "$DIR")/status.json"
+{ printf '{"timestamp":%s,"sessions":[' "$NOW"; first=1
+  for s in "$DIR"/*.json; do [ -e "$s" ] || continue; [ $first = 1 ] || printf ','; cat "$s"; first=0; done
+  printf ']}'; } > "$AGG.tmp" && mv "$AGG.tmp" "$AGG"
+exit 0
+STATUS_SH
+    chmod +x "$xr/agent-status.sh"
+  fi
+  mkdir -p "$dir/.claude"
+  P_XR="$xr" P_SESSION="$session" P_DEST="$dir/.claude/settings.json" python3 - <<'PY'
+import json, os
+xr=os.environ["P_XR"]; s=os.environ["P_SESSION"]; dest=os.environ["P_DEST"]
+def cmd(state, matcher=None):
+    h={"hooks":[{"type":"command","command":f"{xr}/agent-status.sh {s} {state}"}]}
+    if matcher is not None: h["matcher"]=matcher
+    return h
+hooks={"UserPromptSubmit":[cmd("working")], "Stop":[cmd("waiting")],
+       "SessionStart":[cmd("waiting")], "SessionEnd":[cmd("disconnected")],
+       "Notification":[cmd("needs-permission","permission_prompt")]}
+try:
+    cfg=json.load(open(dest)); cfg = cfg if isinstance(cfg,dict) else {}
+except Exception:
+    cfg={}
+cfg.setdefault("hooks",{}).update(hooks)
+json.dump(cfg, open(dest,"w"), ensure_ascii=False, indent=2)
+PY
+  echo "状态 hooks → $dir/.claude/settings.json (session=$session)"
+}
+
+# 给 manifest 里所有 AI-agent project 部署/刷新状态 hooks(现有 project 一次性铺开;ssh 配角终端跳过)。
+cmd_hooks() {
+  [ -f "$MANIFEST" ] || { echo "(manifest 还不存在)"; return 0; }
+  P_MANIFEST="$MANIFEST" python3 - <<'PY' | while IFS=$'\t' read -r type session dir; do
+import json, os
+for p in json.load(open(os.environ["P_MANIFEST"])).get("projects", []):
+    print(f'{p.get("type","")}\t{p.get("session","")}\t{p.get("dir","")}')
+PY
+    case "$type" in claude|agent|maestro) [ -n "$dir" ] && deploy_status_hooks "$dir" "$session";; esac
+  done
+}
+
 cmd_new() {
   local type="${1:-}" session="${2:-}"; shift 2 2>/dev/null || { echo "用法: new <type> <session> [显示名] [选项]" >&2; exit 2; }
   local name="" dir="" group="" startup="" attach=0
@@ -114,6 +174,8 @@ cmd_new() {
 MD
     echo "seed 了语音约定 CLAUDE.md @ $dir/CLAUDE.md"
   fi
+  # AI-agent 项目(都跑 claude):部署状态上报 hooks。下次 claude 启动即生效。
+  case "$type" in claude|agent|maestro) deploy_status_hooks "$dir" "$session";; esac
   if tmux has-session -t "$session" 2>/dev/null; then
     echo "tmux session '$session' 已存在,复用(不重起程序)"
   elif [ -n "$startup" ]; then
@@ -155,8 +217,9 @@ cmd_rm() {
 }
 
 case "${1:-}" in
-  new) shift; cmd_new "$@";;
-  ls)  cmd_ls;;
-  rm)  shift; cmd_rm "$@";;
-  *) echo "用法: $(basename "$0") {new|ls|rm} …  (详见脚本头部注释)" >&2; exit 2;;
+  new)   shift; cmd_new "$@";;
+  ls)    cmd_ls;;
+  rm)    shift; cmd_rm "$@";;
+  hooks) cmd_hooks;;        # 给所有现有 AI-agent project 部署/刷新状态上报 hooks
+  *) echo "用法: $(basename "$0") {new|ls|rm|hooks} …  (详见脚本头部注释)" >&2; exit 2;;
 esac
