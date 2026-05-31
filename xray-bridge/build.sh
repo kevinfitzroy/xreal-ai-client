@@ -31,10 +31,12 @@ echo "→ NDK: $ANDROID_NDK_HOME"
 
 command -v gomobile >/dev/null || { echo "✗ gomobile 不在 PATH。见本脚本头部前置 step 3。" >&2; exit 1; }
 
-# ── 拉官方 xray-core 并锁版本 ────────────────────────────────────────────────
-echo "→ go get xtls/xray-core@latest(需翻墙)…"
-go get github.com/xtls/xray-core@latest
-go mod tidy
+# ── 拉官方 xray-core 依赖(版本已 pin 在 go.mod)──────────────────────────────
+# ⚠️ 不用 @latest:最新 xray-core 常要求比本机更高的 go(如 v1.260327 要 go1.26)。go.mod 已 pin
+# 到兼容本机 go1.25 的版本(v1.260206.0,要 go1.25.3)。要升级 xray-core 时手动改 go.mod 的 require 再 tidy,
+# 并确认本机 go 满足其 go 指令。go.sum 在仓库里 → download 即可,无需重新解析版本。
+echo "→ go mod download(版本见 go.mod)…"
+go mod download
 echo "→ 锁定版本:$(go list -m github.com/xtls/xray-core)"
 
 # ── gomobile bind:只打 arm64-v8a(Beam Pro X4100),androidapi 与 app minSdk 对齐 ──
