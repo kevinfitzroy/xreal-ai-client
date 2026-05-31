@@ -24,6 +24,11 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Citadel
+    # DEVELOPMENT_TEAM 放进 gitignored Signing.xcconfig —— 不让个人 Apple ID team 进公开 repo。
+    # 真机构建需本地有 ios/Signing.xcconfig(内含 `DEVELOPMENT_TEAM = <你的 teamID>`);模拟器构建忽略签名,不需要。
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient
@@ -31,7 +36,6 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_STYLE: Automatic
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"

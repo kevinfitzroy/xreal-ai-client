@@ -36,5 +36,45 @@
 	     sockets, but declare local-networking intent for clarity. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to a local throwaway SSH server for terminal POC.</string>
+	<!-- SPEC §8 real-device config-injection channel: a self-contained `.xrhosts`
+	     bundle (Valet output) AirDropped to the phone → "用 XrealPOC 打开" → import.
+	     We OWN the type (UTExportedTypeDeclarations) and claim Owner rank so AirDrop
+	     offers us. We do NOT list public.json in LSItemContentTypes (would noisily
+	     grab every .json); the type conforms to public.data/public.json only so the
+	     bundle is recognized as JSON-shaped, which does not make us a .json handler. -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>XREAL Host Config</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>io.github.kevinfitzroy.xrealclient.hosts</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>io.github.kevinfitzroy.xrealclient.hosts</string>
+			<key>UTTypeDescription</key>
+			<string>XREAL Host Config</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>xrhosts</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

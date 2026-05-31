@@ -7,6 +7,9 @@ build/
 # SPM
 .swiftpm/
 
+# 本地签名(个人 Apple ID team,不进公开 repo)
+Signing.xcconfig
+
 # throwaway SSH keys / certs (M2 POC) — NEVER commit
 *.pem
 *.key

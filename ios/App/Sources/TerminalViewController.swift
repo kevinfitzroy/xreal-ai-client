@@ -165,6 +165,19 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         if args.contains("-forceLandscape") {
             requestOrientation(.landscapeRight)
         }
+        // Verify the "Open in" import path without an AirDrop: -importConfigPath <file> runs the
+        // exact same HostStore.importConfig + reloadHostsAfterImport an open: would (the sim can
+        // read /tmp at the BSD level). Production launches pass no such arg → no effect.
+        if let i = args.firstIndex(of: "-importConfigPath"), i + 1 < args.count {
+            let path = args[i + 1]
+            NSLog("[VC] DEBUG -importConfigPath \(path)")
+            do {
+                let r = try HostStore.importConfig(from: URL(fileURLWithPath: path))
+                reloadHostsAfterImport(imported: r.hosts)
+            } catch {
+                reportImportFailure("\(error)")
+            }
+        }
     }
 
     private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
@@ -415,6 +428,44 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         old?.close()     // finishes stream + closes client → PTY loop exits, tmux persists
         eval("window.showList()")
         refreshManifests()   // a project Maestro just created shows up now
+    }
+
+    // MARK: - Valet "Open in" import → reload list (SPEC §8 real-device channel)
+    /// Called by AppDelegate after a `.xrhosts` file imports into private storage. Re-read the
+    /// now-updated hosts.json from disk (refreshManifests only walks the in-memory snapshot, so it
+    /// would never discover a freshly-imported host) and re-seed the list, then live-fetch.
+    /// Order-robust on cold-launch-via-file: if the page isn't ready yet, didFinish's own
+    /// `if !hosts.isEmpty` push covers it (we've set self.hosts); if ready, we push now.
+    func reloadHostsAfterImport(imported count: Int) {
+        NSLog("[VC] reloadHostsAfterImport: \(count) host(s)")
+        hosts = HostStore.loadHosts()
+        statusByHost = [:]; reachable = nil; probedHosts = []
+        guard pageReady else { return }   // didFinish will seed+refresh once loaded
+        // If a file is opened while a PTY is live (background → "Open in" → foreground in terminal),
+        // tear the session down before switching to the list — otherwise onOutput keeps painting a
+        // hidden xterm and the tmux attach leaks (bump openSeq/sessionGen so late chunks no-op).
+        if view_ == .terminal {
+            openSeq += 1; sessionGen += 1
+            let old = ssh; ssh = nil; old?.close()
+        }
+        if view_ != .list { view_ = .list; eval("window.showList()") }
+        toast("导入成功:\(count) host")
+        pushHostList(loading: true)
+        refreshManifests()
+    }
+
+    /// Surface an import parse/validation failure (bad JSON, no valid host) without crashing —
+    /// graceful degradation (SPEC §9): the user keeps whatever list they already had.
+    func reportImportFailure(_ message: String) {
+        NSLog("[VC] import failure: \(message)")
+        if pageReady { toast("导入失败:\(message)") }
+    }
+
+    /// Lightweight in-WebView toast (no native alert chrome over the AR-glasses UI). Uses the
+    /// shared index.html if it exposes window.toast; otherwise a no-op (the list refresh is the
+    /// real feedback). Kept defensive so an absent JS hook never throws.
+    private func toast(_ s: String) {
+        eval("window.toast && window.toast(\(jsString(s)))")
     }
 
     // MARK: - Hardware keyboard detection (SPEC §6.1)

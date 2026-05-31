@@ -237,9 +237,9 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 平台 | staging 落点 | 机制 |
 |---|---|---|
 | Android | `/data/local/tmp/xreal_import/{hosts.json, asr.json, <keys>}` | `adb push` → app 启动 import 到私有存储 → best-effort 清 staging(权威清理由 Valet `adb shell rm`) |
-| iOS | **开发期(POC ✅)**:`xcrun simctl get_app_container booted <bundle> data` 定位容器 → copy `hosts.json`/key 进 `Documents/`(= adb push 的 iOS 等价物,**仅模拟器**)。**真机仍未解**:沙盒无 adb 等价物,候选 Files/document picker 导入、share-extension、app 内一次性导入流 |
+| iOS | **开发期(模拟器)**:`xcrun simctl get_app_container booted <bundle> data` 定位容器 → copy `hosts.json`/key 进 `Documents/`(= adb push 的 iOS 等价物,**仅模拟器**)。**真机:分享单「Open in」(实现已落地,AirDrop 触发待真机验)**——Valet 产出**单个自包含 `.xrhosts` 文件**(JSON `{version, hosts:[{…,key:<内联 PEM>}], asr?}`,与 staging 唯一差异 = **内联 key**),AirDrop 到手机 →「用 XrealPOC 打开」→ app 解析、把每个 host 的内联 PEM 写进私有 `Documents/<name>.pem`(0600)、`key`→纯文件名、整批原子写私有 `hosts.json` → 列表刷新出 host。app 注册自定义扩展 `.xrhosts` + 自有 UTI `io.github.kevinfitzroy.xrealclient.hosts`(`UTExportedTypeDeclarations`,`LSHandlerRank=Owner`;**不抢 `public.json`**)。**用户不手输任何 host/key**,只导入一个文件。私有存储**结果形状不变**(hosts.json with bare-filename key),只是进来的"包"是内联单文件 |
 
-> iOS 没有 `adb push 到任意 app 私有目录`这种能力(沙盒)。代客安装在 iOS 上**必然换实现**,但**契约形状(hosts.json/asr.json schema + 安全规则)不变**。模拟器开发期通道已由 POC 验证(simctl 容器 copy);**真机注入通道是 iOS 客户端的首要待解项**。
+> iOS 没有 `adb push 到任意 app 私有目录`这种能力(沙盒)。代客安装在 iOS 上**必然换实现**,但**契约形状(hosts.json/asr.json schema + 安全规则)不变**。模拟器开发期通道由 simctl 容器 copy 验证;**真机注入通道 = 分享单「Open in」+ 自含 `.xrhosts`**:导入逻辑(解析/落盘/0600/原子写/列表刷新)已在模拟器验证(2026-05-31,经 `-importConfigPath` lever 走与 `open:` 同一条路径),app 已带 doc-type/UTI 重装真机;**AirDrop「Open in XrealPOC」触发本身待真机验**(只有真机 AirDrop 能定 UTI 匹配是否生效)。曾是 iOS 客户端首要待解项,实现已落地。
 
 ---
 
@@ -273,7 +273,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
 | 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |
 | ASR HTTP | OkHttp(豆包流式) | `URLSession` |
-| 配置注入(§8) | `adb push` → 私有存储 | 模拟器 `simctl` 容器 copy(开发期 ✅);**真机待解**(§8) |
+| 配置注入(§8) | `adb push` → 私有存储 | 模拟器 `simctl` 容器 copy(开发期);**真机 = 分享单「Open in」+ 自含 `.xrhosts`**(✅ 2026-05-31,§8) |
 | 持久化日志 | `getExternalFilesDir` + `adb pull` | app container + Xcode/`pymobiledevice3` 取 |
 | AI 开发期截屏 | `adb exec-out screencap` | 模拟器 `xcrun simctl io booted screenshot`;真机 `pymobiledevice3 developer dvt screenshot` |
 | AI 开发期装机 | `adb install`(零账号) | 模拟器 `simctl install`(零签名);真机 `xcrun devicectl device install`(**需签名 .app**) |
