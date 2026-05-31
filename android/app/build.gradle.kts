@@ -1,7 +1,15 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
 }
+
+// release 签名:口令在 android/keystore.properties(gitignored,绝不进 git)。
+// 缺文件时下面 signingConfig 回退到 debug,别的机器/CI 无 keystore 也能 build。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply { if (keystorePropsFile.exists()) load(FileInputStream(keystorePropsFile)) }
 
 android {
     namespace = "io.github.kevinfitzroy.xrealclient"
@@ -11,15 +19,27 @@ android {
         applicationId = "io.github.kevinfitzroy.xrealclient"
         minSdk = 34
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0-phase0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropsFile.exists()) {
+                storeFile = file(keystoreProps["storeFile"] as String)
+                storePassword = keystoreProps["storePassword"] as String
+                keyAlias = keystoreProps["keyAlias"] as String
+                keyPassword = keystoreProps["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = if (keystorePropsFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

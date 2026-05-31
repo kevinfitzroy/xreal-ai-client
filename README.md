@@ -208,6 +208,23 @@ Beam Pro 上的单个 APK
 
 ---
 
+## 从 Release 安装(无需 Android Studio)
+
+如果你只想**装来用**(而不是改代码),不必搭编译环境。从 [GitHub Releases](https://github.com/kevinfitzroy/xreal-ai-client/releases) 下载正式签名 APK,直接 sideload:
+
+```bash
+# 目标:Beam Pro X4100 / NebulaOS / Android 14 / arm64-v8a
+adb install -r xreal-ai-client-0.2.0-beampro.apk
+```
+
+> 这是这个 release 存在的意义:**消费 release 不需要 Android Studio / JDK / Gradle**,一条 `adb install` 即可。Release 的 APK 用项目专用 keystore 签名(非 debug 签名)。
+
+**初始化(host + SSH key)仍由 AI 代办,且仍走 adb。** 装好之后,host 配置、专用 SSH key 生成 / 下发、Maestro 部署等动作,照旧由「代客安装(Valet Setup)」完成 —— 笔记本上的 AI agent 经 `adb push` 把 `hosts.json` + key 送进 app 私有存储,启动 app 触发导入(见下文 [代客安装](#代客安装-valet-setup--签名特色) 与 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md))。**换句话说:release 只是省掉了「编译 APK」这一步,代客安装的 adb 通道完全不受影响。** app 刻意不做设置 UI 的设计没变。
+
+> caveat:8BitDo 物理键、麦克风录音、AR 显示等**需要真机才能验**,只有你本人能确认这些功能在你的设备上工作。
+
+---
+
 ## 开发 / 贡献
 
 ```bash

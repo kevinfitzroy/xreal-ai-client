@@ -15,5 +15,10 @@
 *.pem
 refs/
 
+# 签名 keystore / 口令(绝不进 git —— 仓库是 public)
+*.jks
+*.keystore
+keystore.properties
+
 # 本地工具 / 个人 skill(与 app 无关,纯本地需求)
 .claude/
