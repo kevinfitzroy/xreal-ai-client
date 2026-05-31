@@ -19,6 +19,8 @@
 # 开机自启(扎实化 maestro):tmux/claude 不随重启回来。`install-autostart` 装一条用户级 @reboot cron
 #   (`@reboot bash -lc '… restore'`),重启后自动重建 maestro 守护循环 + 所有 project session。免 root、免 sudo。
 #   maestro session 内仍是自愈 loop(claude 退了自动重起);cron 只负责把 tmux 在 boot 时拉起来。
+#   ⚠️ 两个前提缺一不可:① 这条 cron 行真装了(漏装则重启后 maestro 不回来、没人能远程唤醒——TK-ALIYUN 栽过);
+#      ② cron/crond 服务真在跑(@reboot 只在服务起着时触发;最小化云镜像常没起 → 行白装)。maestro 启动应自检二者。
 #   替代方案(更"正"但通常要 sudo 开 linger):systemd user service,见 agent-setup-guide.md。
 #
 #   <type> ∈ claude | agent | ssh | maestro
@@ -257,7 +259,9 @@ cmd_install_autostart() {
   command -v crontab >/dev/null || { echo "install-autostart: 无 crontab,改用 systemd user service(见 agent-setup-guide.md)" >&2; return 1; }
   local self="$BASE/.xreal/xreal-project.sh" logf="$BASE/.xreal/restore.log"
   local line="@reboot /bin/bash -lc '\"$self\" restore >> \"$logf\" 2>&1'"
-  { crontab -l 2>/dev/null | grep -vF 'xreal-project.sh restore' || true; echo "$line"; } | crontab -
+  # 去重按脚本绝对路径子串(对行内引号免疫)。曾用 'xreal-project.sh restore' 做固定串,
+  # 但写入的行里路径带引号(…xreal-project.sh" restore),子串匹配不上 → 重复运行会累积 @reboot 行。
+  { crontab -l 2>/dev/null | grep -vF "$self" || true; echo "$line"; } | crontab -
   echo "已装开机自启(@reboot cron):"
   echo "  $line"
   echo "验证:crontab -l | grep xreal-project   /   手动测:$self restore"
