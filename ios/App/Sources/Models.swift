@@ -47,31 +47,64 @@ struct HostConfig {
     let via: String?          // multi-hop jump host name (Phase 1: parsed, not used)
 }
 
+/// One session's live state (written by Claude Code hooks → status.json). `since` =
+/// server epoch seconds it entered that state; the client computes age from it.
+/// Mirrors Android's SessionState (ManifestFetcher.kt).
+struct SessionState {
+    let state: String   // working | waiting | needs-permission | disconnected | unknown
+    let since: Int      // epoch seconds (0 = absent)
+}
+
 // MARK: - setHosts JSON serialization
-// Produces the exact shape index.html's `window.setHosts` expects (mirrors
-// StatusPoller.staticListJson on Android): [{name,addr,up,projects:[{session,name,type,status,age,preview}]}].
-// Phase 1 has no live status (hooks/status.json is a later phase) so every project
-// is emitted without a `state` field → JS falls back to its seed/on-duty logic and
-// shows no spurious badge.
+// Produces the exact shape index.html's `window.setHosts` expects (mirrors Android's
+// StatusPoller.staticListJson): [{name,addr,up,projects:[{session,name,type,...,state?,since,loading}]}].
+// index.html's statusFor(p) keys off p.loading > p.state > legacy status; ageText(p)
+// off p.since. So Phase 2's whole job is emitting state/since/loading per SPEC §3.
 enum DeckJSON {
-    static func hostsArray(_ hosts: [HostConfig]) -> String {
+    /// Serialize the deck, merging hooks live state (`statusByHost`) per SPEC §3:
+    ///   - `reachable == nil` → not yet probed (initial seed push): omit `state`, set
+    ///     `loading` so JS shows a spinner.
+    ///   - host has a non-blank basePath but is NOT in `reachable` → all its projects
+    ///     `disconnected` (SPEC §3 rule 1).
+    ///   - reachable + status.json has the session → use the reported state (rule 2).
+    ///   - reachable + no record → `unknown` (no badge; rule 3, no capture-pane fallback).
+    static func hostsArray(
+        _ hosts: [HostConfig],
+        loading: Bool = false,
+        statusByHost: [String: [String: SessionState]] = [:],
+        reachable: Set<String>? = nil
+    ) -> String {
         let arr: [[String: Any]] = hosts.map { h in
+            let hostStatus = statusByHost[h.name] ?? [:]
+            // Only hosts we actually try to live-fetch (non-blank basePath) can go offline;
+            // a blank-basePath host is never probed, so never marked disconnected.
+            let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
             let projects: [[String: Any]] = h.projects.map { p in
-                // shape matches index.html's setHosts/HOSTS (no `state` field in Phase 1 →
-                // JS falls back to its seed/on-duty logic, shows no spurious status badge).
-                [
+                let live: SessionState? = hostStatus[p.session]
+                let state: String? = {
+                    if reachable == nil { return nil }          // unprobed: JS falls back to seed logic
+                    if unreachable { return "disconnected" }
+                    return live?.state ?? "unknown"
+                }()
+                var o: [String: Any] = [
                     "session": p.session,
                     "name": p.name,
                     "type": p.type.rawValue,   // ssh|claude|agent|maestro — matches JS ICONS keys
                     "status": "idle",
-                    "age": "",
+                    "age": "",                 // JS computes its own age from since; this is the legacy field
+                    "loading": loading,        // cold first-load: badge shows a spinner until status arrives
                     "preview": NSNull(),
                 ]
+                // since MUST be a JSON number (epoch seconds); ageText does now/1000 - since,
+                // a string would yield NaN and silently drop the age.
+                o["since"] = live?.since ?? 0
+                if let state { o["state"] = state }   // omit when unprobed → JS uses on-duty/seed logic
+                return o
             }
             return [
                 "name": h.name,
                 "addr": h.addr,
-                "up": true,
+                "up": !unreachable,
                 "projects": projects,
             ]
         }

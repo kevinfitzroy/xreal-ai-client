@@ -24,6 +24,10 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private var sessionGen = 0
 
     private var hosts: [HostConfig] = []
+    // Live status from the last manifest+status fetch (SPEC §3). nil reachable = not yet
+    // probed → list pushes omit `state` so the JS shows seed/loading instead of a badge.
+    private var statusByHost: [String: [String: SessionState]] = [:]
+    private var reachable: Set<String>? = nil
     // GameController keyboard observers (hardware keyboard → hide vkey, SPEC §6.1).
     private var kbConnectObs: NSObjectProtocol?
     private var kbDisconnectObs: NSObjectProtocol?
@@ -112,7 +116,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         // Push seed list immediately (Enter can open a real terminal), then refresh
         // from manifest. If no hosts configured, leave the index.html mock in place.
         if !hosts.isEmpty {
-            pushHostList(hosts)
+            pushHostList(loading: true)   // seed list with spinners; real status fills in after fetch
             refreshManifests()
         }
         pushHwKeyboardState()
@@ -149,19 +153,28 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     }
 
     // MARK: - List push + manifest refresh
-    private func pushHostList(_ hosts: [HostConfig]) {
-        let json = DeckJSON.hostsArray(hosts)
+    /// Push the current deck to the list view, merging the last-known live status.
+    /// `loading:true` (initial, pre-fetch) shows spinners and omits state (reachable=nil).
+    private func pushHostList(loading: Bool = false) {
+        let json = DeckJSON.hostsArray(
+            hosts, loading: loading,
+            statusByHost: statusByHost,
+            reachable: loading ? nil : reachable   // loading push = unprobed → no state yet
+        )
         eval("window.setHosts(\(jsString(json)))")
     }
 
-    /// Fetch each host's manifest off the main actor, then re-push the real list.
+    /// Fetch each host's manifest + status off the main actor, then re-push the real
+    /// list with live state badges. Runs on initial list entry and on back-to-list.
     private func refreshManifests() {
         let snapshot = hosts
         Task {
-            let updated = await ManifestFetcher.fetch(snapshot)
+            let result = await ManifestFetcher.fetch(snapshot)
             await MainActor.run {
-                self.hosts = updated
-                if self.view_ == .list { self.pushHostList(updated) }
+                self.hosts = result.hosts
+                self.statusByHost = result.statusByHost
+                self.reachable = result.reachable
+                if self.view_ == .list { self.pushHostList(loading: false) }
                 #if DEBUG
                 self.maybeAutoOpen()   // self-verification hook (launch-arg gated)
                 #endif

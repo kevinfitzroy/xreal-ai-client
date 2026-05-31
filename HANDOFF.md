@@ -27,10 +27,13 @@
 - **Phase 1 核心闭环**:`hosts.json → Agent Deck 列表(cat manifest)→ 开 project → ed25519 SSH → tmux PTY → 返回`,**port 自 Android**(双轨 channel:manifest 走独立短命 exec / project 走交互 PTY;`syncSize` 热切重推尺寸;`openSeq`+`sessionGen` race 守护;`tmux -u`+UTF-8)。新增 Swift `Models/HostStore/ManifestFetcher` + 进化 `SSHSession/TerminalViewController`。本地 Mac host(127.0.0.1,`~/.ssh/xreal_phase0` ed25519,已授权)验通。
 - **Phase 1 UI**(用户要求,SPEC §6.1):横竖兼容(旋转 `fitAddon` 重排)+ 虚拟键盘**横屏 1 行 / 竖屏 2 行**(共享 `index.html` 加一个 `@media(orientation:portrait)`,两份 byte-identical;Android 锁横屏→永远 1 行→零影响)+ 蓝牙键盘 connect→`setHwKeyboard` 隐藏。
 - 工程 xcodegen;一批 `#if DEBUG`+launch-arg 验证脚手架(gated,生产零影响,类似 Android `DebugInputServer`)。
+- **Phase 2 状态徽章已验通**:列表 `cat <base>/.xreal/status.json`(同连接,port `ManifestFetcher.parseStatus` 数组 schema + `StatusPoller.staticListJson` 合并:不可达→disconnected/有上报→用/无→unknown)+ 返回列表重拉。截图验 working/waiting/needs-permission/unknown/disconnected 五态 + age + refresh。改动仅 3 个 `ios/App/Sources/*.swift`,未碰 index.html/android。
 
 **✅ ssh-rsa 跨端坑已解**:真实 host(`xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0`)2026-05-31 核实**全是 ed25519**,无需迁移;**约定客户端一律 ed25519、不用 RSA**(Citadel RSA 走 legacy ssh-rsa/SHA-1)。SPEC §5。
 
-**➡️ 下一步(用户定向:优先「无需人工接入、模拟器可完成」的 phase)**:候选 = status.json 状态徽章(列表 `cat status.json`,纯模拟器可验)、多跳 `via` ProxyJump(本地造两跳即可验)。**需真机/硬件 → 押后**:语音(麦克风)、F1/F2 物理键路由(8BitDo)、disconnect→vkey 恢复(sim 验不了)、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机+签名)。
+**➡️ 下一步(用户定向:优先「无需人工接入、模拟器可完成」)**:**当前在做 = 收尾打磨**(app 前台重拉状态 / loading 态 / SSH 连接超时 + 重连/错误健壮性 / 优雅降级 SPEC §9)。之后 = **多跳 `via` ProxyJump**(port `SshJump`,本地造两跳验)——这是最后一块大的纯模拟器活。**再往后全需真机/硬件 → 押后**:语音(麦克风)、F1/F2 物理键路由(8BitDo)、disconnect→vkey 恢复(sim 验不了)、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机+签名)。
+>
+> **commit 节奏(用户 2026-05-31 定)**:iOS 分阶段建,**每个截图验证过的 phase 直接 commit(不 push)**,不再逐个问。见 memory [[phase-build-autocommit]]。
 
 > ⚠️ commit 状态:release `d0bbb4c` 已推送;契约层 `256871a` + POC `3259ae4` 已 commit(本地未 push);**Phase 1(`ios/` + 共享 `index.html` + SPEC §5/§6.1 + 本 HANDOFF)本次 commit**。`android/` 仅共享 `index.html` 被动(其它一字未动)。
 
