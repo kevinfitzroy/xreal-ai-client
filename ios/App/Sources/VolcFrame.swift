@@ -55,26 +55,43 @@ enum VolcFrame {
         case unknown(type: Int)
     }
 
+    /// 收 16 字节头部 hex,定位豆包实际帧格式(防越界 + 排查用)。
+    private static func hex(_ b: [UInt8]) -> String {
+        b.prefix(20).map { String(format: "%02x", $0) }.joined(separator: " ")
+    }
+
     static func parse(_ bytes: Data) -> Parsed {
         let b = [UInt8](bytes)
-        precondition(b.count >= 4, "frame too short: \(b.count)")
+        guard b.count >= 4 else { NSLog("[VolcFrame] 帧太短 \(b.count)B"); return .unknown(type: -1) }
         let headerLen = (Int(b[0]) & 0x0f) * 4
         let type  = (Int(b[1]) >> 4) & 0x0f
         let flags = Int(b[1]) & 0x0f
         let comp  = Int(b[2]) & 0x0f
+        // 每帧打头部,看豆包实际发什么(type/flags/headerLen + hex)
+        NSLog("[VolcFrame] in \(b.count)B type=\(type) flags=\(flags) hdr=\(headerLen) comp=\(comp) hex=\(hex(b))")
         var pos = headerLen
         var seq: Int? = nil
-        if flags & 0b0001 != 0 { seq = readI32BE(b, pos); pos += 4 }
+        if flags & 0b0001 != 0 {
+            guard pos + 4 <= b.count else { NSLog("[VolcFrame] seq 越界,\(b.count)B left=\(b.count-pos)"); return .unknown(type: type) }
+            seq = readI32BE(b, pos); pos += 4
+        }
         let isLast = (flags & F_LAST) != 0
         switch type {
         case T_FULL_SERVER:
+            guard pos + 4 <= b.count else { NSLog("[VolcFrame] size 字段越界 pos=\(pos) count=\(b.count)"); return .unknown(type: type) }
             let size = readU32BE(b, pos); pos += 4
+            guard size >= 0, pos + size <= b.count else {
+                NSLog("[VolcFrame] payload 越界 size=\(size) left=\(b.count-pos) hex=\(hex(b))")
+                return .unknown(type: type)
+            }
             let raw = Data(b[pos ..< pos + size])
             let json = String(decoding: maybeGunzip(raw, comp), as: UTF8.self)
             return .server(sequence: seq, isLast: isLast, payloadJson: json)
         case T_ERROR:
+            guard pos + 8 <= b.count else { return .error(code: -1, message: "短错误帧") }
             let code = readI32BE(b, pos); pos += 4
             let msz = readU32BE(b, pos); pos += 4
+            guard msz >= 0, pos + msz <= b.count else { return .error(code: code, message: "") }
             let raw = Data(b[pos ..< pos + msz])
             let msg = String(decoding: maybeGunzip(raw, comp), as: UTF8.self)
             return .error(code: code, message: msg)
