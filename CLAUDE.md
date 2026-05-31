@@ -207,7 +207,9 @@ fallback 接口(sshj↔sshlib、Base64↔WS)仍预留。完整判据见 [`docs/s
 | Maestro 建 project(自动部署状态 hooks) | `<base>/.xreal/xreal-project.sh new claude <session> [名]` | claude/agent/maestro 类型 `new` 时自动装 `agent-status.sh` + hooks → 写 `.xreal/status.json` |
 | 给现有 project 补/刷状态 hooks | `<base>/.xreal/xreal-project.sh hooks` | `hooks` 子命令:给 manifest 里所有 AI-agent project 一次性铺开 hooks(已有 host 升级用) |
 | 列 / 删 project | `xreal-project.sh ls` / `xreal-project.sh rm <session> [--kill]` | rm 从 manifest 移除,`--kill` 同时杀 tmux session |
-| host 接入步骤 | 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md) | banner 隐 IP、Maestro 保活等 |
+| 重启后拉回整个 deck | `<base>/.xreal/xreal-project.sh restore` | 幂等重建 manifest 里所有 tmux session(maestro 守护 loop + 各 project,已在则跳过)。主机重启后用 |
+| 装开机自启(@reboot cron) | `<base>/.xreal/xreal-project.sh install-autostart` | 重启后自动 `restore`;免 root。systemd user service 替代方案见 agent-setup-guide.md 第 4.5 步 |
+| host 接入步骤 | 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md) | banner 隐 IP、Maestro 保活、开机自启等 |
 | 开启 Mac sshd(临时测试 host) | System Settings → Sharing → Remote Login | 验证:`sudo systemsetup -getremotelogin` 输出 `Remote Login: On` |
 | abduco(纯 SSH project 的 session 驻留备选) | `brew install abduco` → `abduco -A dev bash`(`abduco` 列出) | agent 类 project 用 tmux(需 capture-pane);见 §5 session 驻留行 |
 

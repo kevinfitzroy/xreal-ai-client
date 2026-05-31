@@ -79,6 +79,36 @@ ssh -i "$KEY" <user>@<host> "
 
 > **首次 trust**:保活循环第一次起 claude 时,Claude Code 会问「Is this a project you trust?」。在 app 的 Maestro 终端里按一次 Enter 确认(信任的是你自己的 base 目录);确认后写进 `~/.claude.json`,之后保活重启 `--continue` 不再询问。**部署完别忘了这一步,否则保活循环会一直停在 trust 提示。**
 
+## 第 4.5 步 — 开机自启(让 maestro 重启后自动回来)
+
+tmux/claude **不随主机重启回来**(maestro 的自愈 loop 只管 claude 在 session 内崩了重起,管不了 boot)。装一条**用户级 `@reboot` cron**,重启后自动重建整个 deck:
+
+```bash
+ssh -i "$KEY" <user>@<host> "XREAL_BASE='$BASE' bash '$BASE/.xreal/xreal-project.sh' install-autostart"
+ssh -i "$KEY" <user>@<host> "crontab -l | grep xreal-project"   # 验证装上了
+```
+
+- **免 root**:用户级 crontab,不碰系统配置。`@reboot` 时跑 `xreal-project.sh restore`,按 manifest **幂等**重建所有 session(maestro 守护 loop + 各 project;已在则跳过)。
+- 任何时候想手动把 deck 拉回来:`xreal-project.sh restore`。
+- **替代方案(systemd user service,更"正"但通常要 sudo 开 linger)**:
+  ```bash
+  mkdir -p ~/.config/systemd/user
+  cat > ~/.config/systemd/user/xreal-maestro.service <<UNIT
+  [Unit]
+  Description=XREAL Maestro deck restore
+  After=network-online.target
+  [Service]
+  Type=oneshot
+  RemainAfterExit=yes
+  Environment=PATH=/usr/local/bin:/usr/bin:/bin
+  ExecStart=$BASE/.xreal/xreal-project.sh restore
+  [Install]
+  WantedBy=default.target
+  UNIT
+  systemctl --user enable xreal-maestro.service
+  sudo loginctl enable-linger <user>     # ← 这步通常要 sudo;没 sudo 就用上面的 cron 方案
+  ```
+
 ## 第 5 步 — 拼 import bundle 并推到 app staging
 
 staging 目录 = `/data/local/tmp/xreal_import/`。里面放 `hosts.json` + 私钥文件(**`key` 字段必须是纯文件名**,app 会拒绝带 `/` 或 `..` 的路径)。

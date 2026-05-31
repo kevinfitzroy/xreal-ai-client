@@ -12,6 +12,14 @@
 #   xreal-project.sh new <type> <session> [显示名] [--dir DIR] [--group G] [--cmd "启动命令"] [--attach]
 #   xreal-project.sh ls
 #   xreal-project.sh rm <session> [--kill]        # 从 manifest 移除;--kill 同时杀 tmux session
+#   xreal-project.sh hooks                        # 给 manifest 里所有 AI-agent project 铺/刷状态上报 hooks
+#   xreal-project.sh restore                      # 重建 manifest 里所有 tmux session(幂等,已在则跳过);重启后拉回整个 deck
+#   xreal-project.sh install-autostart            # 装 @reboot cron → 主机重启后自动 restore(免 root;见头部「开机自启」注)
+#
+# 开机自启(扎实化 maestro):tmux/claude 不随重启回来。`install-autostart` 装一条用户级 @reboot cron
+#   (`@reboot bash -lc '… restore'`),重启后自动重建 maestro 守护循环 + 所有 project session。免 root、免 sudo。
+#   maestro session 内仍是自愈 loop(claude 退了自动重起);cron 只负责把 tmux 在 boot 时拉起来。
+#   替代方案(更"正"但通常要 sudo 开 linger):systemd user service,见 agent-setup-guide.md。
 #
 #   <type> ∈ claude | agent | ssh | maestro
 #     claude  — Claude Code 项目(启动命令默认 `claude`)
@@ -216,10 +224,52 @@ cmd_rm() {
   echo "已从 manifest 移除 '$session'${2:+ 并杀掉 tmux session}"
 }
 
+# 重建 manifest 里所有 tmux session(幂等:已在则跳过)。重启后用,或 @reboot cron 调。
+# 建 session 的逻辑与 cmd_new 一致(UTF-8 / -x -y 防袖珍尺寸 / source ~/.profile 找 claude / startup 来自 manifest)。
+# 容错:单个 session 起不来不影响其余(set -e 下用 && / || 兜住)。
+cmd_restore() {
+  [ -f "$MANIFEST" ] || { echo "(manifest 不存在,无可恢复)"; return 0; }
+  command -v tmux >/dev/null || { echo "restore: 找不到 tmux,放弃" >&2; return 1; }
+  local n=0 session type dir startup
+  while IFS=$'\t' read -r session type dir startup; do
+    [ -n "$session" ] || continue
+    if tmux has-session -t "$session" 2>/dev/null; then echo "restore: skip '$session'(已在)"; continue; fi
+    mkdir -p "$dir" 2>/dev/null || true
+    if [ -n "$startup" ]; then
+      # 与 cmd_new 同款:source ~/.profile 拿到 claude 的 PATH;startup 退出后 exec bash 保活
+      tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash' \
+        && { echo "restore: 起 '$session'(type=$type)"; n=$((n+1)); } || echo "restore: 失败 '$session'" >&2
+    else
+      tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" \
+        && { echo "restore: 起 '$session'(type=$type,纯 shell)"; n=$((n+1)); } || echo "restore: 失败 '$session'" >&2
+    fi
+  done < <(P_MANIFEST="$MANIFEST" python3 - <<'PY'
+import json, os
+for p in json.load(open(os.environ["P_MANIFEST"])).get("projects", []):
+    print('\t'.join([p.get("session","") or "", p.get("type","") or "", p.get("dir","") or "", p.get("startup","") or ""]))
+PY
+)
+  echo "restore: 完成,新建 $n 个 session(其余已在)"
+}
+
+# 装一条用户级 @reboot cron,使主机重启后自动 `restore`。幂等(先删旧的 xreal restore 行)。免 root。
+cmd_install_autostart() {
+  command -v crontab >/dev/null || { echo "install-autostart: 无 crontab,改用 systemd user service(见 agent-setup-guide.md)" >&2; return 1; }
+  local self="$BASE/.xreal/xreal-project.sh" logf="$BASE/.xreal/restore.log"
+  local line="@reboot /bin/bash -lc '\"$self\" restore >> \"$logf\" 2>&1'"
+  { crontab -l 2>/dev/null | grep -vF 'xreal-project.sh restore' || true; echo "$line"; } | crontab -
+  echo "已装开机自启(@reboot cron):"
+  echo "  $line"
+  echo "验证:crontab -l | grep xreal-project   /   手动测:$self restore"
+  echo "(替代方案 systemd user service + enable-linger,通常要 sudo,见 agent-setup-guide.md)"
+}
+
 case "${1:-}" in
   new)   shift; cmd_new "$@";;
   ls)    cmd_ls;;
   rm)    shift; cmd_rm "$@";;
   hooks) cmd_hooks;;        # 给所有现有 AI-agent project 部署/刷新状态上报 hooks
-  *) echo "用法: $(basename "$0") {new|ls|rm|hooks} …  (详见脚本头部注释)" >&2; exit 2;;
+  restore) cmd_restore;;    # 重建 manifest 里所有 tmux session(重启后拉回 deck)
+  install-autostart) cmd_install_autostart;;   # 装 @reboot cron → 重启自动 restore
+  *) echo "用法: $(basename "$0") {new|ls|rm|hooks|restore|install-autostart} …  (详见脚本头部注释)" >&2; exit 2;;
 esac
