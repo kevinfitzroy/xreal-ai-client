@@ -1,7 +1,16 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-31(**第二客户端方向定调:iOS**;发布首个签名 release v0.2.0;抽出平台中立契约层 [`SPEC.md`](SPEC.md);上一轮:多跳 SSH + 持久日志/崩溃捕获 + tmux 翻页 + Agent 状态展示)
+> **最近更新**:2026-06-01(**第三客户端 HarmonyOS 立项**:脚手架 + ~1900 行 ArkTS 骨架 + 文档,见 [`harmony/`](harmony/);上一轮:第二客户端 iOS 定调 + 真机闭环;ROADMAP P2.7 富媒体预览 + SPEC §13)
+
+---
+
+## 0.0' 本轮(2026-06-01)—— 第三客户端 HarmonyOS 立项(代码+文档,未编译)
+
+无编译环境下尽量备好:`harmony/` 独立目录,照 Android+SPEC 写 **ArkTS/ArkUI 工程骨架 + 27 个 .ets(~1900 行)+ cpp NAPI 骨架 + 4 份文档**。核心(终端 Web+桥、列表/manifest、语音、按键、配置)代码完整;**SSH 两条 backend 都起骨架**(A=libssh2/NAPI 类 sshj、B=纯 ArkTS over TCPSocket+cryptoFramework 类 Citadel),**选哪条是悬置的人工决策**(`harmony/docs/DECISIONS.md` D1)。SPEC §11.1 加了 HarmonyOS 列。
+- **下个 session / 用户上线先看**:`harmony/README.md` → `harmony/docs/DECISIONS.md`(拍板 SSH backend)+ `HUMAN-TASKS.md`(装 DevEco/签名/真机/交叉编译 libssh2)。
+- **已知差异**:ArkWeb 桥跑主线程(SSH 写必派后台)、键事件组件焦点级(须抢焦)——代码已处理。
+- **未做(等环境/决策)**:编译验证、SSH backend 完成、SSH-over-443 隧道接入、真机验 8BitDo/麦克风/眼镜。
 
 ---
 

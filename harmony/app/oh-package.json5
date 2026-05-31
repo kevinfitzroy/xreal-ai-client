@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "XREAL AI Client (HarmonyOS NEXT) — Agent Deck:host→project 列表 + 真 SSH 终端 + 语音",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19"
+  }
+}

@@ -1,0 +1,21 @@
+# DevEco / hvigor 工具生成物(首次 ohpm install / DevEco 打开时生成,不进 git)
+/oh_modules/
+**/oh_modules/
+/.hvigor/
+**/build/
+/.cxx/
+**/.cxx/
+local.properties
+/.idea/
+*.iml
+.DS_Store
+
+# 工具生成的锁/配置(由本机 SDK 解析,不手写、不进 git)
+oh-package-lock.json5
+/hvigor/hvigor-config.json5
+
+# 签名材料(华为实名账号签发,绝不进 git;丢了重签)
+*.p12
+*.cer
+*.p7b
+/entry/signature/

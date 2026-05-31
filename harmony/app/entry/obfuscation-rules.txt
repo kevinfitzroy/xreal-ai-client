@@ -1,0 +1,2 @@
+# 混淆规则(release）。默认不开混淆(entry/build-profile.json5 obfuscation.enable=false）。
+# 若开混淆,NAPI 导出符号 / 反射用到的类名需 keep。

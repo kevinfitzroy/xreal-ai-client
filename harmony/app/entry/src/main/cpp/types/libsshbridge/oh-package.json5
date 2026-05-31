@@ -1,0 +1,6 @@
+{
+  "name": "libsshbridge.so",
+  "types": "./index.d.ts",
+  "version": "0.1.0",
+  "description": "NAPI 封 libssh2(路径 A)。entry/oh-package.json5 用 file: 引用本目录。"
+}

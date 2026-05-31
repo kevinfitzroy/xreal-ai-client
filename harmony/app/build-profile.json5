@@ -1,0 +1,36 @@
+{
+  // 工程级构建配置(HarmonyOS NEXT / Stage 模型)。
+  // 签名 signingConfigs 故意留空 —— 真机装包需华为实名账号签名,属人工步骤(见 docs/HUMAN-TASKS.md §签名)。
+  // 有 DevEco 后:勾「Automatically generate signature」会自动回填本数组;或按 HUMAN-TASKS 手动四件套填入。
+  // 绝不在此硬编码任何证书路径/密码(与项目 secrets 约定一致)。
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "compatibleSdkVersion": "5.0.0(12)",   // 最低兼容 API 12(HarmonyOS 5.0.0)
+        "targetSdkVersion": "5.0.0(12)",
+        "runtimeOS": "HarmonyOS",              // 纯 NEXT,不带 AOSP 兼容层
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        { "name": "default", "applyToProducts": ["default"] }
+      ]
+    }
+  ]
+}

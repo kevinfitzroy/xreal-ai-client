@@ -2,9 +2,9 @@
 
 > **Contract version: 1**
 >
-> 这是 XREAL AI Client **所有客户端实现的单一真相源**。当前有两个目标客户端:
-> **Android**(已上真机,Kotlin)与 **iOS**(规划中,Swift)。两端都实现**这一层**;
-> 平台代码坐在契约之下。
+> 这是 XREAL AI Client **所有客户端实现的单一真相源**。当前有**三个**目标客户端:
+> **Android**(已上真机,Kotlin)、**iOS**(模拟器+真机已验,Swift)、**HarmonyOS**(脚手架+代码骨架,ArkTS;见 [`harmony/`](harmony/))。
+> 三端都实现**这一层**;平台代码坐在契约之下。
 >
 > **防内耗铁律**:任何跨端行为(列表怎么来、状态怎么算、语音怎么注入、按键什么语义、
 > 配置怎么进来)**只在这份文档里定义一次**。改契约 = 改这份 + 两端对齐(见 §12)。
@@ -325,6 +325,26 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 工程脚手架 | Gradle | **xcodegen(`project.yml`,资产用 `type: folder` folder reference)(POC ✅)** |
 
 **iOS 开发便捷度注记**:模拟器(`simctl`)对 AI 友好度 ≈ 甚至优于 adb(装/起/截屏零签名);**真机**则被**代码签名门**卡住(每次装机需 Xcode + Apple 账号,免费证书 7 天)。所以 iOS 开发**模拟器优先**验非硬件逻辑,硬件路径(8BitDo/麦克风/DP-to-眼镜)上真机由用户验——与 Android 的"硬件部分用户验"同构。
+
+### 11.1 HarmonyOS 列(第三端,ArkTS/ArkUI;脚手架+代码骨架已就绪,未编译/未上真机)
+
+> 立项 2026-06-01。详细落点 + 代码地图见 [`harmony/docs/adaptation.md`](harmony/docs/adaptation.md);需人工/决策项见 [`harmony/docs/HUMAN-TASKS.md`](harmony/docs/HUMAN-TASKS.md) / [`DECISIONS.md`](harmony/docs/DECISIONS.md)。这里只登记关键落点(上面 Android/iOS 矩阵的 HarmonyOS 对应)。
+
+| 契约项 | HarmonyOS 落点 | 状态 |
+|---|---|---|
+| 终端 UI | ArkWeb `Web` + **同一套 `index.html`**(零改动);桥 = `javaScriptProxy`(name=`Bridge`)+ `runJavaScript` | 代码完整,未编译 |
+| 字体(file://) | `file://` + `setPathAllowingUniversalAccess`(= `allowFileAccessFromFileURLs`);rawfile 拷沙箱 | 代码完整 |
+| SSH | **两条 backend**:A=libssh2+NAPI(类 sshj)/ B=纯 ArkTS over TCPSocket+cryptoFramework(类 Citadel)。⭐ **选哪条 = 待人工拍板**(DECISIONS D1) | 双骨架,均未完成 |
+| 多跳 ProxyJump | A:libssh2 `direct_tcpip` / B:ArkTS direct-tcpip channel | 随 backend |
+| SSH-over-443(§5.1) | sing-box/xray gomobile(待接,DECISIONS D2);`SshConnection` 已留 proxy 透传位 | 待接 |
+| 语音常驻 | **长时任务**(`backgroundTaskManager`,AUDIO_RECORDING)= 前台 Service 等价物 | 代码完整 |
+| 物理键路由 | 组件 **`onKeyEvent`**(focusable+defaultFocus 抢焦;非 Activity 全局)+ `inputDevice` 检测外接键盘 | 代码完整,8BitDo 映射待真机验 |
+| 麦克风 / ASR / gzip | `AudioCapturer`(16k/mono)/ `@ohos.net.webSocket`(header+ArrayBuffer)/ `zlib.deflateInit2 windowBits=31` | 代码完整 |
+| 软键盘抑制 | `onInterceptKeyboardAttach`→`useSystemKeyboard:false`(= `FLAG_ALT_FOCUSABLE_IM`) | 代码完整 |
+| 配置注入(§8) | `hdc file send`→`/data/local/tmp/xreal_import`→导入私有存储(hosts.json/asr.json 形状**与 Android 一致**)| 代码完整,沙箱读权限待真机验 |
+| 工程脚手架 / 截屏 / 装机 | hvigor/DevEco(Stage 模型)/ `hdc shell snapshot_display` / `hdc install`(**需华为实名签名**)| 骨架完整,签名待人工 |
+
+**⚠️ 两个行为差异(从 Android 移植要点)**:① ArkWeb 桥方法跑 **ArkTS 主线程**(Android 是非 UI 线程)→ `onInput→SSH 写`必派后台 taskpool;② 键事件是**组件焦点级**(Android 是 Activity 全局)→ 根容器须抢焦。两者均已在代码处理。
 
 ---
 

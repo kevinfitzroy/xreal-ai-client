@@ -1,0 +1,12 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "Entry HAP — XREAL AI Client",
+  "main": "",
+  "author": "kevinfitzroy",
+  "license": "Apache-2.0",
+  "dependencies": {
+    // 路径 A 启用后,NAPI 产物在此声明,ArkTS 用 `import ... from 'libsshbridge.so'` 导入:
+    // "libsshbridge.so": "file:./src/main/cpp/types/libsshbridge"
+  }
+}

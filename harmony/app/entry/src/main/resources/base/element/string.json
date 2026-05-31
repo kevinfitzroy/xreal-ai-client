@@ -1,0 +1,8 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "XREAL AI Client entry module" },
+    { "name": "EntryAbility_desc", "value": "XREAL AI Client" },
+    { "name": "EntryAbility_label", "value": "XREAL" },
+    { "name": "perm_microphone_reason", "value": "语音输入需要录音(按住物理键说话,转写后注入终端)" }
+  ]
+}

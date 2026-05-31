@@ -1,0 +1,55 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    "deviceTypes": ["phone", "tablet"],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        // 网络:SSH socket + 豆包 ASR WebSocket。normal 级,静态声明即授予,无运行时弹窗。
+        "name": "ohos.permission.INTERNET"
+      },
+      {
+        // 读网络状态(可选,用于优雅降级判断)。normal 级。
+        "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        // 麦克风:语音输入。user_grant → 必须运行时 requestPermissionsFromUser(见 voice/VoiceController)。
+        "name": "ohos.permission.MICROPHONE",
+        "reason": "$string:perm_microphone_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility"],
+          "when": "always"
+        }
+      },
+      {
+        // 后台持续运行:hold-to-talk 录音保活(前台 Service 等价物 = 长时任务)。normal 级。
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
+      }
+    ],
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        // 长时任务后台模式:录音保活(配合 KEEP_BACKGROUND_RUNNING + backgroundTaskManager.startBackgroundRunning）
+        "backgroundModes": ["audioRecording"],
+        "skills": [
+          {
+            "entities": ["entity.system.home"],
+            "actions": ["action.system.home"]
+          }
+        ]
+      }
+    ]
+  }
+}

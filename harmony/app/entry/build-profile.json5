@@ -1,0 +1,38 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    // ───────────────────────────────────────────────────────────────────────
+    // 路径 A(libssh2 + NAPI)的 native 构建在此开启。默认注释掉 → 默认走纯 ArkTS
+    // (路径 B,见 ssh/SshBackend.ets 的 BACKEND 常量),不需要 native 工具链即可打开/编译工程。
+    // 选定路径 A 后:① 取消下面注释;② 按 docs/ssh-options.md §A 交叉编译 libssh2.so 放进 cpp/libs/<abi>/;
+    //              ③ 把 ssh/SshBackend.ets 的 BACKEND 改成 'native'。
+    // "externalNativeOptions": {
+    //   "path": "./src/main/cpp/CMakeLists.txt",
+    //   "arguments": "",
+    //   "cppFlags": "",
+    //   "abiFilters": ["arm64-v8a"]
+    // }
+  },
+  "buildOptionSet": [
+    {
+      "name": "release",
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": {
+            "enable": false,
+            "files": ["./obfuscation-rules.txt"]
+          }
+        }
+      }
+    }
+  ],
+  "targets": [
+    {
+      "name": "default",
+      "config": {
+        // 主力真机是 AR 眼镜信号源(手机形态)。phone + tablet 覆盖;真实设备类型有眼镜专属时再加。
+        "deviceType": ["phone", "tablet"]
+      }
+    }
+  ]
+}
