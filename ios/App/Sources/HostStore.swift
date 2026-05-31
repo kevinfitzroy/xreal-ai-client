@@ -15,6 +15,15 @@ enum HostStore {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
 
+    /// Lightweight current-config summary for the config page (host count + whether ASR creds
+    /// exist). Counts *valid* hosts (same parse loadHosts uses) so the page matches the list.
+    /// SECURITY: never surfaces key/token bytes — counts/booleans only.
+    static func configSummary() -> (hosts: Int, asr: Bool) {
+        let asr = FileManager.default.fileExists(atPath:
+            documentsDir.appendingPathComponent("asr.json").path)
+        return (hosts: loadHosts().count, asr: asr)
+    }
+
     /// Parse `Documents/hosts.json`. Returns [] (→ index.html mock) if absent or invalid.
     static func loadHosts() -> [HostConfig] {
         let docs = documentsDir
@@ -84,35 +93,48 @@ enum HostStore {
     // MARK: - Valet "Open in" import (SPEC §8 real-device channel)
 
     enum ImportError: Error, CustomStringConvertible {
-        case unreadable, badJSON, noHosts
+        case unreadable, badJSON, noHosts, noContent
         var description: String {
             switch self {
             case .unreadable: return "无法读取导入文件"
-            case .badJSON:    return "导入文件不是合法 JSON 或缺少顶层 version/hosts"
+            case .badJSON:    return "导入文件不是合法 JSON"
             case .noHosts:    return "导入文件没有合法的 host"
+            case .noContent:  return "导入文件缺少 host / hosts / asr 任一字段"
             }
         }
     }
 
-    /// Result of an "Open in XrealPOC" import: how many hosts landed + whether ASR creds came too.
-    struct ImportResult { let hosts: Int; let asr: Bool }
+    /// Which content shape the file turned out to be, so the config page can compare the user's
+    /// button intent against what actually imported (a 1-host *replace* and a 1-host *append* both
+    /// report hosts:1 — counts alone can't tell them apart). Composable: a global file may also
+    /// carry asr; `mode` is the host disposition, `asr` is an independent flag.
+    enum ImportMode { case append, replace, asrOnly }
 
-    /// Import a self-contained `.xrhosts` config bundle (AirDrop → "用 XrealPOC 打开"; SPEC §8 iOS
-    /// real-device channel). The bundle is `{version, hosts:[{...,key:<inline PEM>}], asr?}` — the
-    /// ONE shape difference from Android staging is the **inline key**. We unpack it into the SAME
-    /// private layout `loadHosts()` already consumes: each host's inline PEM is written to
-    /// `Documents/<safeName>.pem` (a BARE filename — readKeySafe rejects any `/`), `key` is rewritten
-    /// to that bare name and the inline PEM stripped, and the whole BARE array is atomically written
-    /// to `Documents/hosts.json` (NOT the wrapper object — loadHosts casts to `[[String:Any]]`).
-    /// Ports Android SettingsStore.importStagingIfPresent validation: name sanitized `[^A-Za-z0-9_.-]→_`,
-    /// PEM must contain `PRIVATE KEY` and be ≤8KB, atomic tmp→rename, key file mode 0600.
-    /// SECURITY: never logs key bytes — counts only.
+    /// Result of an import: the host disposition, how many hosts landed, whether ASR creds came too.
+    struct ImportResult { let mode: ImportMode; let hosts: Int; let asr: Bool }
+
+    /// Import a self-contained `.xrhosts` config bundle (AirDrop → "用 XrealPOC 打开", or via the
+    /// config page's document picker; SPEC §8 iOS real-device channel). Each inline PEM is written
+    /// to `Documents/<safeName>.pem` (a BARE filename — readKeySafe rejects any `/`, 0600), `key` is
+    /// rewritten to that filename and the inline PEM stripped, and the BARE array is atomically
+    /// written to `Documents/hosts.json` (loadHosts casts to `[[String:Any]]`). Ports Android
+    /// importStagingIfPresent validation: name sanitized `[^A-Za-z0-9_.-]→_`, PEM contains
+    /// `PRIVATE KEY` and ≤8KB, atomic tmp→rename. SECURITY: never logs key/token bytes.
+    ///
+    /// Three import shapes, discriminated by the TYPE of the top-level field (not mere key
+    /// presence — a host *record* carries a `host` STRING, while the single-host wrapper carries
+    /// `host` as an OBJECT; we cast to tell them apart):
+    ///   - top-level `host` (object)  → APPEND one host: merge into existing hosts.json, dedup by
+    ///     `name` (new overwrites same-name). Existing entries' keys are already files — not re-validated.
+    ///   - top-level `hosts` (array)  → REPLACE the whole list (the original Phase-5 behavior).
+    ///   - top-level `asr` (object) with no host(s) → write asr.json only, leave hosts.json untouched.
+    /// The three are composable: a global file may also carry `asr`. Returns what landed (mode +
+    /// host count + asr flag) so the caller can phrase feedback and the config page can flag a
+    /// button-intent mismatch. SECURITY: never logs key/token bytes — counts/masks only.
     @discardableResult
     static func importConfig(from url: URL) throws -> ImportResult {
         guard let data = try? Data(contentsOf: url) else { throw ImportError.unreadable }
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              root["version"] != nil,
-              let hostsIn = root["hosts"] as? [[String: Any]] else {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw ImportError.badJSON
         }
 
@@ -122,6 +144,56 @@ enum HostStore {
             .filter { $0.lastPathComponent.hasSuffix(".tmp") }
             .forEach { try? FileManager.default.removeItem(at: $0) }
 
+        let singleHost = root["host"] as? [String: Any]   // OBJECT = single-host wrapper
+        let hostsArr   = root["hosts"] as? [[String: Any]]
+        let asrObj     = root["asr"] as? [String: Any]
+        guard singleHost != nil || hostsArr != nil || asrObj != nil else {
+            throw ImportError.noContent
+        }
+
+        // Decide host disposition. asr-only files skip hosts.json entirely.
+        var mode: ImportMode = .asrOnly
+        var hostCount = 0
+
+        if let hostsArr {
+            // REPLACE: stage every host, atomically swap the whole hosts.json (Phase-5 behavior).
+            let staged = stageHosts(hostsArr, in: docs)
+            guard !staged.isEmpty else { throw ImportError.noHosts }
+            let hostsData = try JSONSerialization.data(withJSONObject: staged, options: [])
+            try writeAtomic(hostsData, to: docs.appendingPathComponent("hosts.json"))
+            mode = .replace; hostCount = staged.count
+        } else if let singleHost {
+            // APPEND: stage the one host, merge into existing list dedup-by-name (new wins).
+            let staged = stageHosts([singleHost], in: docs)
+            guard !staged.isEmpty else { throw ImportError.noHosts }
+            let merged = mergeAppend(staged, into: loadBareHosts(in: docs))
+            let hostsData = try JSONSerialization.data(withJSONObject: merged, options: [])
+            try writeAtomic(hostsData, to: docs.appendingPathComponent("hosts.json"))
+            mode = .append; hostCount = staged.count
+        }
+
+        // Optional ASR creds (same shape as Android asr.json: {provider,appid,token,resourceId}):
+        // validate size then atomically persist. Independent of host disposition.
+        var asrImported = false
+        if let asrObj {
+            if let asrData = try? JSONSerialization.data(withJSONObject: asrObj, options: []),
+               asrData.count <= 4096 {
+                try? writeAtomic(asrData, to: docs.appendingPathComponent("asr.json"))
+                asrImported = true
+            } else {
+                NSLog("[HostStore] import: asr block present but invalid/too-large → skipped")
+            }
+        }
+
+        let modeStr = mode == .replace ? "replace" : (mode == .append ? "append" : "asr-only")
+        NSLog("[HostStore] import OK [\(modeStr)]: \(hostCount) host(s)\(asrImported ? " + ASR creds" : "") → private store")
+        return ImportResult(mode: mode, hosts: hostCount, asr: asrImported)
+    }
+
+    /// Stage a batch of inline-key host records into the private layout loadHosts() consumes:
+    /// validate name + inline PEM, write `<safeName>.pem` (BARE filename, 0600), rewrite `key` →
+    /// that filename and strip the inline PEM. Shared by REPLACE and APPEND so both stay identical.
+    private static func stageHosts(_ hostsIn: [[String: Any]], in docs: URL) -> [[String: Any]] {
         var staged: [[String: Any]] = []
         for o in hostsIn {
             guard let name = o["name"] as? String, !name.isEmpty else {
@@ -147,25 +219,33 @@ enum HostStore {
             rec["key"] = keyFileName              // → bare filename loadHosts() expects
             staged.append(rec)
         }
-        guard !staged.isEmpty else { throw ImportError.noHosts }
+        return staged
+    }
 
-        let hostsData = try JSONSerialization.data(withJSONObject: staged, options: [])
-        try writeAtomic(hostsData, to: docs.appendingPathComponent("hosts.json"))
+    /// The current bare-form hosts.json array (post-staging records, `key` = filename). Absent or
+    /// malformed → []. Used as the merge base for APPEND.
+    private static func loadBareHosts(in docs: URL) -> [[String: Any]] {
+        let file = docs.appendingPathComponent("hosts.json")
+        guard let data = try? Data(contentsOf: file),
+              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return []
+        }
+        return arr
+    }
 
-        // Optional ASR creds (same shape as Android asr.json): validate then atomically persist.
-        var asrImported = false
-        if let asrObj = root["asr"] as? [String: Any] {
-            if let asrData = try? JSONSerialization.data(withJSONObject: asrObj, options: []),
-               asrData.count <= 4096 {
-                try? writeAtomic(asrData, to: docs.appendingPathComponent("asr.json"))
-                asrImported = true
+    /// Merge freshly-staged hosts into the existing list, dedup by `name` (a new record overwrites
+    /// the same-name old one in place; otherwise appended). Existing entries are not re-validated.
+    private static func mergeAppend(_ incoming: [[String: Any]], into existing: [[String: Any]]) -> [[String: Any]] {
+        var merged = existing
+        for rec in incoming {
+            let name = rec["name"] as? String ?? ""
+            if let idx = merged.firstIndex(where: { ($0["name"] as? String) == name }) {
+                merged[idx] = rec
             } else {
-                NSLog("[HostStore] import: asr block present but invalid/too-large → skipped")
+                merged.append(rec)
             }
         }
-
-        NSLog("[HostStore] import OK: \(staged.count) host(s)\(asrImported ? " + ASR creds" : "") → private store")
-        return ImportResult(hosts: staged.count, asr: asrImported)
+        return merged
     }
 
     /// Atomic write (tmp → rename) so a crash mid-import can't leave a half-written file.

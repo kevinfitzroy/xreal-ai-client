@@ -34,7 +34,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
         do {
             let result = try HostStore.importConfig(from: url)
-            terminalVC?.reloadHostsAfterImport(imported: result.hosts)
+            terminalVC?.reloadHostsAfterImport(result)
             // Inbox copy no longer needed (config persisted to hosts.json + keys/).
             if url.path.contains("/Inbox/") { try? FileManager.default.removeItem(at: url) }
             return true

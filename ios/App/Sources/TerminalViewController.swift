@@ -11,6 +11,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     private var webView: WKWebView!
     private var pageReady = false
+    // Native entry to the config page (SPEC §8). Visible only in the LIST view (semantic F2
+    // target until hardware keys are bound); hidden over the PTY so it never floats on the terminal.
+    private var configButton: UIButton!
 
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
@@ -107,6 +110,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         webView.backgroundColor = .black
         view.addSubview(webView)
 
+        addConfigButton()
+
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
 
@@ -134,6 +139,43 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             NSLog("[VC] willEnterForeground view=\(self.view_ == .list ? "list" : "terminal")")
             if self.view_ == .list, !self.hosts.isEmpty { self.refreshManifests() }
         }
+    }
+
+    // MARK: - Config page entry (SPEC §8; native, presented over the WebView)
+    /// A small native button pinned to the list's top-trailing corner. The eventual hardware-key
+    /// path (F2) will open the same page; until then this gives a visible, screenshot-verifiable
+    /// entry. Hidden in terminal view (see setConfigButtonVisible) so it never overlaps the PTY.
+    private func addConfigButton() {
+        var cfg = UIButton.Configuration.gray()
+        cfg.image = UIImage(systemName: "gearshape")
+        cfg.baseForegroundColor = UIColor(red: 0x94/255, green: 0xE0/255, blue: 0xB2/255, alpha: 1)  // #94E0B2
+        cfg.cornerStyle = .capsule
+        let b = UIButton(configuration: cfg)
+        b.translatesAutoresizingMaskIntoConstraints = false
+        b.accessibilityIdentifier = "configButton"
+        b.addTarget(self, action: #selector(openConfigPage), for: .touchUpInside)
+        view.addSubview(b)
+        NSLayoutConstraint.activate([
+            b.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            b.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+        ])
+        configButton = b
+    }
+
+    /// Show the config button only in the list view (semantic: it's a list-level affordance).
+    private func setConfigButtonVisible(_ visible: Bool) {
+        configButton?.isHidden = !visible
+    }
+
+    @objc private func openConfigPage() {
+        let vc = HostConfigViewController()
+        vc.onImported = { [weak self] result in
+            // Centralize reload through the one path AppDelegate's open: also uses.
+            self?.reloadHostsAfterImport(result)
+        }
+        let nav = UINavigationController(rootViewController: vc)
+        nav.modalPresentationStyle = .fullScreen
+        present(nav, animated: true)
     }
 
     // MARK: - WKNavigationDelegate
@@ -173,10 +215,15 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             NSLog("[VC] DEBUG -importConfigPath \(path)")
             do {
                 let r = try HostStore.importConfig(from: URL(fileURLWithPath: path))
-                reloadHostsAfterImport(imported: r.hosts)
+                reloadHostsAfterImport(r)
             } catch {
                 reportImportFailure("\(error)")
             }
+        }
+        // Screenshot-only: open the native config page without a tap (the sim has no tap CLI).
+        // Runs the exact same openConfigPage() the gear button calls. No production effect.
+        if args.contains("-openConfigPage") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.openConfigPage() }
         }
     }
 
@@ -340,6 +387,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] openProject host=\(host) session=\(session)")
         let seq = { openSeq += 1; return openSeq }()
         view_ = .terminal
+        setConfigButtonVisible(false)
         eval("window.showTerminal(\(jsString(name)), \(jsString(type)))")
 
         guard let h = hosts.first(where: { $0.name == host }),
@@ -423,6 +471,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         openSeq += 1     // in-flight connections are now obsolete
         sessionGen += 1  // late output chunks are now obsolete
         view_ = .list
+        setConfigButtonVisible(true)
         let old = ssh
         ssh = nil
         old?.close()     // finishes stream + closes client → PTY loop exits, tmux persists
@@ -436,8 +485,11 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     /// would never discover a freshly-imported host) and re-seed the list, then live-fetch.
     /// Order-robust on cold-launch-via-file: if the page isn't ready yet, didFinish's own
     /// `if !hosts.isEmpty` push covers it (we've set self.hosts); if ready, we push now.
-    func reloadHostsAfterImport(imported count: Int) {
-        NSLog("[VC] reloadHostsAfterImport: \(count) host(s)")
+    /// Takes the full ImportResult so the toast reflects what actually landed — an asr-only
+    /// import has 0 hosts, so a bare "N host" line would read "0 host" (wrong, and on the
+    /// AirDrop path there's no native alert to correct it).
+    func reloadHostsAfterImport(_ result: HostStore.ImportResult) {
+        NSLog("[VC] reloadHostsAfterImport: mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         hosts = HostStore.loadHosts()
         statusByHost = [:]; reachable = nil; probedHosts = []
         guard pageReady else { return }   // didFinish will seed+refresh once loaded
@@ -449,9 +501,18 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             let old = ssh; ssh = nil; old?.close()
         }
         if view_ != .list { view_ = .list; eval("window.showList()") }
-        toast("导入成功:\(count) host")
+        toast(importToast(result))
         pushHostList(loading: true)
         refreshManifests()
+    }
+
+    /// One-liner in-WebView toast for an import. Mode-aware so asr-only doesn't read "0 host".
+    private func importToast(_ r: HostStore.ImportResult) -> String {
+        switch r.mode {
+        case .asrOnly: return "ASR 凭证已导入"
+        case .append:  return "导入成功:追加 \(r.hosts) host" + (r.asr ? " + ASR" : "")
+        case .replace: return "导入成功:\(r.hosts) host" + (r.asr ? " + ASR" : "")
+        }
     }
 
     /// Surface an import parse/validation failure (bad JSON, no valid host) without crashing —
