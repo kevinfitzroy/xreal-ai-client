@@ -110,11 +110,20 @@ class StatusPoller(
             return o
         }
 
+        /** UI 上显示的 SSH-over-443 代理标签(SPEC §5.1)。[all] 给了就按归属规则解析:直连 host 用自己的
+         *  proxy;经 via 跳板时 proxy 归属跳板 → 显示跳板的 proxy 名(那才是实际拨公网的隧道)。无代理 → 空。 */
+        private fun hostProxyLabel(h: HostConfig, all: List<HostConfig>? = null): String {
+            if (h.via == null) return h.proxy?.name ?: ""
+            val jumper = all?.firstOrNull { it.name == h.via }
+            return jumper?.proxy?.name ?: h.proxy?.name ?: ""
+        }
+
         private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>, loading: Boolean = false): JSONObject {
             val projects = JSONArray()
             for ((p, s) in snaps) projects.put(projectJson(p, s, loading))
             val up = snaps.any { it.second.status != ProjectStatus.DISCONNECTED }
-            return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up).put("projects", projects)
+            return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up)
+                .put("proxy", hostProxyLabel(h)).put("projects", projects)
         }
 
         /**
@@ -144,7 +153,8 @@ class StatusPoller(
                     }
                     projects.put(projectJson(p, idle, loading, state, live?.since ?: 0))
                 }
-                arr.put(JSONObject().put("name", h.name).put("addr", h.addr).put("up", !unreachable).put("projects", projects))
+                arr.put(JSONObject().put("name", h.name).put("addr", h.addr).put("up", !unreachable)
+                    .put("proxy", hostProxyLabel(h, hosts)).put("projects", projects))
             }
             return arr.toString()
         }

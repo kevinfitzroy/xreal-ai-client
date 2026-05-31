@@ -173,6 +173,10 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - **直连 host**(无 `via`)带 `proxy` → 该 host 自己的 SSH socket 走 SOCKS。
   - **多跳 host**(有 `via`)→ proxy 跟着 `via` 指向的**跳板** host 走(拨公网的是跳板);到达跳板后的内层转发已在隧道内,**不再**叠加 proxy。即:一个 host 的 `proxy` 字段在它**作为跳板被别人 `via`** 时生效于那条外层拨号;host 自己有 `via` 时,其 `proxy` 字段被忽略(由跳板的 proxy 决定)。
   - 第一版实现聚焦**直连 host 带 proxy**;proxy×via 复合按上述规则但可后置。
+- **⭐ UI 契约:host 头必须显示生效的 proxy 标识**(跨端,两端都要做)。用户在 AR 眼镜下要能**一眼确认这台 host 是走隧道还是直连**,否则代理生没生效完全不可见。规则:
+  - host 解析出生效 proxy(直连=自己的 `proxy`;多跳=按上面归属规则取**跳板**的 proxy)→ host 头显示一个 **🔒 + proxy 名** 的徽章(如 `🔒 tk-443`);无 proxy → 不显示(直连 host 视觉无变化)。
+  - 标识取的是"实际拨公网那一跳的 proxy 名",所以经 `via` 的内网 host 也会显示其跳板的 proxy 名(因为它的流量确实经那条隧道出去)。
+  - 这是**显示契约**(显示什么、何时显示),具体渲染(徽章位置/配色)是平台实现(§11)。
 - **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**现状(2026-05-31 核实):真实 host 已全部 ed25519** —— `xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0` 都是 ED25519,**无需迁移**。POC 当时撞 ssh-rsa 只因用了 RSA throwaway。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
 - **翻页语义**:见 §6(它是输入语义的一部分)。
 
@@ -297,6 +301,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
 | SSH-over-443 代理(§5.1) | 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 SOCKS + sshj `setSocketFactory(SOCKS)` | 规划:`xray-core` Apple gomobile/cgo 起本地 SOCKS + Citadel 经 `SocketAddress`/自定义 channel 拨该 SOCKS(待 POC) |
+| proxy 标识徽章(§5.1 UI 契约) | host 列表 JSON 加 `proxy` 字段(`StatusPoller.hostProxyLabel` 按归属规则解析)→ `index.html` 的 `.host .hproxy` 渲染 🔒+名 | 规划:host 头同位置渲染同款徽章(SwiftUI) |
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
 | 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |

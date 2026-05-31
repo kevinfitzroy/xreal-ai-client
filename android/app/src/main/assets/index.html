@@ -260,7 +260,8 @@
   function render(){
     const list=document.getElementById('list'); let html=''; let idx=0; let delay=0;
     HOSTS.forEach(h=>{
-      html+=`<div class="host${h.up?'':' down'}"><span class="hconn"></span><span class="hname">${h.name}</span><span class="haddr">${h.addr}</span><span class="hline"></span></div>`;
+      const proxyBadge = h.proxy ? `<span class="hproxy">🔒 ${esc(h.proxy)}</span>` : '';
+      html+=`<div class="host${h.up?'':' down'}"><span class="hconn"></span><span class="hname">${h.name}</span><span class="haddr">${h.addr}</span>${proxyBadge}<span class="hline"></span></div>`;
       html+=`<div class="cards">`;
       // Maestro(type=maestro)pin 到 host 首位;其余保持原序(JS sort 稳定)
       const projects=[...h.projects].sort((a,b)=>(b.type==='maestro'?1:0)-(a.type==='maestro'?1:0));
