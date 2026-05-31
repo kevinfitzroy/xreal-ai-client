@@ -1,11 +1,41 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-31(多跳 SSH + 持久日志/崩溃捕获 + tmux 翻页 + Agent 状态展示(hooks 事件驱动);早已过 Phase 0,Beam Pro X4100 真机 + 双 host 在用)
+> **最近更新**:2026-05-31(**第二客户端方向定调:iOS**;发布首个签名 release v0.2.0;抽出平台中立契约层 [`SPEC.md`](SPEC.md);上一轮:多跳 SSH + 持久日志/崩溃捕获 + tmux 翻页 + Agent 状态展示)
 
 ---
 
 ## 0.0 当前状态(2026-05-31)—— 先读这条
+
+### 🆕 本轮:走向双客户端(Android + iOS),先立契约
+
+两件事落地,方向也变了:
+
+1. **首个签名 release v0.2.0**(针对 Beam Pro 的 sideload APK):https://github.com/kevinfitzroy/xreal-ai-client/releases/tag/v0.2.0
+   - 正式签名(`debuggable=false`,app 持 SSH 私钥,不发 debug 包),keystore 在 `android/release.jks` + `android/keystore.properties`(**均 gitignored,用户须 git 外备份**——丢了无法发签名更新)。
+   - 意义:未来装机**不需要编译环境**,`adb install -r` 即可;但**代客安装(hosts/key 注入)的 adb 通道不变**,仍刻意无设置 UI。详见 README「从 Release 安装」+ SPEC §8/§11。
+
+2. **第二客户端方向定调 = iOS**(用户决策,2026-05-31)。前提已核实成立:
+   - **Beam Pro 非必选**:XREAL One Pro 吃任何 USB-C DP 信号源。**iPhone 15/16(非 e、非 Air)**有 DP Alt Mode 可直连眼镜(16e/Air 砍了 DP、14 及更早 Lightning → 接不了)。
+   - **iOS 能被 AI 便捷开发,但便捷度不对称**:模拟器(`xcrun simctl`,本机 **Xcode 26.4 + iPhone 17 模拟器就绪**)装/起/截屏**零签名**,AI 友好度≈优于 adb;**真机**被**代码签名门**卡(每次装机需 Xcode + Apple 账号,用户目前**仅免费 Apple ID = 证书 7 天**),真机截屏走 `pymobiledevice3 developer dvt screenshot`。所以 **iOS 开发模拟器优先**,硬件路径(8BitDo/麦克风/DP-眼镜)上真机由用户验——与 Android「硬件部分用户验」同构。
+   - **架构差异点(iOS 必然重设计)**:无前台 Service → Voice Daemon 改 background audio mode;物理键走 `GameController` framework;配置注入无 `adb push` 等价物(SPEC §8 注记,POC 要定这条通道)。
+
+3. **抽出平台中立契约层 [`SPEC.md`](SPEC.md)(Contract version 1)** —— 防双端内耗的根。host/project 列表、状态 4 态、语音 🎤 注入、按键语义、ASR 热词、hosts.json/status.json 形状、安全规则,**只在 SPEC 定义一次**,两端实现它。平台落点(sshj/WKWebView/Service 等)进 SPEC §11 矩阵,不进契约正文。**改任何跨端行为先改 SPEC 再两端对齐**(§12 流程)。
+
+**✅ iOS 模拟器 POC 已验通(2026-05-31,`ios/`)** —— tracer bullet 双里程碑全过(`xcodebuild`+`simctl` 自验、截图 Read 确认):
+- **M1**:WKWebView **原样跑 Android 的 `index.html`(零改动)** + `window.Bridge` shim→`webkit.messageHandlers` 的 Base64 桥(双向)+ 字体(Meslo/Sarasa/emoji,file:// 无跨域)+ WebGL,全通。
+- **M2**:**Citadel 0.12(SwiftNIO SSH)连真 PTY 跑通真 zsh**(隔离高端口 throwaway sshd,不碰真 host/系统 authorized_keys)。
+- 工程 = xcodegen(`ios/project.yml`),资产 `type: folder` folder reference。已回填 SPEC §5/§8/§11(iOS 列标 POC ✅)+ memory [[second-client-ios]]。
+
+**➡️ 真客户端前的两个待解(POC 暴露,见 SPEC §5/§8)**:
+1. **ssh-rsa 跨端坑**(顶层风险):Citadel 用 RSA key 走 legacy `ssh-rsa`(SHA-1),现代 host 默认拒。**上真 host(TK/OPS)前必须定** —— 首选 Valet 给客户端签 **ed25519** key 绕开;Android/sshj 是否协商 rsa-sha2 待核实。
+2. **真机配置注入通道**:模拟器用 `simctl` 容器 copy(✅),**真机沙盒无 adb 等价物 = iOS 客户端首要待解项**(候选 Files/document picker / share-extension)。
+
+之后才是 iOS 正式客户端开发(SSH/语音/物理键/背景模式按 SPEC §11 落地)。**真机/眼镜/8BitDo 由用户验(需代码签名,免费 Apple ID 7 天证书)。**
+
+> ⚠️ commit 状态:release(commit `d0bbb4c`)已推送;**SPEC.md + `ios/` POC + CLAUDE.md/HANDOFF/memory 改动尚未 commit**,等用户发话(§7「默认不主动 push」)。`ios/.gitignore` 已忽略 `*.xcodeproj`/`DerivedData/`/throwaway key;`android/` 一字未动。
+
+---
 
 项目**早已过 Phase 0**。核心端到端闭环 + Agent 状态展示已在 **Beam Pro X4100 真机**跑通,两台真实 host 在日常用:
 

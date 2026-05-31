@@ -1,0 +1,284 @@
+# SPEC.md — XREAL AI Client 客户端契约(平台中立)
+
+> **Contract version: 1**
+>
+> 这是 XREAL AI Client **所有客户端实现的单一真相源**。当前有两个目标客户端:
+> **Android**(已上真机,Kotlin)与 **iOS**(规划中,Swift)。两端都实现**这一层**;
+> 平台代码坐在契约之下。
+>
+> **防内耗铁律**:任何跨端行为(列表怎么来、状态怎么算、语音怎么注入、按键什么语义、
+> 配置怎么进来)**只在这份文档里定义一次**。改契约 = 改这份 + 两端对齐(见 §12)。
+> 平台专属实现细节(Kotlin/Swift、WebView/WKWebView、Service/background-mode)**不写进契约正文**,
+> 只在 §11 平台矩阵里登记落点。
+>
+> 服务端(Maestro)是这份契约的**生产侧**,其实现指南见 [`docs/orchestrator-CLAUDE.md`](docs/orchestrator-CLAUDE.md);
+> 二者必须一致,改服务端契约(§2/§3)时两边同步。
+
+---
+
+## 0. 谁该读这份
+
+- **实现某个客户端的 agent**(Android 或 iOS):这是你必须满足的行为契约。先读这份,再读你那端的平台代码。
+- **改服务端 Maestro / 脚本的 agent**:§2 manifest、§3 status、§4 voice 是你和客户端的接口,改形状前看这份。
+- **做产品/架构决策的人**:§1 是边界,§9 是底线。
+
+不在这份里的东西:**怎么用某语言实现**(看各端仓库/目录)、**为什么这么设计**(看 [`docs/`](docs/) 背景/架构/决策文档)。
+
+---
+
+## 1. 系统角色与边界(一句话架构)
+
+客户端 = **Agent Deck**:一个 **host(一级)→ project(二级)** 的列表,每个 project = 一个工作目录 + 一个持久 tmux/abduco session。用户戴 **AR 眼镜**,用**物理小键盘(~6 键)+ 中英语音**操作,没有舒适鼠标/键盘。
+
+```
+客户端(Android / iOS)
+├─ 列表:从各 host 的 manifest 拉(§2),显示运行状态(§3)
+├─ 终端:xterm.js in WebView,渲染远端 PTY
+├─ SSH:直连云端(§5),内网 host 经多跳跳板(§5 via)
+├─ 语音:录音 → 豆包 ASR(§7)→ 直写 SSH(§4)
+└─ 物理键:按语义路由(§6)
+        │ Raw SSH(port 22),内网经 ProxyJump
+        ▼
+各 host:tmux + Claude Code + Maestro 编排
+        └─ .xreal/ 下写 manifest(§2)+ status.json(§3)
+```
+
+**边界(不可 deviate,见 [`CLAUDE.md`](CLAUDE.md) §5):**
+- **服务端零增量**,唯一例外 = 每 host `.xreal/` 的状态 hooks(§3)。不引入 ttyd/nginx/Voice Gateway。
+- **单 app 闭环**:SSH + 终端 + 语音全在一个进程/一个 app 内。
+- **客户端只读 manifest/status,只写 SSH 输入**;它不是真相源,各 host 的 Maestro 才是。
+
+---
+
+## 2. Manifest 契约(host→project 列表的真相源)
+
+每个 host 上由 Maestro 维护的项目清单。**客户端只读,Maestro 只写。形状错了客户端就读不到项目。**
+
+- **位置**:`<basePath>/.xreal/projects.json`(`basePath` 由客户端的 host 配置给,见 §8)。
+- **首次不存在**:Maestro 负责创建合法空清单 `{ "version": 1, "projects": [] }`。
+- **原子写**:Maestro 必须 `tmp → mv` 覆盖,避免客户端读到半截 JSON。
+
+**schema:**
+```jsonc
+{
+  "version": 1,
+  "projects": [
+    {
+      "session": "blog-rewrite",      // tmux session 名,唯一,只允许 [A-Za-z0-9_.-](客户端会拼进 shell 命令)
+      "name": "博客重写",              // 显示名(可中文)
+      "type": "claude",               // maestro | claude | agent | ssh
+      "dir": "/home/evan/work/blog",  // 工作目录绝对路径(给 Maestro 自己备忘;客户端不直接用)
+      "group": "work",                // 可选:分组标签
+      "startup": "claude --resume",   // 可选:重启备忘(客户端不执行)
+      "hotwords": ["kubectl", "Grafana"]  // 可选:project 级语音热词(§7)
+    }
+  ]
+}
+```
+
+**type 枚举(客户端据此分类 + 决定语音前缀 §4):**
+| type | 含义 | 是 AI-agent? |
+|---|---|---|
+| `maestro` | host 的 orchestrator,每 host 一个 | 是 |
+| `claude` | Claude Code 会话 | 是 |
+| `agent` | 其它 AI agent | 是 |
+| `ssh` | 裸 shell(日志/REPL 等配角终端) | **否** |
+
+**maestro 置顶规则**:`type":"maestro"` 的项,客户端**pin 到该 host 列表首位**,给专属图标/色。Maestro 把自己列在首位,`session/name/type` 固定 `"maestro"/"Maestro"/"maestro"`。
+
+---
+
+## 3. 状态契约(运行状态显示)
+
+客户端列表给每个 project 显示运行状态徽章 + 时长。状态由 **Claude Code hooks 事件驱动上报(不抓屏)**。
+
+- **位置**:`<basePath>/.xreal/status.json`,客户端**一次性读**(列表加载时,**非轮询**——实时刷新是搁置的 P2)。
+- **来源**:hooks 在 project 的 `.claude/settings.json` 配好,事件触发写本文件:
+  | hook 事件 | → 状态 |
+  |---|---|
+  | `UserPromptSubmit` | `working` |
+  | `Stop` / `SessionStart` | `waiting` |
+  | `SessionEnd` | `disconnected` |
+  | `Notification`(matcher `permission_prompt`) | `needs-permission` |
+
+**schema(聚合文件;`sessions` 是数组,不是 map):**
+```jsonc
+{
+  "timestamp": 1748600000,          // 本次聚合的 epoch 秒(信息性,客户端不依赖)
+  "sessions": [
+    { "session": "blog-rewrite", "state": "working", "since": 1748600000, "updated": 1748600050 },
+    { "session": "maestro",      "state": "waiting", "since": 1748599000, "updated": 1748600050 }
+  ]
+}
+```
+- `since` = 进入当前 state 的 epoch 秒(state 不变则保留,客户端据此算时长);`updated` = 最近一次 hook 触发(信息性)。
+- 服务端实现:每 session 一个 `<base>/.xreal/status/<session>.json`,`agent-status.sh` 触发时重新聚合成上面的 `status.json`(`docs/xreal-project.sh`)。客户端只读 `session`/`state`/`since`。
+
+**状态枚举(客户端 [`SPEC §11` 平台矩阵] 共同实现):**
+| state | 来源 | 客户端显示 |
+|---|---|---|
+| `working` | hooks | 绿色 + 转圈,`Nm working` |
+| `waiting` | hooks | 琥珀脉冲,`Nm waiting` |
+| `needs-permission` | hooks(权限弹窗) | **视觉同 waiting**,文案「需确认」(= waiting 的细分,不算独立颜色) |
+| `disconnected` | hooks 或客户端(host 不可达) | 红色,`offline` |
+| `unknown` | **客户端兜底**(无 hooks 上报) | **不显示徽章** |
+
+> 「4 态简化模型」= working/waiting/disconnected/unknown;`needs-permission` 是 waiting 的细分上报值,客户端可独立提示(现为「需确认」)但归在 waiting 视觉族。**刻意不再增加更多状态,也不做 capture-pane 兜底**(实在不清楚就 unknown)。
+
+**客户端合并规则(实现要求):**
+1. host **不可达**(manifest 拉取失败)→ 该 host 所有 project 显示 `disconnected`。
+2. host 可达 + status.json 有该 session → 用上报状态。
+3. host 可达 + 无该 session 记录 → `unknown`(无徽章)。**不做 capture-pane 兜底。**
+
+**展示规则(实现要求):**
+- 时长 = `now - since`;`<0` 或 `>1440` 分钟则隐藏时长(钟偏/陈旧)。文案如 `3m working`、`12m waiting`。
+- **增量渲染防闪烁**:状态刷新走 **DOM patch**(按 **`host + " " + session` 复合键**定位,**不能只用 session**——不同 host 会有同名 `maestro` session,只用 session 会串台),不整列表重绘。结构变了(project 增删)才重渲染。
+
+---
+
+## 4. 语音注入契约(🎤 约定)
+
+ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 shell,shell echo 回送,xterm.js 渲染。**语音路径不需要知道终端 UI 存在。**
+
+- **AI-agent 类会话**(`maestro`/`claude`/`agent`)注入时**加 `🎤 ` 前缀**(U+1F3A4 + 空格),让对端 agent 知道这是语音转写、可能有同音/断词错误,按意图理解。
+- **`ssh` 类**(裸 shell)**不加前缀**,直接注入。
+- **写入必须后台单线程**(平台无关的硬约束):主线程写会永久损坏 SSH 库的输出缓冲(见 [`CLAUDE.md`](CLAUDE.md) memory `input-path-constraints`)。
+
+对端 agent 侧怎么对待 `🎤 ` 见 [`docs/orchestrator-CLAUDE.md`](docs/orchestrator-CLAUDE.md) §6.2(Maestro 把这段 seed 进每个 AI 子项目的 `CLAUDE.md`)。
+
+---
+
+## 5. 会话 / SSH 契约
+
+- **session 驻留**:
+  - `claude`/`agent`/`maestro` 类 → 用 **tmux**(状态/预览需要 `capture-pane` 能力)。
+  - `ssh` 类 → abduco 或 tmux 均可。
+  - 启动命令可配置(`SshConfig.startupCommand`,默认 `abduco -A dev bash`;agent 类由列表逻辑换成 tmux attach)。
+- **tmux 约定**(客户端拼 attach 命令时):
+  - UTF-8:client 用 `tmux -u`。
+  - session 名只信任 `[A-Za-z0-9_.-]`(要拼进 `tmux capture-pane -t '<session>'` 等 shell 命令)。
+  - attach 用 `new -A -s <session>`(存在则 attach,不存在则建)。
+- **多跳(ProxyJump)**:host 配置带 `via`(= 另一 host 的 `name`)→ SSH 经该跳板本地端口转发到达。典型:OPS(AWS 内网,只 VPN 可达)`via: "TK-ALIYUN"`,由挂 OpenVPN 的 TK 转发。手机本身**不挂 VPN**。
+- **known_hosts**:**TOFU**(首次信任并记录,之后校验)。
+- **公钥算法(跨端坑 —— iOS POC 实测发现,影响真客户端能否连真 host)**:iOS 的 **Citadel 0.12 用 RSA key 时签名走 legacy `ssh-rsa`(SHA-1)**,现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 已不收 → **认证直接失败**(CLI `ssh` 能连是因为它协商 `rsa-sha2-*`)。**缓解(首选):Valet 给客户端签发 `ed25519` key**(所有现代 host 都收,彻底绕开 SHA-1 问题);或确认目标 host 接受 `rsa-sha2-*` / 升级 Citadel。**Android/sshj 是否自动协商 `rsa-sha2` 尚未核实 → 勿假设两端一致**。⚠️ 上真 host(TK-ALIYUN/OPS)前必须先定这条。
+- **翻页语义**:见 §6(它是输入语义的一部分)。
+
+---
+
+## 6. 输入语义契约(物理键 + 翻页)
+
+客户端**统一这些语义**;**物理按键映射 per-device**(下表),但语义跨端一致。
+
+| 语义 | 行为 |
+|---|---|
+| **语音** | **hold-to-talk**:按住=录音,松开=结束并注入(§4)。**不是 toggle**。 |
+| **返回列表** | 从终端回到 host/project 列表 |
+| **翻页 上 / 下** | 进 tmux copy-mode **半页**滚动(避免与 Claude Code 自身翻页冲突) |
+| **确认/回车** | 标准 Enter(语音 overlay 确认也走它) |
+
+**物理映射(per-device,登记在此,新设备追加):**
+| 设备 | 语音 | 返回 | 翻页上/下 | 备路径 |
+|---|---|---|---|---|
+| Beam Pro X4100 + 8BitDo Micro | **F1**(keycode 131) | **F2**(132) | **Shift+↑ / Shift+↓** | Ctrl+Alt+1/2 |
+| iOS(规划) | GameController framework 映射,待 POC 定 | 同 | 同 | — |
+
+> 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
+
+---
+
+## 7. ASR 契约(语音识别)
+
+- **引擎**:豆包(VolcEngine)**流式** ASR。`resourceId` 默认 `volc.seedasr.sauc.duration`(流式 2.0 小时版)。
+- **凭证**:`{ provider:"VOLC", appid, token, resourceId }`,经代客安装(§8)进私有存储,**无设置 UI**。
+- **热词** = **内置通用词**(Claude Code 控制命令:compact/context/agent/resume/model… 所有 project 继承)+ **该 project 的 manifest `hotwords`**(§2),合并后喂 ASR。
+- **克制**:有 token 预算上限,超了截断,**通用词优先**;每 project 几个~十几个真正高频易错的专名即可。
+
+---
+
+## 8. Host 配置 / 代客安装(Valet)契约
+
+**无设置 UI 是刻意设计**——用户戴眼镜没法舒服填表。配置经**带外通道**推进设备私有存储,app 启动时导入。
+
+**hosts.json schema(导入用 staging 形态):**
+```jsonc
+[
+  {
+    "name": "TK-ALIYUN",          // host 唯一名(也用于私钥落地文件名)
+    "addr": "tk-aliyun",          // 可选:显示别名。缺省 = host。⚠️ 真实 IP 绝不进 addr(UI 会显示 addr)
+    "host": "47.x.x.x",           // 真实连接地址(IP/域名)。UI 不显示这个字段
+    "port": 22,                   // 可选,默认 22
+    "user": "xreal",
+    "key": "tk.pem",              // staging:指向同目录私钥纯文件名(导入后变私有 keys/<name>.pem,权限 600)
+    "basePath": "/home/xreal/work",// manifest/status 在 <basePath>/.xreal/ 下(§2/§3)。空 = 不 live-fetch
+    "via": "TK-ALIYUN",           // 可选:多跳跳板 host 名(§5)
+    "projects": [                 // seed 列表(真相由 manifest 覆盖)
+      { "session": "maestro", "name": "Maestro", "type": "maestro" }
+    ]
+  }
+]
+```
+
+**安全契约(平台无关,强制):**
+- **真实 IP 只进 `host`,绝不进 `addr`/UI**。`addr` 是给人看的别名。
+- 私钥落**私有存储**,权限收紧(仅 app 自身可读)。`key` 必须是纯文件名(防路径遍历),私钥须含 `PRIVATE KEY`、合理大小(≤8KB)。
+- 导入**原子写**(tmp→rename),防半成品。
+
+**注入通道(平台相关 —— 这是两端少数真正不同的地方之一):**
+| 平台 | staging 落点 | 机制 |
+|---|---|---|
+| Android | `/data/local/tmp/xreal_import/{hosts.json, asr.json, <keys>}` | `adb push` → app 启动 import 到私有存储 → best-effort 清 staging(权威清理由 Valet `adb shell rm`) |
+| iOS | **开发期(POC ✅)**:`xcrun simctl get_app_container booted <bundle> data` 定位容器 → copy `hosts.json`/key 进 `Documents/`(= adb push 的 iOS 等价物,**仅模拟器**)。**真机仍未解**:沙盒无 adb 等价物,候选 Files/document picker 导入、share-extension、app 内一次性导入流 |
+
+> iOS 没有 `adb push 到任意 app 私有目录`这种能力(沙盒)。代客安装在 iOS 上**必然换实现**,但**契约形状(hosts.json/asr.json schema + 安全规则)不变**。模拟器开发期通道已由 POC 验证(simctl 容器 copy);**真机注入通道是 iOS 客户端的首要待解项**。
+
+---
+
+## 9. 优雅降级契约(底线)
+
+任何组件挂了,用户能**退回 Termius / Termux 继续工作**。这个 app **不是必需品**。客户端实现不得做出"挂了就完全没法工作"的强耦合。
+
+---
+
+## 10. 平台中立性自检(写新功能前过一遍)
+
+加任何跨端功能时,先问:
+1. 这个行为属于**契约**(列表/状态/语音/按键语义/配置形状)还是**平台实现**(怎么渲染/怎么连 SSH/怎么录音)?
+2. 若是契约 → 先改本文件 + 两端对齐(§12);**不要**只在一端实现完再让另一端"抄"。
+3. 若是平台实现 → 各端自由发挥,但**对外行为必须满足本契约**。
+
+---
+
+## 11. 平台实现矩阵(契约 → 各端落点)
+
+> **iOS 列状态标记**:✅ = 模拟器 POC(2026-05-31,`ios/`)已实测验过;否则为规划/待真机。POC 验掉的核心风险:**WKWebView 原样跑 index.html + Base64 桥 + 字体 + WebGL + 真 PTY SSH 全通**。
+
+| 契约项 | Android(已上真机) | iOS |
+|---|---|---|
+| 终端 UI | WebView + xterm.js + WebGL + unicode11 | **WKWebView + 同一套 `index.html`(POC ✅ 原样跑通,零改动)**;Bridge shim→`messageHandlers` |
+| 字体(Meslo/Sarasa/emoji,file://) | WebView `allowFileAccessFromFileURLs` | **`loadFileURL(allowingReadAccessTo:)` 授权整目录,无跨域(POC ✅)** |
+| WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
+| SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
+| 多跳 ProxyJump | sshj LocalPortForwarder | Citadel/NIOSSH 端口转发(**未验**) |
+| 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
+| 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
+| 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |
+| ASR HTTP | OkHttp(豆包流式) | `URLSession` |
+| 配置注入(§8) | `adb push` → 私有存储 | 模拟器 `simctl` 容器 copy(开发期 ✅);**真机待解**(§8) |
+| 持久化日志 | `getExternalFilesDir` + `adb pull` | app container + Xcode/`pymobiledevice3` 取 |
+| AI 开发期截屏 | `adb exec-out screencap` | 模拟器 `xcrun simctl io booted screenshot`;真机 `pymobiledevice3 developer dvt screenshot` |
+| AI 开发期装机 | `adb install`(零账号) | 模拟器 `simctl install`(零签名);真机 `xcrun devicectl device install`(**需签名 .app**) |
+| 工程脚手架 | Gradle | **xcodegen(`project.yml`,资产用 `type: folder` folder reference)(POC ✅)** |
+
+**iOS 开发便捷度注记**:模拟器(`simctl`)对 AI 友好度 ≈ 甚至优于 adb(装/起/截屏零签名);**真机**则被**代码签名门**卡住(每次装机需 Xcode + Apple 账号,免费证书 7 天)。所以 iOS 开发**模拟器优先**验非硬件逻辑,硬件路径(8BitDo/麦克风/DP-to-眼镜)上真机由用户验——与 Android 的"硬件部分用户验"同构。
+
+---
+
+## 12. 契约变更流程(防内耗的关键)
+
+改任何跨端行为:
+1. **先改本文件**(SPEC.md),break 兼容时 bump 顶部 `Contract version`。
+2. 若动了 §2 manifest / §3 status / §4 voice **服务端侧契约** → 同步 [`docs/orchestrator-CLAUDE.md`](docs/orchestrator-CLAUDE.md) + [`docs/xreal-project.sh`](docs/xreal-project.sh)。
+3. **两端各自对齐实现**;不要让一端领先太多导致另一端反向适配。
+4. 平台专属细节进 §11 矩阵,不进契约正文。
+
+> 单一真相源原则:同一个契约事实(如 status.json 形状)**只在本文件权威定义一次**,其它文档**引用**它而不重新声明,避免漂移。

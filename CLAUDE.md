@@ -70,6 +70,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 详细版含可编译代码骨架:[`docs/architecture.md`](docs/architecture.md)。
 
+> **客户端契约(平台中立)= [`SPEC.md`](SPEC.md)**。host/project 列表怎么来、状态怎么算、语音怎么注入、按键什么语义、配置什么形状 —— 这些跨端行为的单一真相源在那。当前 Android 已实现,iOS 客户端规划中(见 [`HANDOFF.md`](HANDOFF.md))。**改任何跨端行为先改 SPEC.md,再两端对齐**;上图的 `Foreground Service`/`AudioRecord`/sshj 等是 Android 平台落点(SPEC §11 矩阵),不是契约本身。
+
 ---
 
 ## 4. 已建成的系统组件(代码地图)
@@ -261,6 +263,7 @@ HANDOFF.md 也定义了**何时该更新它自己**,保持长期可用。
 /Users/foxer/claude/xreal-ai-client/
 ├── CLAUDE.md                    ← 本文件
 ├── HANDOFF.md                   ← 动态状态(当前进度,先读它)
+├── SPEC.md                      ← 客户端契约(平台中立单一真相源,Android/iOS 共同实现;改跨端行为先改它)
 ├── README.md                    ← 给人类看的目录说明
 ├── docs/
 │   ├── background.md / architecture.md           ← 背景 + 架构
