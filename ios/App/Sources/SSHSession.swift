@@ -1,6 +1,5 @@
 import Foundation
 import Citadel
-import Crypto
 import NIOCore
 import NIOSSH
 
@@ -31,6 +30,9 @@ final class SSHSession {
     private let eventStream: AsyncStream<PtyEvent>
     private let eventCont: AsyncStream<PtyEvent>.Continuation
     private var client: SSHClient?
+    // Multi-hop (SPEC §5): when the host has a `via`, the jump client tunnels the target's
+    // PTY channel and MUST be retained + closed alongside it (see SshConnect lifecycle note).
+    private var jumpClient: SSHClient?
     private var runTask: Task<Void, Never>?
 
     init() {
@@ -40,8 +42,10 @@ final class SSHSession {
     }
 
     /// Connect (ed25519) + open a PTY running the tmux attach command for `session`.
-    /// `onConnected` fires once the PTY closure is live; `onFailure` on connect error.
-    func connect(host h: HostConfig, session: String, cols: Int, rows: Int,
+    /// `via` (SPEC §5) = the resolved jump host config when `h` is an internal host reached
+    /// through a bastion; nil = direct. `onConnected` fires once the PTY closure is live;
+    /// `onFailure` on connect error.
+    func connect(host h: HostConfig, via: HostConfig? = nil, session: String, cols: Int, rows: Int,
                  onConnected: @escaping () -> Void,
                  onFailure: @escaping (String) -> Void) {
         let startup = Self.tmuxAttachCommand(session)
@@ -53,21 +57,24 @@ final class SSHSession {
             // misleading "连接失败" on top of the correct "连接已断开".
             var live = false
             do {
-                let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
-                let client = try await SSHClient.connect(
-                    host: h.ssh.host,
-                    port: h.ssh.port,
-                    authenticationMethod: .ed25519(username: h.ssh.user, privateKey: key),
-                    hostKeyValidator: .acceptAnything(),   // TOFU later; local rig only
-                    reconnect: .never
-                )
-                self.client = client
+                // Direct or ProxyJump (SshConnect picks; jump client tunnels the target PTY).
+                let conn = try await SshConnect.connect(target: h, via: via)
+                self.client = conn.target
+                self.jumpClient = conn.jump
+                let client = conn.target
                 live = true
                 onConnected()
                 try await self.runPTY(client: client, startup: startup, cols: cols, rows: rows)
             } catch {
                 if !live { onFailure("\(error)") }   // only a pre-go-live error is a connect failure
             }
+            // The PTY loop ended (back-to-list close, server drop, or connect failure). The
+            // tunnel is dead either way → close the jump client here so a mid-session drop
+            // (where the VC's onClosed nils `ssh` without calling close()) can't leak it.
+            // Idempotent with close()'s own teardown (Citadel close is safe to call twice).
+            let jc = self.jumpClient
+            self.jumpClient = nil
+            try? await jc?.close()
             self.onClosed?()
         }
     }
@@ -83,8 +90,11 @@ final class SSHSession {
     func close() {
         eventCont.finish()
         let client = self.client
+        let jump = self.jumpClient
         self.client = nil
-        Task { try? await client?.close() }
+        self.jumpClient = nil
+        // Close target THEN jump (target's channel rides the jump tunnel; see SshConnect).
+        Task { try? await client?.close(); try? await jump?.close() }
     }
 
     private func runPTY(client: SSHClient, startup: String, cols: Int, rows: Int) async throws {

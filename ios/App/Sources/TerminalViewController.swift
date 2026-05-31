@@ -335,7 +335,12 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             writeToTerm("\r\n[no SSH config for \(session)]\r\n")
             return
         }
-        writeToTerm("连接 \(h.name) … (\(p.session))\r\n")   // alias, never the real IP
+        // Multi-hop (SPEC §5): if this host has a `via`, resolve the jump host by name from
+        // the deck (mirrors Android's byName lookup) so the PTY tunnels through it. Unknown
+        // via name → nil → direct (degrade, don't fail the open).
+        let jump = h.via.flatMap { vn in hosts.first(where: { $0.name == vn }) }
+        let viaNote = jump.map { " ⤳ \($0.name)" } ?? ""
+        writeToTerm("连接 \(h.name)\(viaNote) … (\(p.session))\r\n")   // alias, never the real IP
 
         let gen = { sessionGen += 1; return sessionGen }()
         let s = SSHSession()
@@ -362,7 +367,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
                 self.writeToTerm("\r\n\u{1b}[33m[连接已断开 — 按返回键回到列表,重开此 project 可重连]\u{1b}[0m\r\n")
             }
         }
-        s.connect(host: h, session: p.session, cols: 80, rows: 24,
+        s.connect(host: h, via: jump, session: p.session, cols: 80, rows: 24,
             onConnected: { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }

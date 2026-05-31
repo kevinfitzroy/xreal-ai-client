@@ -268,7 +268,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 字体(Meslo/Sarasa/emoji,file://) | WebView `allowFileAccessFromFileURLs` | **`loadFileURL(allowingReadAccessTo:)` 授权整目录,无跨域(POC ✅)** |
 | WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
-| 多跳 ProxyJump | sshj LocalPortForwarder | Citadel/NIOSSH 端口转发(**未验**) |
+| 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
 | 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |

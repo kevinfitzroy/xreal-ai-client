@@ -29,12 +29,13 @@
 - 工程 xcodegen;一批 `#if DEBUG`+launch-arg 验证脚手架(gated,生产零影响,类似 Android `DebugInputServer`)。
 - **Phase 2 状态徽章已验通**:列表 `cat <base>/.xreal/status.json`(同连接,port `ManifestFetcher.parseStatus` 数组 schema + `StatusPoller.staticListJson` 合并:不可达→disconnected/有上报→用/无→unknown)+ 返回列表重拉。截图验 working/waiting/needs-permission/unknown/disconnected 五态 + age + refresh。改动仅 3 个 `ios/App/Sources/*.swift`,未碰 index.html/android。
 - **Phase 3 健壮性收尾已验通**:① 前台重拉(`willEnterForeground`,LIST 态→refresh,Android `onStart` 对等);② **死 host 不 hang 列表**(`withTaskGroup` 并发 + 7s 硬超时 + 非结构化 Task 逃逸 —— 黑洞 host TCP 不响应 cooperative cancel,必须外部超时;实测活 host 0.3s 出来、黑洞 7s 翻 offline 不拖累活 host);③ PTY 掉线优雅(`onClosed` 黄字提示不 crash/冻,`tmux new -A` reopen 重连;`live` flag + `ssh===s` guard 消重复"连接失败"误报);④ per-host 增量 loading;⑤ 优雅降级 `webContentProcessDidTerminate` 自愈回列表(SPEC §9)。改 4 个 ios Swift。
+- **Phase 4 多跳 `via` ProxyJump 已验通**:**Citadel 0.12 有原生 `SSHClient.jump(to:)`**(在跳板上开 directTCPIP channel + 第二次完整握手)→ **不需要** port Android 的 `ServerSocket`+`LocalPortForwarder`(那是 sshj 无原生 ProxyJump 才手搓的);功能塌缩成「换种方式拿 SSHClient」,下游 `executeCommand`(cat)/`withPTY`(PTY)不变。新增 `SshConnect.swift`;`via` 解析接进 manifest-cat 和 PTY 两条路(死跳板仍被 7s 超时框住)。本地两跳 rig(跳板 :22 + 内网 sshd :2223)验通,**lsof 拓扑证明 app 只连 :22、跳板转发 :2223** = 真 ProxyJump。SPEC §11 多跳 cell 回填。**这是 iOS 纯模拟器能验的最后一块——iOS 客户端核心(列表+状态+SSH+健壮+多跳)收官。**
 
 **✅ ssh-rsa 跨端坑已解**:真实 host(`xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0`)2026-05-31 核实**全是 ed25519**,无需迁移;**约定客户端一律 ed25519、不用 RSA**(Citadel RSA 走 legacy ssh-rsa/SHA-1)。SPEC §5。
 
-**✅ 服务端 maestro 开机自启(2026-05-31,commit `0bd34bd`)**:`xreal-project.sh` 加 `restore`(按 manifest 幂等重建整个 deck)+ `install-autostart`(@reboot cron,免 root)。本地实测幂等。**TK 部署待网络 blip 恢复**(scp 新脚本 + install-autostart + restore;TK 重启后 swap/openvpn 已自动回来,只 maestro deck 没自起 → company-web/invest-digest 仍待 restore 拉回)。
+**✅ 服务端 maestro 开机自启(2026-05-31,commit `0bd34bd`,已部署 TK)**:`xreal-project.sh` 加 `restore`(按 manifest 幂等重建整个 deck)+ `install-autostart`(@reboot cron,免 root)。**TK 已部署**:scp 新脚本 + 装 @reboot cron + `restore` 把 company-web/invest-digest 拉回(4 session 全活;swap/openvpn 重启本就自动回来)。⚠️ project 的 claude 走 manifest `startup="claude"` = **重启后开全新会话**(maestro 是 `--continue` 续);要 project 也续上下文,把它们 manifest `startup` 改 `claude --continue`。
 
-**➡️ 下一步(用户定向:优先「无需人工接入、模拟器可完成」)**:iOS 收尾打磨(Phase 3)已完成 → 下一块纯模拟器活 = **多跳 `via` ProxyJump**(port `SshJump`,本地造两跳验)。**再往后全需真机/硬件 → 押后**:语音(麦克风)、F1/F2 物理键路由(8BitDo)、disconnect→vkey 恢复(sim 验不了)、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机+签名)。
+**➡️ 下一步**:**iOS 纯模拟器核心已收官**(POC + 列表闭环 + 状态 + 健壮性 + 多跳 = commit `3259ae4`/`ebfdbe1`/`0567b0b`/`adf239d`/Phase4)。**剩下全需用户真机/硬件**:语音(麦克风→AVAudioEngine + 豆包 ASR)、F1/F2 物理键路由(8BitDo→GameController)、disconnect→vkey 恢复、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机 + 签名 + 免费 Apple ID 7 天证书)。需要用户上 iPhone 才能继续。
 >
 > **commit 节奏(用户 2026-05-31 定)**:iOS 分阶段建,**每个截图验证过的 phase 直接 commit(不 push)**,不再逐个问。见 memory [[phase-build-autocommit]]。
 

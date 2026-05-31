@@ -1,6 +1,5 @@
 import Foundation
 import Citadel
-import Crypto
 import NIOCore
 
 /// Pulls each host's project list from `<basePath>/.xreal/projects.json` via a
@@ -50,10 +49,15 @@ enum ManifestFetcher {
         _ hosts: [HostConfig],
         onHostResolved: (@MainActor (HostFetchResult) -> Void)? = nil
     ) async -> FetchResult {
+        // via (SPEC §5) is a host *name*; resolve it against the full list (mirrors Android
+        // ManifestFetcher's `byName[it]`). Built once here, passed into each probe so a
+        // via-host's manifest cat rides the jump tunnel just like its PTY does.
+        let byName = Dictionary(hosts.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
         // Probe all hosts concurrently; collect keyed by name to rebuild original order.
         let resolved: [String: HostFetchResult] = await withTaskGroup(of: HostFetchResult.self) { group in
             for h in hosts {
-                group.addTask { await probe(host: h) }
+                let jump = h.via.flatMap { byName[$0] }   // nil via, or via→unknown name = direct
+                group.addTask { await probe(host: h, via: jump) }
             }
             var acc: [String: HostFetchResult] = [:]
             for await r in group {
@@ -79,12 +83,12 @@ enum ManifestFetcher {
     /// offline). Otherwise race connect+cat against `perHostTimeoutMs`; timeout or connect
     /// failure → seed projects, unreachable (→ disconnected badges). The whole unit is inside
     /// the timeout so a half-open host (connects, then stalls on cat) can't stall either.
-    private static func probe(host h: HostConfig) async -> HostFetchResult {
+    private static func probe(host h: HostConfig, via: HostConfig?) async -> HostFetchResult {
         if h.basePath.isEmpty {
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: false)
         }
         let result: HostFetchResult? = await withTimeout(ms: perHostTimeoutMs) {
-            await fetchOne(host: h)
+            await fetchOne(host: h, via: via)
         }
         guard let result else {
             NSLog("[ManifestFetcher] \(h.name): probe timed out (\(perHostTimeoutMs)ms) → offline, others unaffected")
@@ -97,15 +101,16 @@ enum ManifestFetcher {
     /// One host's connect + both cats on a single SSH connection (SPEC "同一连接").
     /// connect failure → seed + unreachable. Connected but bad/missing manifest → seed +
     /// reachable (renders unknown, not offline).
-    private static func fetchOne(host h: HostConfig) async -> HostFetchResult {
+    private static func fetchOne(host h: HostConfig, via: HostConfig?) async -> HostFetchResult {
         let base = h.basePath.hasSuffix("/") ? String(h.basePath.dropLast()) : h.basePath
-        guard let conn = await connect(host: h) else {
+        guard let conn = await connect(host: h, via: via) else {
             NSLog("[ManifestFetcher] \(h.name): connect failed → keep seed, host offline")
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: true)
         }
-        defer { Task { try? await conn.close() } }
-        let rawManifest = await cat(conn, path: "\(base)/.xreal/projects.json")
-        let rawStatus = await cat(conn, path: "\(base)/.xreal/status.json")
+        // Close BOTH target + jump (the via-host's cats rode the jump tunnel; SshConnect).
+        defer { Task { await conn.closeAll() } }
+        let rawManifest = await cat(conn.target, path: "\(base)/.xreal/projects.json")
+        let rawStatus = await cat(conn.target, path: "\(base)/.xreal/status.json")
         let status = parseStatus(rawStatus)
         if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
             var updated = h
@@ -148,18 +153,14 @@ enum ManifestFetcher {
         }
     }
 
-    /// Open one SSH client to the host. ed25519 only (SPEC §5). nil on any connect error.
-    private static func connect(host h: HostConfig) async -> SSHClient? {
+    /// Open one SSH connection to the host (direct, or via the jump host when `via` is set —
+    /// SPEC §5). ed25519 only. nil on any connect error (jump unreachable / target auth fail).
+    /// Returns the target+jump pair so the caller closes both.
+    private static func connect(host h: HostConfig, via: HostConfig?) async -> SshConnect.Connected? {
         do {
-            NSLog("[ManifestFetcher] connecting \(h.name)…")   // visible while a dead host hangs
-            let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
-            return try await SSHClient.connect(
-                host: h.ssh.host,
-                port: h.ssh.port,
-                authenticationMethod: .ed25519(username: h.ssh.user, privateKey: key),
-                hostKeyValidator: .acceptAnything(),   // TOFU is a later phase; local rig only
-                reconnect: .never
-            )
+            let through = via.map { " via \($0.name)" } ?? ""
+            NSLog("[ManifestFetcher] connecting \(h.name)\(through)…")   // visible while a dead host hangs
+            return try await SshConnect.connect(target: h, via: via)
         } catch {
             NSLog("[ManifestFetcher] connect(\(h.name)) failed: \(error)")
             return nil
