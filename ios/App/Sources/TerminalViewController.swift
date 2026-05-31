@@ -9,11 +9,12 @@ import GameController
 /// `window.Bridge` is injected as a WKUserScript forwarding to `messageHandlers.bridge`.
 final class TerminalViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
 
+    // 全屏沉浸(AR 眼镜场景):隐藏状态栏(时间/电量/信号)+ home indicator = Android immersive。
+    override var prefersStatusBarHidden: Bool { true }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+
     private var webView: WKWebView!
     private var pageReady = false
-    // Native entry to the config page (SPEC §8). Visible only in the LIST view (semantic F2
-    // target until hardware keys are bound); hidden over the PTY so it never floats on the terminal.
-    private var configButton: UIButton!
 
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
@@ -110,8 +111,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         webView.backgroundColor = .black
         view.addSubview(webView)
 
-        addConfigButton()
-
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
 
@@ -141,42 +140,10 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         }
     }
 
-    // MARK: - Config page entry (SPEC §8; native, presented over the WebView)
-    /// A small native button pinned to the list's top-trailing corner. The eventual hardware-key
-    /// path (F2) will open the same page; until then this gives a visible, screenshot-verifiable
-    /// entry. Hidden in terminal view (see setConfigButtonVisible) so it never overlaps the PTY.
-    private func addConfigButton() {
-        var cfg = UIButton.Configuration.gray()
-        cfg.image = UIImage(systemName: "gearshape")
-        cfg.baseForegroundColor = UIColor(red: 0x94/255, green: 0xE0/255, blue: 0xB2/255, alpha: 1)  // #94E0B2
-        cfg.cornerStyle = .capsule
-        let b = UIButton(configuration: cfg)
-        b.translatesAutoresizingMaskIntoConstraints = false
-        b.accessibilityIdentifier = "configButton"
-        b.addTarget(self, action: #selector(openConfigPage), for: .touchUpInside)
-        view.addSubview(b)
-        NSLayoutConstraint.activate([
-            b.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            b.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-        ])
-        configButton = b
-    }
-
-    /// Show the config button only in the list view (semantic: it's a list-level affordance).
-    private func setConfigButtonVisible(_ visible: Bool) {
-        configButton?.isHidden = !visible
-    }
-
-    @objc private func openConfigPage() {
-        let vc = HostConfigViewController()
-        vc.onImported = { [weak self] result in
-            // Centralize reload through the one path AppDelegate's open: also uses.
-            self?.reloadHostsAfterImport(result)
-        }
-        let nav = UINavigationController(rootViewController: vc)
-        nav.modalPresentationStyle = .fullScreen
-        present(nav, animated: true)
-    }
+    // 配置导入(SPEC §8):本版**只走分享单「Open in」**(Valet AirDrop 自含 `.xrhosts`,
+    // AppDelegate.application(_:open:) 处理 → importConfig → reloadHostsAfterImport)。
+    // app 内「齿轮→host 配置页文档选择器」那套手动导入**搁置 P2**(与「无设置 UI / agent 代劳」
+    // 哲学略拧;AirDrop 已够)。importConfig 的三类判别(单 host/全局/asr)对 AirDrop 文件仍生效。
 
     // MARK: - WKNavigationDelegate
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -219,11 +186,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             } catch {
                 reportImportFailure("\(error)")
             }
-        }
-        // Screenshot-only: open the native config page without a tap (the sim has no tap CLI).
-        // Runs the exact same openConfigPage() the gear button calls. No production effect.
-        if args.contains("-openConfigPage") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.openConfigPage() }
         }
     }
 
@@ -387,7 +349,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] openProject host=\(host) session=\(session)")
         let seq = { openSeq += 1; return openSeq }()
         view_ = .terminal
-        setConfigButtonVisible(false)
         eval("window.showTerminal(\(jsString(name)), \(jsString(type)))")
 
         guard let h = hosts.first(where: { $0.name == host }),
@@ -471,7 +432,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         openSeq += 1     // in-flight connections are now obsolete
         sessionGen += 1  // late output chunks are now obsolete
         view_ = .list
-        setConfigButtonVisible(true)
         let old = ssh
         ssh = nil
         old?.close()     // finishes stream + closes client → PTY loop exits, tmux persists

@@ -26,6 +26,10 @@
 	     WKWebView won't be full-size (screenshot would look wrong). -->
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- 全屏沉浸(AR 眼镜):启动起即隐藏状态栏;运行时由 VC prefersStatusBarHidden 维持。
+	     UIViewControllerBasedStatusBarAppearance 保持默认 YES,VC override 才生效。 -->
+	<key>UIStatusBarHidden</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
