@@ -3,12 +3,15 @@ package io.github.kevinfitzroy.xrealclient
 /**
  * Agent Deck 数据模型 —— Host(一级)→ Project(二级)。
  *
- * 配置(HostConfig/ProjectConfig)目前只是内存模型:还没有管理 host 列表的 UI,
- * 所以 [SettingsStore.loadHosts] 暂时返回 emptyList()。等 task 0.3(真 tmux 链路)
- * + host 列表录入 UI 落地后再持久化。
+ * 配置由 [SettingsStore.loadHosts] 从 hosts.json 读(Valet 代客安装 → 私有存储;
+ * **无设置 UI 是刻意设计**)。project 列表的真相来源是 [ManifestFetcher] 从各 host
+ * 拉的 manifest;内网 host 经 [HostConfig.via] 跳板多跳到达。
  *
- * 运行时状态(ProjectStatus/ProjectSnapshot)由 [AgentStatusDetector] 从
- * `tmux capture-pane -p` 输出推断,[StatusPoller] 周期性刷新并推给 WebView 列表。
+ * 卡片**运行时状态**当前走 **Claude Code hooks**:hook 写 `<base>/.xreal/status.json`,
+ * [ManifestFetcher] 一次性 cat 后并入列表(state:working/waiting/disconnected/unknown
+ * + since 算时长)。本文件的 [ProjectStatus]/[ProjectSnapshot] 属于**抓屏检测路径**
+ * ([AgentStatusDetector] + [StatusPoller] 周期 `capture-pane`),该路径搁置 P2
+ * ([FleetFeatures.LIVE_STATUS]=false),当前不走。
  */
 
 enum class ProjectType { SSH, CLAUDE, AGENT, MAESTRO }   // MAESTRO = host orchestrator(每 host 一个,pin 首位)
