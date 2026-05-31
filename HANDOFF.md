@@ -35,7 +35,18 @@
 
 **✅ 服务端 maestro 开机自启(2026-05-31,commit `0bd34bd`,已部署 TK)**:`xreal-project.sh` 加 `restore`(按 manifest 幂等重建整个 deck)+ `install-autostart`(@reboot cron,免 root)。**TK 已部署**:scp 新脚本 + 装 @reboot cron + `restore` 把 company-web/invest-digest 拉回(4 session 全活;swap/openvpn 重启本就自动回来)。⚠️ project 的 claude 走 manifest `startup="claude"` = **重启后开全新会话**(maestro 是 `--continue` 续);要 project 也续上下文,把它们 manifest `startup` 改 `claude --continue`。
 
-**➡️ 下一步**:**iOS 纯模拟器核心已收官**(POC + 列表闭环 + 状态 + 健壮性 + 多跳 = commit `3259ae4`/`ebfdbe1`/`0567b0b`/`adf239d`/Phase4)。**剩下全需用户真机/硬件**:语音(麦克风→AVAudioEngine + 豆包 ASR)、F1/F2 物理键路由(8BitDo→GameController)、disconnect→vkey 恢复、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机 + 签名 + 免费 Apple ID 7 天证书)。需要用户上 iPhone 才能继续。
+**✅ iOS 已上真机(iPhone 15 Plus / iOS 18.5),功能闭环**(2026-05-31):
+- **Phase 5**(`bc5c746`)真机签名装机 + **配置注入**(SPEC §8 唯一待解已解):分享单「Open in」自含 `.xrhosts`(内联 key)→ 导入私有存储。真机实测 AirDrop→导入→SSH 连 Mac LAN host。
+- **Phase 6**(`8765af1`)**同款 logo**(从 `docs/images/icon.svg` 渲染,跟 Android 一个 `>_`)+ **native host 配置页**(列表右上角齿轮进入,语义=未来 F2;三类文档选择器导入:单 host 追加/全局替换/ASR 凭证)。
+- **终端禁系统 IME**:swizzle `WKContentView._requiresKeyboardWhenFirstResponder=false`(压软键盘)+ `inputAccessoryView=nil`(压工具条)= Android `FLAG_ALT_FOCUSABLE_IM`。真机验过。
+- **签名**:免费 Apple ID(`zyayhj.yhj@163.com`),team ID 在 **gitignored `ios/Signing.xcconfig`**(不进公开 repo);**证书 7 天到期要重签**(`xcodebuild -allowProvisioningUpdates` 重装)。
+- **真机截图能力**:`pymobiledevice3`(已装 ~/.local/bin)+ 用户起的 `sudo pymobiledevice3 remote tunneld` 隧道 → 我能 `developer dvt screenshot` 独立看真机屏。
+
+**➡️ 下一步(仍需硬件/用户在场)**:
+- **语音**:麦克风→AVAudioEngine + 豆包流式 ASR(ASR 凭证导入已做 Phase6,**录音→识别→注入本身没做**)。
+- **F1/F2 物理键路由**:8BitDo→GameController(hold-to-talk 语音 / F2 返回——含**列表页 F2→host 配置页**那条语义,现在靠齿轮按钮代);翻页。
+- **AR 眼镜**:iPhone 15+ USB-C DP 直连 XREAL One Pro(用户接)。
+- disconnect→vkey 恢复(真机验)。
 >
 > **commit 节奏(用户 2026-05-31 定)**:iOS 分阶段建,**每个截图验证过的 phase 直接 commit(不 push)**,不再逐个问。见 memory [[phase-build-autocommit]]。
 
