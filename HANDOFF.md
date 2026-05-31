@@ -22,18 +22,17 @@
 
 3. **抽出平台中立契约层 [`SPEC.md`](SPEC.md)(Contract version 1)** —— 防双端内耗的根。host/project 列表、状态 4 态、语音 🎤 注入、按键语义、ASR 热词、hosts.json/status.json 形状、安全规则,**只在 SPEC 定义一次**,两端实现它。平台落点(sshj/WKWebView/Service 等)进 SPEC §11 矩阵,不进契约正文。**改任何跨端行为先改 SPEC 再两端对齐**(§12 流程)。
 
-**✅ iOS 模拟器 POC 已验通(2026-05-31,`ios/`)** —— tracer bullet 双里程碑全过(`xcodebuild`+`simctl` 自验、截图 Read 确认):
-- **M1**:WKWebView **原样跑 Android 的 `index.html`(零改动)** + `window.Bridge` shim→`webkit.messageHandlers` 的 Base64 桥(双向)+ 字体(Meslo/Sarasa/emoji,file:// 无跨域)+ WebGL,全通。
-- **M2**:**Citadel 0.12(SwiftNIO SSH)连真 PTY 跑通真 zsh**(隔离高端口 throwaway sshd,不碰真 host/系统 authorized_keys)。
-- 工程 = xcodegen(`ios/project.yml`),资产 `type: folder` folder reference。已回填 SPEC §5/§8/§11(iOS 列标 POC ✅)+ memory [[second-client-ios]]。
+**✅ iOS POC + 正式客户端 Phase 1 已验通(2026-05-31,`ios/`,模拟器,均截图 Read 确认)**:
+- **POC**:WKWebView **原样跑 Android 的 `index.html`(零改动)** + `window.Bridge` shim→`messageHandlers` Base64 桥 + 字体(file:// 无跨域)+ WebGL + Citadel SSH 真 PTY,全通。
+- **Phase 1 核心闭环**:`hosts.json → Agent Deck 列表(cat manifest)→ 开 project → ed25519 SSH → tmux PTY → 返回`,**port 自 Android**(双轨 channel:manifest 走独立短命 exec / project 走交互 PTY;`syncSize` 热切重推尺寸;`openSeq`+`sessionGen` race 守护;`tmux -u`+UTF-8)。新增 Swift `Models/HostStore/ManifestFetcher` + 进化 `SSHSession/TerminalViewController`。本地 Mac host(127.0.0.1,`~/.ssh/xreal_phase0` ed25519,已授权)验通。
+- **Phase 1 UI**(用户要求,SPEC §6.1):横竖兼容(旋转 `fitAddon` 重排)+ 虚拟键盘**横屏 1 行 / 竖屏 2 行**(共享 `index.html` 加一个 `@media(orientation:portrait)`,两份 byte-identical;Android 锁横屏→永远 1 行→零影响)+ 蓝牙键盘 connect→`setHwKeyboard` 隐藏。
+- 工程 xcodegen;一批 `#if DEBUG`+launch-arg 验证脚手架(gated,生产零影响,类似 Android `DebugInputServer`)。
 
-**➡️ 真客户端前的两个待解(POC 暴露,见 SPEC §5/§8)**:
-1. **ssh-rsa 跨端坑**(顶层风险):Citadel 用 RSA key 走 legacy `ssh-rsa`(SHA-1),现代 host 默认拒。**上真 host(TK/OPS)前必须定** —— 首选 Valet 给客户端签 **ed25519** key 绕开;Android/sshj 是否协商 rsa-sha2 待核实。
-2. **真机配置注入通道**:模拟器用 `simctl` 容器 copy(✅),**真机沙盒无 adb 等价物 = iOS 客户端首要待解项**(候选 Files/document picker / share-extension)。
+**✅ ssh-rsa 跨端坑已解**:真实 host(`xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0`)2026-05-31 核实**全是 ed25519**,无需迁移;**约定客户端一律 ed25519、不用 RSA**(Citadel RSA 走 legacy ssh-rsa/SHA-1)。SPEC §5。
 
-之后才是 iOS 正式客户端开发(SSH/语音/物理键/背景模式按 SPEC §11 落地)。**真机/眼镜/8BitDo 由用户验(需代码签名,免费 Apple ID 7 天证书)。**
+**➡️ 下一步(用户定向:优先「无需人工接入、模拟器可完成」的 phase)**:候选 = status.json 状态徽章(列表 `cat status.json`,纯模拟器可验)、多跳 `via` ProxyJump(本地造两跳即可验)。**需真机/硬件 → 押后**:语音(麦克风)、F1/F2 物理键路由(8BitDo)、disconnect→vkey 恢复(sim 验不了)、**真机配置注入通道**(沙盒无 adb 等价物 = SPEC §8 唯一待解,需真机+签名)。
 
-> ⚠️ commit 状态:release(commit `d0bbb4c`)已推送;**SPEC.md + `ios/` POC + CLAUDE.md/HANDOFF/memory 改动尚未 commit**,等用户发话(§7「默认不主动 push」)。`ios/.gitignore` 已忽略 `*.xcodeproj`/`DerivedData/`/throwaway key;`android/` 一字未动。
+> ⚠️ commit 状态:release `d0bbb4c` 已推送;契约层 `256871a` + POC `3259ae4` 已 commit(本地未 push);**Phase 1(`ios/` + 共享 `index.html` + SPEC §5/§6.1 + 本 HANDOFF)本次 commit**。`android/` 仅共享 `index.html` 被动(其它一字未动)。
 
 ---
 

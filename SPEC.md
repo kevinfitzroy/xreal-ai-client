@@ -160,7 +160,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - attach 用 `new -A -s <session>`(存在则 attach,不存在则建)。
 - **多跳(ProxyJump)**:host 配置带 `via`(= 另一 host 的 `name`)→ SSH 经该跳板本地端口转发到达。典型:OPS(AWS 内网,只 VPN 可达)`via: "TK-ALIYUN"`,由挂 OpenVPN 的 TK 转发。手机本身**不挂 VPN**。
 - **known_hosts**:**TOFU**(首次信任并记录,之后校验)。
-- **公钥算法(跨端坑 —— iOS POC 实测发现,影响真客户端能否连真 host)**:iOS 的 **Citadel 0.12 用 RSA key 时签名走 legacy `ssh-rsa`(SHA-1)**,现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 已不收 → **认证直接失败**(CLI `ssh` 能连是因为它协商 `rsa-sha2-*`)。**缓解(首选):Valet 给客户端签发 `ed25519` key**(所有现代 host 都收,彻底绕开 SHA-1 问题);或确认目标 host 接受 `rsa-sha2-*` / 升级 Citadel。**Android/sshj 是否自动协商 `rsa-sha2` 尚未核实 → 勿假设两端一致**。⚠️ 上真 host(TK-ALIYUN/OPS)前必须先定这条。
+- **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**现状(2026-05-31 核实):真实 host 已全部 ed25519** —— `xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0` 都是 ED25519,**无需迁移**。POC 当时撞 ssh-rsa 只因用了 RSA throwaway。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
 - **翻页语义**:见 §6(它是输入语义的一部分)。
 
 ---
@@ -183,6 +183,16 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | iOS(规划) | GameController framework 映射,待 POC 定 | 同 | 同 | — |
 
 > 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
+
+### 6.1 屏幕方向 + 虚拟键盘(UI 契约,**per-platform 不同**)
+
+| 平台 | 屏幕方向 | 虚拟键盘行数 |
+|---|---|---|
+| Android(Beam Pro) | **锁横屏**(AR 眼镜固定横向) | 单行(终端态显示) |
+| iOS(iPhone) | **横竖兼容**(随设备旋转,终端 `fitAddon` 重排) | **横屏 1 行 / 竖屏 2 行**(CSS media query 响应) |
+
+- **硬件键盘接入 → 虚拟键盘消失**(两端一致语义):检测到外接/蓝牙键盘(8BitDo)connect → 客户端调 `window.setHwKeyboard(true)` 隐藏虚拟键盘;disconnect → 恢复。Android 走 `onConfigurationChanged`/`Configuration.keyboard`;iOS 走 `GCKeyboardDidConnect`/`GCKeyboardDidDisconnect`(GameController)。**`index.html` 的隐藏逻辑(`setHwKeyboard`)是共享的**,各端只负责**检测并调用**。
+- 虚拟键盘的响应式行数 = `index.html` 的 CSS media query(**共享资产**);Android 锁横屏 → 永远命中 1 行分支,该改动对 Android **无可见影响**。
 
 ---
 

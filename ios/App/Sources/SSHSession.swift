@@ -4,94 +4,113 @@ import Crypto
 import NIOCore
 import NIOSSH
 
-/// M2 (stretch): a real SSH connection to a local throwaway sshd on 127.0.0.1,
-/// using Citadel 0.12 (SwiftNIO SSH). Requests a PTY + interactive shell and pipes
-/// PTY output to `onOutput`. Input is fed through an AsyncStream so the closure-scoped
-/// `withPTY` stays alive for the lifetime of the session.
+/// One interactive PTY SSH session to a project's tmux. Mirrors Android's
+/// SshConnection (connect/PTY/shell/resize/disconnect).
 ///
-/// SECURITY: hardcoded to 127.0.0.1 + a throwaway key the POC harness drops into the
-/// app's Documents dir. NEVER touches real hosts.
+/// ARCHITECTURE (the load-bearing bit):
+/// Citadel's `withPTY { inbound, outbound in ... }` exposes the stdin writer
+/// (`outbound`, which carries `.changeSize`) ONLY inside the closure. But bridge
+/// `onInput`/`onResize` arrive from outside. So we funnel BOTH through a single
+/// `AsyncStream<PtyEvent>`; one consumer Task inside the closure switches
+/// data→`write` / resize→`changeSize`. This (a) fixes resize (POC's was a no-op →
+/// PTY stuck 80×24, tmux can't fill the screen) and (b) keeps all PTY writes on one
+/// task = the single-writer discipline the SPEC demands.
+///
+/// SPEC §5: ed25519 only (Citadel signs it natively, no legacy ssh-rsa/SHA-1 issue).
 final class SSHSession {
-    var onOutput: ((Data) -> Void)?
-
-    private let inputContinuation: AsyncStream<Data>.Continuation
-    private let inputStream: AsyncStream<Data>
-
-    private init() {
-        var cont: AsyncStream<Data>.Continuation!
-        self.inputStream = AsyncStream<Data> { cont = $0 }
-        self.inputContinuation = cont
+    enum PtyEvent {
+        case data(Data)
+        case resize(cols: Int, rows: Int)
     }
 
-    static func connect(onConnected: @escaping (SSHSession) -> Void,
-                        onFailure: @escaping (String) -> Void) {
-        let fm = FileManager.default
-        guard let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            onFailure("no documents dir"); return
-        }
-        let keyURL = docs.appendingPathComponent("poc_key")
-        guard let keyText = try? String(contentsOf: keyURL, encoding: .utf8) else {
-            onFailure("no throwaway key at Documents/poc_key (M2 not provisioned)")
-            return
-        }
-        let user = (try? String(contentsOf: docs.appendingPathComponent("poc_user"), encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? NSUserName()
-        // Port is configurable so the POC can target a throwaway sshd on a high port
-        // (avoids touching the user's real ~/.ssh/authorized_keys on port 22).
-        let port = (try? String(contentsOf: docs.appendingPathComponent("poc_port"), encoding: .utf8))
-            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 22
+    /// Called (on an arbitrary task) with PTY output bytes. Caller hops to main.
+    var onOutput: ((Data) -> Void)?
+    /// Called once when the PTY loop ends (back-to-list, server hangup, error).
+    var onClosed: (() -> Void)?
 
-        Task {
+    private let eventStream: AsyncStream<PtyEvent>
+    private let eventCont: AsyncStream<PtyEvent>.Continuation
+    private var client: SSHClient?
+    private var runTask: Task<Void, Never>?
+
+    init() {
+        var c: AsyncStream<PtyEvent>.Continuation!
+        eventStream = AsyncStream<PtyEvent> { c = $0 }
+        eventCont = c
+    }
+
+    /// Connect (ed25519) + open a PTY running the tmux attach command for `session`.
+    /// `onConnected` fires once the PTY closure is live; `onFailure` on connect error.
+    func connect(host h: HostConfig, session: String, cols: Int, rows: Int,
+                 onConnected: @escaping () -> Void,
+                 onFailure: @escaping (String) -> Void) {
+        let startup = Self.tmuxAttachCommand(session)
+        runTask = Task {
             do {
-                let privateKey = try Insecure.RSA.PrivateKey(sshRsa: keyText)
+                let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
                 let client = try await SSHClient.connect(
-                    host: "127.0.0.1",
-                    port: port,
-                    authenticationMethod: .rsa(username: user, privateKey: privateKey),
-                    hostKeyValidator: .acceptAnything(),   // POC only
+                    host: h.ssh.host,
+                    port: h.ssh.port,
+                    authenticationMethod: .ed25519(username: h.ssh.user, privateKey: key),
+                    hostKeyValidator: .acceptAnything(),   // TOFU later; local rig only
                     reconnect: .never
                 )
-                let session = SSHSession()
-                onConnected(session)
-                try await session.runPTY(client: client)
+                self.client = client
+                onConnected()
+                try await self.runPTY(client: client, startup: startup, cols: cols, rows: rows)
             } catch {
-                onFailure("connect failed: \(error)")
+                onFailure("\(error)")
             }
+            self.onClosed?()
         }
     }
 
-    func send(_ data: Data) {
-        inputContinuation.yield(data)
+    /// Enqueue keystrokes (bridge onInput). Fire-and-forget; ordered by the stream.
+    func send(_ data: Data) { eventCont.yield(.data(data)) }
+
+    /// Enqueue a window resize (bridge onResize / post-connect syncSize).
+    func resize(cols: Int, rows: Int) { eventCont.yield(.resize(cols: cols, rows: rows)) }
+
+    /// Tear down: finish the stream (→ writer Task ends) and close the client
+    /// (→ inbound terminates → the reader loop exits → withPTY returns).
+    func close() {
+        eventCont.finish()
+        let client = self.client
+        self.client = nil
+        Task { try? await client?.close() }
     }
 
-    func resize(cols: Int, rows: Int) {
-        // PTY window-change not wired in POC (Citadel 0.12 exposes it on the channel;
-        // out of scope for the echo/shell proof).
-        _ = (cols, rows)
-    }
-
-    @available(iOS 13.0, macOS 15.0, *)
-    private func runPTY(client: SSHClient) async throws {
+    private func runPTY(client: SSHClient, startup: String, cols: Int, rows: Int) async throws {
         let req = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: "xterm-256color",
-            terminalCharacterWidth: 80,
-            terminalRowHeight: 24,
+            terminalCharacterWidth: cols,
+            terminalRowHeight: rows,
             terminalPixelWidth: 0,
             terminalPixelHeight: 0,
             terminalModes: SSHTerminalModes([:])
         )
         try await client.withPTY(req) { [weak self] inbound, outbound in
             guard let self else { return }
-            // Pump stdin from the AsyncStream into the PTY.
+            // Single consumer of the event stream → single PTY writer.
             let writer = Task {
-                for await chunk in self.inputStream {
-                    try? await outbound.write(ByteBuffer(bytes: Array(chunk)))
+                // First input = the tmux startup line (login shell has narrow PATH;
+                // our own probe showed `tmux=none` over non-interactive exec, so we
+                // export PATH + locale then exec tmux). See tmuxAttachCommand.
+                try? await outbound.write(ByteBuffer(string: startup))
+                for await ev in self.eventStream {
+                    switch ev {
+                    case .data(let d):
+                        try? await outbound.write(ByteBuffer(bytes: Array(d)))
+                    case .resize(let cols, let rows):
+                        try? await outbound.changeSize(cols: cols, rows: rows,
+                                                       pixelWidth: 0, pixelHeight: 0)
+                    }
                 }
             }
-            // Read PTY output -> onOutput. Loop keeps the closure (and channel) alive.
-            for try await output in inbound {
-                switch output {
+            // Pump PTY output → onOutput. Loop keeps closure (and channel) alive.
+            for try await chunk in inbound {
+                switch chunk {
                 case .stdout(let buf), .stderr(let buf):
                     var b = buf
                     if let bytes = b.readBytes(length: b.readableBytes) {
@@ -101,5 +120,15 @@ final class SSHSession {
             }
             writer.cancel()
         }
+    }
+
+    /// attach-or-create the project's tmux session under UTF-8, with a non-interactive
+    /// PATH wide enough to find tmux. Mirrors Android MainActivity.tmuxAttachCommand
+    /// (minus the half-page paging conf, which is a later phase per SPEC §6).
+    /// `session` MUST already be validated `[A-Za-z0-9_.-]` (ProjectConfig.isSessionNameSafe).
+    static func tmuxAttachCommand(_ session: String) -> String {
+        "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; " +
+        "export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; " +
+        "exec tmux -u new -A -s '\(session)'\n"
     }
 }

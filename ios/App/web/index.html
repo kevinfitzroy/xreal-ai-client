@@ -147,6 +147,14 @@
   #hint-footer .k { color:var(--bg); background:var(--fg-dim); border-radius:5px; padding:2px 8px; font-weight:700; font-size:12px; margin-right:5px; }
   #hint-footer .spacer { flex:1; }
 
+  /* 响应式虚拟键盘行数(SPEC §6.1):横屏 1 行(默认上面的样式)/ 竖屏 2 行。
+     只加 portrait 媒体查询 → 横屏样式一字不动;Android 锁横屏永远命中默认 1 行分支,无可见影响。
+     竖屏靠 flex-wrap + 每键 1/6 宽 → 12 键自然折成 6+6 两行。 */
+  @media (orientation: portrait) {
+    #vkeyboard { flex-wrap:wrap; }
+    .kc { flex:1 1 calc(100% / 6 - 6px); height:52px; }
+  }
+
   @keyframes rise { to { opacity:1; transform:translateY(0); } }
   @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
   @keyframes railpulse { 0%,100%{ box-shadow:0 0 16px var(--wait); } 50%{ box-shadow:0 0 4px var(--wait); } }
