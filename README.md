@@ -70,6 +70,22 @@
 - **底层链路**:`Shift+↑` → xterm.js 编码成 `ESC[1;2A` → 经 SSH 送到远端 tmux → root 表绑定执行 `copy-mode ; send-keys -X halfpage-up`。app 侧**零拦截**(`dispatchKeyEvent` 直接透传方向键),全靠 tmux 配置实现 —— **服务端零增量**(只给已有 tmux 加了几行 `bind`/`set`,无新服务)。绑定 + 配置由 app 的 tmux 启动命令经 `-f` / `source-file` 注入,每次连接幂等重设。
 - **能往回翻多远**:每个 session 的 scrollback = **50000 行**(tmux 默认才 2000),足够翻 4-5 整页乃至更深。注意 tmux 硬限制:**已经在跑的 session 仍是旧的 2000 行**(无法回溯升级已有 window),**重建该 session** 后才是 50000;之后新建的 session 一出生即 50000。
 
+### 🟢 Agent 状态一览:一眼看出哪个在等你
+
+列表(Agent Deck)里每张卡片直接显示该 agent 的**实时状态 + 时长**,不用挨个点进去看:
+
+| 状态 | 含义 | 样式 |
+|---|---|---|
+| `12m working` | Claude Code 正在跑(别打扰),已干了 12 分钟 | 绿点转圈 |
+| `5m waiting` | 它停下了 = **轮到你**(回它的问题 / 给下一步),已等你 5 分钟 | 琥珀脉冲 |
+| `offline` | tmux / host 连不上 | 红点 |
+| (无徽章) | unknown —— 探到了 host 但拿不到状态(hooks 没部署 / 刚重启没上报) | 暗 |
+
+- **怎么判的(根本信号,不靠抓屏猜词)**:用 **Claude Code 的 hooks**(事件 API)—— `UserPromptSubmit`→working、`Stop`→waiting、`SessionEnd`→disconnected。Claude Code 的"working"提示词是随机词库(`Churned`/`Crunched`/`Cogitated`…),问题形式也千变万化,**靠读屏幕文本必然失真**,所以走事件而非解析。
+- **时长怎么来**:状态进入时服务端记一个时间戳(`since`),客户端算 `now − since`。"等了 12m" 这种紧迫度信息,只有服务端连续记才算得出。
+- **服务端怎么算**:每个 project 的 `.claude/settings.json` 配一组 hook,事件发生即写 `<base>/.xreal/status.json`;**app 一次性 cat 这一个文件**,不频繁连大量 tmux pane。Maestro 建项目时自动部署(`xreal-project.sh`)。
+- **生效时机**:hooks 在 Claude Code **启动时**加载 → 现有正跑的 session 要**重启**(`/exit` 干净退出 → 看门狗 `--continue` 续上)才开始上报。
+
 ---
 
 ## 理念

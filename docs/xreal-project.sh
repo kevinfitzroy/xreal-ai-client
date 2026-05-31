@@ -185,10 +185,10 @@ MD
     # 先 source ~/.profile:tmux 起的是非 login shell,PATH 不含 ~/.local/bin
     # (claude native 安装默认落这里)。.bashrc 的 PATH 行在交互 guard 之后、非交互够不到,
     # 而 ~/.profile 无条件加 ~/.local/bin → 这样 maestro 保活循环才找得到 claude。
-    tmux -u new -d -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash'
+    tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash'
     echo "建好 '$session' (type=$type) @ $dir  启动: $startup"
   else
-    tmux -u new -d -s "$session" -c "$dir"          # 纯交互 shell(ssh 配角终端)
+    tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir"   # 纯交互 shell(ssh 配角终端);-x/-y 防袖珍尺寸首连重绘
     echo "建好 '$session' (type=$type) @ $dir"
   fi
   manifest_upsert "$session" "$name" "$type" "$dir" "$group" "$startup"
