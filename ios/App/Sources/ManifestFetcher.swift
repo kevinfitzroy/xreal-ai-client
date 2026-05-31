@@ -20,48 +20,138 @@ struct FetchResult {
     let reachable: Set<String>                            // hosts whose SSH connect+exec succeeded
 }
 
+/// One host's resolved fetch outcome (Phase 3: emitted incrementally per host so the
+/// list shows live hosts the instant they answer, not after the slowest/dead host).
+/// `liveFetched=false` = no basePath, never probed (no reachability claim, never offline).
+struct HostFetchResult {
+    let host: HostConfig                       // projects refreshed from manifest, or seed on miss
+    let status: [String: SessionState]
+    let reachable: Bool                        // SSH connect+exec succeeded this round
+    let liveFetched: Bool                      // had a basePath → was actually probed
+}
+
 enum ManifestFetcher {
 
-    /// For each host: open ONE SSH connection (SPEC: "同一连接") and cat both
-    /// `<basePath>/.xreal/projects.json` and `.../status.json` over it. A successful
-    /// connection marks the host reachable (independent of whether either file parses,
-    /// so a live host with a missing/garbage manifest renders `unknown`, not offline).
-    /// Manifest parse failure → keep the host's seed projects (never blank). Hosts with
-    /// no basePath are returned as-is (no live fetch, no reachability claim).
-    static func fetch(_ hosts: [HostConfig]) async -> FetchResult {
+    /// Per-host SSH connect+cat budget. Phase 3 (SPEC §9 robustness): a host that hangs
+    /// on TCP connect (VPN dropped, blackholed IP) must NOT stall the whole list — we race
+    /// the entire per-host unit (connect + both cats) against this deadline and, on timeout,
+    /// render that host disconnected while every reachable host already showed up. Mirrors
+    /// Android's CONNECT_TIMEOUT_MS (12s there); shorter here for snappier UX. We don't rely
+    /// on Citadel/NIO honoring its own connect timeout against a blackhole — this is external.
+    static let perHostTimeoutMs = 7_000
+
+    /// Concurrent fetch (Phase 3). Each host is probed in its own child task with its own
+    /// timeout + do/catch, so one dead host can't hang or cancel the others; results are
+    /// reassembled in the ORIGINAL host order. `onHostResolved` (optional) fires on the main
+    /// actor as each host lands → the VC can re-push incrementally (live hosts appear at
+    /// ~connect latency, the dead host flips to disconnected only at the timeout). The
+    /// aggregate `FetchResult` is still returned for callers that just want the final state.
+    static func fetch(
+        _ hosts: [HostConfig],
+        onHostResolved: (@MainActor (HostFetchResult) -> Void)? = nil
+    ) async -> FetchResult {
+        // Probe all hosts concurrently; collect keyed by name to rebuild original order.
+        let resolved: [String: HostFetchResult] = await withTaskGroup(of: HostFetchResult.self) { group in
+            for h in hosts {
+                group.addTask { await probe(host: h) }
+            }
+            var acc: [String: HostFetchResult] = [:]
+            for await r in group {
+                acc[r.host.name] = r
+                if let onHostResolved { await onHostResolved(r) }
+            }
+            return acc
+        }
+
         var out: [HostConfig] = []
         var statusByHost: [String: [String: SessionState]] = [:]
         var reachable: Set<String> = []
-        for h in hosts {
-            if h.basePath.isEmpty { out.append(h); continue }
-            let base = h.basePath.hasSuffix("/") ? String(h.basePath.dropLast()) : h.basePath
-            guard let conn = await connect(host: h) else {
-                out.append(h)   // unreachable → keep seed; absence from `reachable` → disconnected
-                NSLog("[ManifestFetcher] \(h.name): connect failed → keep seed, host offline")
-                continue
-            }
-            defer { Task { try? await conn.close() } }
-            reachable.insert(h.name)   // connected = reachable, even if files are missing/bad
-            // manifest first, then status — both on the same connection.
-            let rawManifest = await cat(conn, path: "\(base)/.xreal/projects.json")
-            let rawStatus = await cat(conn, path: "\(base)/.xreal/status.json")
-            statusByHost[h.name] = parseStatus(rawStatus)
-            if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
-                var updated = h
-                updated.projects = projects
-                out.append(updated)
-                NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(statusByHost[h.name]?.count ?? 0) live states")
-            } else {
-                out.append(h)   // reachable but bad/missing manifest → keep seed (still reachable → unknown badges)
-                NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
-            }
+        for h in hosts {   // original order, not completion order
+            guard let r = resolved[h.name] else { out.append(h); continue }
+            out.append(r.host)
+            statusByHost[h.name] = r.status
+            if r.reachable { reachable.insert(h.name) }
         }
         return FetchResult(hosts: out, statusByHost: statusByHost, reachable: reachable)
+    }
+
+    /// Probe ONE host, time-boxed. No basePath → return seed as-is, not live-fetched (never
+    /// offline). Otherwise race connect+cat against `perHostTimeoutMs`; timeout or connect
+    /// failure → seed projects, unreachable (→ disconnected badges). The whole unit is inside
+    /// the timeout so a half-open host (connects, then stalls on cat) can't stall either.
+    private static func probe(host h: HostConfig) async -> HostFetchResult {
+        if h.basePath.isEmpty {
+            return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: false)
+        }
+        let result: HostFetchResult? = await withTimeout(ms: perHostTimeoutMs) {
+            await fetchOne(host: h)
+        }
+        guard let result else {
+            NSLog("[ManifestFetcher] \(h.name): probe timed out (\(perHostTimeoutMs)ms) → offline, others unaffected")
+            // timeout → seed projects, unreachable → disconnected badges
+            return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: true)
+        }
+        return result
+    }
+
+    /// One host's connect + both cats on a single SSH connection (SPEC "同一连接").
+    /// connect failure → seed + unreachable. Connected but bad/missing manifest → seed +
+    /// reachable (renders unknown, not offline).
+    private static func fetchOne(host h: HostConfig) async -> HostFetchResult {
+        let base = h.basePath.hasSuffix("/") ? String(h.basePath.dropLast()) : h.basePath
+        guard let conn = await connect(host: h) else {
+            NSLog("[ManifestFetcher] \(h.name): connect failed → keep seed, host offline")
+            return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: true)
+        }
+        defer { Task { try? await conn.close() } }
+        let rawManifest = await cat(conn, path: "\(base)/.xreal/projects.json")
+        let rawStatus = await cat(conn, path: "\(base)/.xreal/status.json")
+        let status = parseStatus(rawStatus)
+        if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
+            var updated = h
+            updated.projects = projects
+            NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(status.count) live states")
+            return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true)
+        }
+        NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
+        return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true)
+    }
+
+    /// Single-shot continuation gate: the first of {op completes, timer fires} resumes;
+    /// the loser's resume is dropped. An actor so the two racing Tasks can't double-resume.
+    private actor ResumeOnce<T> {
+        private var done = false
+        func resume(_ cont: CheckedContinuation<T, Never>, _ value: T) {
+            if done { return }
+            done = true
+            cont.resume(returning: value)
+        }
+    }
+
+    /// Hard timeout that does NOT await the loser. `op` runs in an UNSTRUCTURED Task, so this
+    /// returns the instant the timer fires even if `op` ignores cancellation — a blackholed
+    /// TCP connect (192.0.2.x, VPN-down) doesn't honor cooperative cancellation, so a task
+    /// group (which awaits all children on teardown) would block here. The orphaned connect
+    /// lingers until the OS connect timeout (~75s) then self-cleans; it's bound to nothing.
+    /// Returns nil if the timeout wins. This is the load-bearing "dead host can't hang the
+    /// list" mechanism (SPEC §9).
+    private static func withTimeout<T: Sendable>(
+        ms: Int, _ op: @escaping @Sendable () async -> T
+    ) async -> T? {
+        let gate = ResumeOnce<T?>()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            Task { let r = await op(); await gate.resume(cont, r) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+                await gate.resume(cont, nil)
+            }
+        }
     }
 
     /// Open one SSH client to the host. ed25519 only (SPEC §5). nil on any connect error.
     private static func connect(host h: HostConfig) async -> SSHClient? {
         do {
+            NSLog("[ManifestFetcher] connecting \(h.name)…")   // visible while a dead host hangs
             let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
             return try await SSHClient.connect(
                 host: h.ssh.host,

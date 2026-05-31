@@ -28,9 +28,19 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     // probed → list pushes omit `state` so the JS shows seed/loading instead of a badge.
     private var statusByHost: [String: [String: SessionState]] = [:]
     private var reachable: Set<String>? = nil
+    // Phase 3 incremental loading: hosts whose probe has landed this round. A host NOT in
+    // here is still loading (spinner); replaces the all-or-nothing `loading` flag so a live
+    // host can show real status while a dead host still spins toward its timeout.
+    private var probedHosts: Set<String> = []
+    // Phase 3 race guard (Android's fetchGen): foreground + back-to-list can both fire
+    // refreshManifests → overlapping fetch Tasks. Each fetch captures the current gen;
+    // stale results (and stale per-host callbacks) are dropped on the main hop.
+    private var fetchGen = 0
     // GameController keyboard observers (hardware keyboard → hide vkey, SPEC §6.1).
     private var kbConnectObs: NSObjectProtocol?
     private var kbDisconnectObs: NSObjectProtocol?
+    // Phase 3: app-foreground observer → refetch status when the user returns (Android onStart).
+    private var foregroundObs: NSObjectProtocol?
 
     // MARK: - Bridge shim (injected at document start)
     // index.html calls window.Bridge.{onInput,onResize,openProject,goHome,vkeyEnter,...};
@@ -107,6 +117,23 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         webView.loadFileURL(indexURL, allowingReadAccessTo: webDir)
 
         registerKeyboardObservers()
+        registerForegroundObserver()
+    }
+
+    // MARK: - App foreground → refetch status (item 1; Android's onStart guarded by LIST)
+    /// AppDelegate-based app with a manual UIWindow + no SceneDelegate, so we use
+    /// `willEnterForegroundNotification` (fires reliably on warm foreground; the UIScene
+    /// variant needs scene adoption we don't have). Refetch only in the LIST view — refetching
+    /// while in a terminal would pointlessly SSH every host; the terminal's own PTY is what
+    /// matters there. Matches Android MainActivity.onStart (`if view == LIST refreshManifests`).
+    private func registerForegroundObserver() {
+        foregroundObs = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            NSLog("[VC] willEnterForeground view=\(self.view_ == .list ? "list" : "terminal")")
+            if self.view_ == .list, !self.hosts.isEmpty { self.refreshManifests() }
+        }
     }
 
     // MARK: - WKNavigationDelegate
@@ -152,28 +179,74 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] navigation FAILED: \(error)")
     }
 
+    /// WKWebView analog of Android's onRenderProcessGone→recreate (graceful degradation,
+    /// SPEC §9): the WebGL render content-process was killed (OOM / GPU context loss). Default
+    /// behavior leaves a blank webview; instead reload index.html so the app self-heals back
+    /// to the list. Any live PTY is torn down (its render target is gone) and the user lands
+    /// on a fresh list. NOTE: not reproducible in the simulator — implemented defensively + logged.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        NSLog("[VC] WebContent process TERMINATED → reload index.html (self-heal to list)")
+        pageReady = false
+        ssh?.close(); ssh = nil
+        sessionGen += 1; openSeq += 1
+        view_ = .list
+        guard let webDir = Bundle.main.url(forResource: "web", withExtension: nil) else { return }
+        webView.loadFileURL(webDir.appendingPathComponent("index.html"), allowingReadAccessTo: webDir)
+        // didFinish will re-seed the list + refreshManifests as on a fresh load.
+    }
+
     // MARK: - List push + manifest refresh
     /// Push the current deck to the list view, merging the last-known live status.
-    /// `loading:true` (initial, pre-fetch) shows spinners and omits state (reachable=nil).
+    /// `loading:true` (the very first pre-fetch push) spins every card and omits state.
+    /// After that, per-host loading is driven by `probedHosts`: a host not yet probed keeps
+    /// spinning while already-resolved hosts show real badges (Phase 3 incremental).
     private func pushHostList(loading: Bool = false) {
         let json = DeckJSON.hostsArray(
             hosts, loading: loading,
             statusByHost: statusByHost,
-            reachable: loading ? nil : reachable   // loading push = unprobed → no state yet
+            reachable: loading ? nil : reachable,   // loading push = unprobed → no state yet
+            probed: loading ? nil : probedHosts     // nil = treat all as loading (initial seed)
         )
         eval("window.setHosts(\(jsString(json)))")
     }
 
-    /// Fetch each host's manifest + status off the main actor, then re-push the real
-    /// list with live state badges. Runs on initial list entry and on back-to-list.
+    /// Fetch each host's manifest + status off the main actor (concurrent + per-host timeout
+    /// in ManifestFetcher), re-pushing the list INCREMENTALLY as each host resolves so a live
+    /// host appears immediately and a dead host only flips to disconnected at its timeout —
+    /// it never hangs the list (SPEC §9). Runs on initial list entry, back-to-list, and
+    /// app-foreground. `fetchGen` discards results from a superseded fetch.
     private func refreshManifests() {
         let snapshot = hosts
+        fetchGen += 1
+        let gen = fetchGen
+        // SPEC §3 anti-flicker: do NOT clear probedHosts on a warm refresh (foreground /
+        // back-to-list). The cold path already shows spinners via didFinish's loading push;
+        // once the first fetch fills probedHosts, later refreshes keep every host's last-known
+        // badge and update it IN PLACE as it re-resolves — a settled `offline` host must not
+        // revert to a 7s spinner just because the user returned. Only the cold load (empty
+        // set, never yet probed) spins. Mirrors Android holding the old list across a refetch.
         Task {
-            let result = await ManifestFetcher.fetch(snapshot)
+            let result = await ManifestFetcher.fetch(snapshot) { [weak self] r in
+                // Per-host landing (already on MainActor). Merge just this host's outcome and
+                // re-push so the live ones show up without waiting for the dead one.
+                guard let self, gen == self.fetchGen else { return }
+                self.probedHosts.insert(r.host.name)
+                self.statusByHost[r.host.name] = r.status
+                if r.liveFetched {
+                    var reach = self.reachable ?? []
+                    if r.reachable { reach.insert(r.host.name) } else { reach.remove(r.host.name) }
+                    self.reachable = reach
+                }
+                self.hosts = self.hosts.map { $0.name == r.host.name ? r.host : $0 }
+                if self.view_ == .list { self.pushHostList(loading: false) }
+            }
             await MainActor.run {
+                guard gen == self.fetchGen else { return }   // a newer fetch already owns the UI
                 self.hosts = result.hosts
                 self.statusByHost = result.statusByHost
                 self.reachable = result.reachable
+                // Every host in this round has now resolved → no more spinners.
+                self.probedHosts = Set(result.hosts.map { $0.name })
                 if self.view_ == .list { self.pushHostList(loading: false) }
                 #if DEBUG
                 self.maybeAutoOpen()   // self-verification hook (launch-arg gated)
@@ -270,6 +343,23 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             DispatchQueue.main.async {
                 guard let self, self.sessionGen == gen else { return }   // late chunk from closed session
                 self.eval("window.writeToTerm('\(data.base64EncodedString())')")
+            }
+        }
+        // PTY loop ended (item 3). onClosed fires for user-back, a server-side drop
+        // (tmux kill-session, connection drop), AND a connect failure (connect() always calls
+        // onClosed after its do/catch). backToList already bumped sessionGen, so its close
+        // no-ops here. The `self.ssh === s` guard distinguishes a *live* session that dropped
+        // (ssh was assigned in onConnected) from a connect failure that never went live (ssh
+        // still nil → onFailure already showed "连接失败", don't also print "连接已断开").
+        // We do NOT auto-navigate: the user keeps their terminal context and chooses to leave
+        // (graceful, SPEC §9 — never freeze, never crash). Reopen rebuilds via `tmux new -A`.
+        s.onClosed = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.sessionGen == gen, self.view_ == .terminal,
+                      self.ssh === s else { return }   // only a live session that actually dropped
+                NSLog("[VC] PTY dropped (server hangup / tmux kill) gen=\(gen)")
+                self.ssh = nil
+                self.writeToTerm("\r\n\u{1b}[33m[连接已断开 — 按返回键回到列表,重开此 project 可重连]\u{1b}[0m\r\n")
             }
         }
         s.connect(host: h, session: p.session, cols: 80, rows: 24,
@@ -378,5 +468,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     deinit {
         if let o = kbConnectObs { NotificationCenter.default.removeObserver(o) }
         if let o = kbDisconnectObs { NotificationCenter.default.removeObserver(o) }
+        if let o = foregroundObs { NotificationCenter.default.removeObserver(o) }
     }
 }

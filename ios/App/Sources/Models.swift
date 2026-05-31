@@ -68,14 +68,21 @@ enum DeckJSON {
     ///     `disconnected` (SPEC §3 rule 1).
     ///   - reachable + status.json has the session → use the reported state (rule 2).
     ///   - reachable + no record → `unknown` (no badge; rule 3, no capture-pane fallback).
+    /// `probed` (Phase 3) = the set of hosts whose probe has landed this round. `nil` means
+    /// "treat every host as still loading" (the initial seed push). A host present in the set
+    /// renders its real state; a host absent keeps a spinner — so live hosts show up while a
+    /// dead host is still timing out, instead of the whole list flipping at once.
     static func hostsArray(
         _ hosts: [HostConfig],
         loading: Bool = false,
         statusByHost: [String: [String: SessionState]] = [:],
-        reachable: Set<String>? = nil
+        reachable: Set<String>? = nil,
+        probed: Set<String>? = nil
     ) -> String {
         let arr: [[String: Any]] = hosts.map { h in
             let hostStatus = statusByHost[h.name] ?? [:]
+            // Per-host loading: the global `loading` (initial seed) OR this host not yet probed.
+            let hostLoading = loading || (probed != nil && !probed!.contains(h.name))
             // Only hosts we actually try to live-fetch (non-blank basePath) can go offline;
             // a blank-basePath host is never probed, so never marked disconnected.
             let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
@@ -83,6 +90,7 @@ enum DeckJSON {
                 let live: SessionState? = hostStatus[p.session]
                 let state: String? = {
                     if reachable == nil { return nil }          // unprobed: JS falls back to seed logic
+                    if hostLoading { return nil }               // this host still spinning → no badge yet
                     if unreachable { return "disconnected" }
                     return live?.state ?? "unknown"
                 }()
@@ -92,7 +100,7 @@ enum DeckJSON {
                     "type": p.type.rawValue,   // ssh|claude|agent|maestro — matches JS ICONS keys
                     "status": "idle",
                     "age": "",                 // JS computes its own age from since; this is the legacy field
-                    "loading": loading,        // cold first-load: badge shows a spinner until status arrives
+                    "loading": hostLoading,    // cold first-load / not-yet-probed: spinner until status arrives
                     "preview": NSNull(),
                 ]
                 // since MUST be a JSON number (epoch seconds); ageText does now/1000 - since,
@@ -104,7 +112,9 @@ enum DeckJSON {
             return [
                 "name": h.name,
                 "addr": h.addr,
-                "up": !unreachable,
+                // While a host is still loading, don't pre-flag it down — only a resolved,
+                // confirmed-unreachable host shows the red header dot.
+                "up": hostLoading || !unreachable,
                 "projects": projects,
             ]
         }

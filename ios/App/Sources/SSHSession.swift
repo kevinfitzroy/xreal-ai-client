@@ -46,6 +46,12 @@ final class SSHSession {
                  onFailure: @escaping (String) -> Void) {
         let startup = Self.tmuxAttachCommand(session)
         runTask = Task {
+            // `live` flips once the PTY is up. A throw BEFORE that = a real connect failure
+            // (→ onFailure). A throw AFTER (Citadel's withPTY throws "Already closed" when the
+            // remote drops, e.g. tmux kill-session) is a mid-session DROP, not a connect
+            // failure — onClosed handles it; onFailure must stay silent or the user sees a
+            // misleading "连接失败" on top of the correct "连接已断开".
+            var live = false
             do {
                 let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
                 let client = try await SSHClient.connect(
@@ -56,10 +62,11 @@ final class SSHSession {
                     reconnect: .never
                 )
                 self.client = client
+                live = true
                 onConnected()
                 try await self.runPTY(client: client, startup: startup, cols: cols, rows: rows)
             } catch {
-                onFailure("\(error)")
+                if !live { onFailure("\(error)") }   // only a pre-go-live error is a connect failure
             }
             self.onClosed?()
         }
