@@ -64,6 +64,7 @@ class StatusPoller(
         HostClient(
             host = h.ssh.host, port = h.ssh.port, user = h.ssh.user,
             privateKeyPath = keyPathFor(h), knownHostsFile = knownHostsFile, jump = jump,
+            proxy = if (jump == null) h.proxy else null,   // SSH-over-443:直连用本 host proxy,jump 时跟跳板
         )
     }
 
@@ -72,7 +73,7 @@ class StatusPoller(
         val arr = JSONArray()
         for (h in hosts) {
             val jump = h.via?.let { byName[it] }?.let { jh ->
-                JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile)
+                JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, jh.proxy)
             }
             val panes = clientFor(h, jump).captureAll(h.projects.map { it.sessionName })
             val snaps = h.projects.map { p ->

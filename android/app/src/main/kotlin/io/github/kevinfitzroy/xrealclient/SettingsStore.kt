@@ -121,9 +121,13 @@ class SettingsStore(ctx: Context) {
     }
 
     private fun parseHosts(f: java.io.File): List<HostConfig> = try {
-        val arr = org.json.JSONArray(f.readText())
+        val (arr, proxies) = splitTopLevel(f.readText())   // 顶层数组(legacy)或 {proxies,hosts}(SPEC §8)
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
+            val proxyName = o.optString("proxy").ifBlank { null }
+            val proxy = proxyName?.let {
+                proxies[it] ?: run { android.util.Log.w("SettingsStore", "host '${o.optString("name")}' 引用未定义 proxy '$it' → 直连"); null }
+            }
             HostConfig(
                 name = o.getString("name"),
                 addr = o.optString("addr", o.getString("host")),
@@ -148,11 +152,31 @@ class SettingsStore(ctx: Context) {
                 },
                 basePath = o.optString("basePath", ""),
                 via = o.optString("via").ifBlank { null },   // 多跳跳板 host 名(无则直连)
+                proxy = proxy,                                // SSH-over-443(SPEC §5.1;无则直连)
             )
         }
     } catch (e: Exception) {
         android.util.Log.w("SettingsStore", "parseHosts 解析 ${f.path} 失败: ${e.message}")
         emptyList()
+    }
+
+    /** hosts.json 顶层两形态(SPEC §8):顶层数组 = legacy(无 proxy);顶层对象 `{proxies,hosts}` = 新。
+     *  返回 (hosts 数组, proxy 名→ProxyConfig)。 */
+    private fun splitTopLevel(text: String): Pair<org.json.JSONArray, Map<String, ProxyConfig>> {
+        val t = text.trim()
+        if (t.startsWith("[")) return org.json.JSONArray(t) to emptyMap()
+        val o = org.json.JSONObject(t)
+        val hosts = o.optJSONArray("hosts") ?: org.json.JSONArray()
+        val proxies = LinkedHashMap<String, ProxyConfig>()
+        o.optJSONArray("proxies")?.let { pa ->
+            for (i in 0 until pa.length()) {
+                val p = pa.getJSONObject(i)
+                val name = p.optString("name"); val url = p.optString("url")
+                if (name.isNotBlank() && url.isNotBlank()) proxies[name] = ProxyConfig(name, url)
+                else android.util.Log.w("SettingsStore", "proxies[$i] 缺 name/url,跳过")
+            }
+        }
+        return hosts to proxies
     }
 
     /**
@@ -175,7 +199,12 @@ class SettingsStore(ctx: Context) {
 
         var hostCount = 0
         if (stagedHosts.exists()) {
-            val arr = org.json.JSONArray(stagedHosts.readText())
+            // 顶层两形态(SPEC §8):数组 = legacy;对象 {proxies,hosts} = 新。改写的是 hosts 数组里每项的
+            // key→keyPath;proxies(仅含 vmess url,无文件引用)原样保留,整个 root 写回。
+            val text = stagedHosts.readText().trim()
+            val root: Any = if (text.startsWith("[")) org.json.JSONArray(text) else org.json.JSONObject(text)
+            val arr: org.json.JSONArray =
+                if (root is org.json.JSONArray) root else (root as org.json.JSONObject).optJSONArray("hosts") ?: org.json.JSONArray()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 val safeName = o.getString("name").replace(Regex("[^A-Za-z0-9_.-]"), "_")
@@ -197,7 +226,7 @@ class SettingsStore(ctx: Context) {
                 o.put("keyPath", destKey.absolutePath)
                 o.remove("key")
             }
-            writeAtomic(java.io.File(filesDir, PRIVATE_HOSTS), arr.toString())
+            writeAtomic(java.io.File(filesDir, PRIVATE_HOSTS), root.toString())
             hostCount = arr.length()
         }
 

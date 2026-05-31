@@ -32,7 +32,8 @@ class ManifestFetcher(
         }.absolutePath
 
     private fun clientFor(h: HostConfig, jump: JumpSpec?): HostClient = clients.getOrPut(h.name) {
-        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyPathFor(h), knownHostsFile, jump)
+        // SSH-over-443:直连用本 host proxy,jump 时 proxy 跟跳板(在 JumpSpec 里)。
+        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyPathFor(h), knownHostsFile, jump, if (jump == null) h.proxy else null)
     }
 
     /** 阻塞(在后台线程调):逐 host **串行**拉 manifest,返回更新 projects 后的 HostConfig。无 basePath / 拉取失败的 host 原样返回。
@@ -45,7 +46,7 @@ class ManifestFetcher(
       val outHosts = hosts.map { h ->
         if (h.basePath.isBlank()) return@map h
         val jump = h.via?.let { byName[it] }?.let { jh ->
-            JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile)
+            JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, jh.proxy)
         }
         val client = clientFor(h, jump)
         val base = h.basePath.trimEnd('/')

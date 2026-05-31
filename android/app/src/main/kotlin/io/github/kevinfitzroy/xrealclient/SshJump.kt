@@ -17,6 +17,8 @@ data class JumpSpec(
     val user: String,
     val privateKeyPath: String,
     val knownHostsFile: File?,
+    /** 非空 → 连跳板这条外层拨号经该 proxy 的本地 SOCKS 隧道(SSH-over-443,SPEC §5.1;归属跳板)。 */
+    val proxy: ProxyConfig? = null,
 )
 
 /**
@@ -51,6 +53,8 @@ class SshJump private constructor(
             val verifier: HostKeyVerifier = spec.knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
             val jc = SSHClient().apply {
                 connectTimeout = CONNECT_TIMEOUT_MS
+                // SSH-over-443:跳板带 proxy → 连跳板这条外层拨号经本地 SOCKS 隧道(内层转发已在隧道内)。
+                spec.proxy?.let { socketFactory = XrayProxy.socketFactory(it) }
                 addHostKeyVerifier(verifier)
                 connect(spec.host, spec.port)
                 authPublickey(spec.user, spec.privateKeyPath)

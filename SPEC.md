@@ -160,6 +160,19 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - attach 用 `new -A -s <session>`(存在则 attach,不存在则建)。
 - **多跳(ProxyJump)**:host 配置带 `via`(= 另一 host 的 `name`)→ SSH 经该跳板本地端口转发到达。典型:OPS(AWS 内网,只 VPN 可达)`via: "TK-ALIYUN"`,由挂 OpenVPN 的 TK 转发。手机本身**不挂 VPN**。
 - **known_hosts**:**TOFU**(首次信任并记录,之后校验)。
+
+### 5.1 SSH-over-443 隧道(可选,per-host opt-in)
+
+**动机**:SSH 走 :22 连海外 host 常被 GFW 限速/阻断,但同机 :443 的 xray(vmess/vless+TLS)服务正常。客户端**可选**地内嵌 xray-core,起一个**仅本地** SOCKS5(`127.0.0.1:<随机口>`),把自己的 SSH socket 经 SOCKS 转发到 host:443 的 xray → SSH-over-443。
+
+- **零服务端增量**:复用用户已有的 :443 xray 服务(§CLAUDE.md 边界的既有例外不扩大)。
+- **不挂系统 VPN / 不用 tun**:只起一个 SOCKS inbound,**仅代理 app 自己的 SSH 连接**,不碰系统其它流量,无需 VpnService 权限。
+- **可选 + 优雅降级**:host 不带 `proxy` → 直连(现有行为完全不变)。客户端若没内嵌 xray-core(未 build wrapper)→ 带 `proxy` 的 host 视为"代理不可用",连接失败并提示,**不影响其它直连 host**(§9)。
+- **`proxies` 表**:命名代理,host 按名 `"proxy":"<name>"` 引用(多 host 可共享一个 proxy,不重复粘 URL)。`url` 是标准 `vmess://` 分享链接(后续可扩 `vless://`)。
+- **⭐ proxy 归属"拨公网的那一跳"**(与 `via` 的交互规则,平台无关):
+  - **直连 host**(无 `via`)带 `proxy` → 该 host 自己的 SSH socket 走 SOCKS。
+  - **多跳 host**(有 `via`)→ proxy 跟着 `via` 指向的**跳板** host 走(拨公网的是跳板);到达跳板后的内层转发已在隧道内,**不再**叠加 proxy。即:一个 host 的 `proxy` 字段在它**作为跳板被别人 `via`** 时生效于那条外层拨号;host 自己有 `via` 时,其 `proxy` 字段被忽略(由跳板的 proxy 决定)。
+  - 第一版实现聚焦**直连 host 带 proxy**;proxy×via 复合按上述规则但可后置。
 - **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**现状(2026-05-31 核实):真实 host 已全部 ed25519** —— `xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0` 都是 ED25519,**无需迁移**。POC 当时撞 ssh-rsa 只因用了 RSA throwaway。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
 - **翻页语义**:见 §6(它是输入语义的一部分)。
 
@@ -210,22 +223,36 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 **无设置 UI 是刻意设计**——用户戴眼镜没法舒服填表。配置经**带外通道**推进设备私有存储,app 启动时导入。
 
 **hosts.json schema(导入用 staging 形态):**
+
+两种顶层形态,客户端都接受(向后兼容):
+- **顶层数组**(legacy / 无代理):直接是 host 列表,等价于下面 `hosts` 字段。
+- **顶层对象** `{ "proxies": [...], "hosts": [...] }`:带可选 `proxies` 表(SSH-over-443,§5.1)+ host 列表。
+
 ```jsonc
-[
-  {
-    "name": "TK-ALIYUN",          // host 唯一名(也用于私钥落地文件名)
-    "addr": "tk-aliyun",          // 可选:显示别名。缺省 = host。⚠️ 真实 IP 绝不进 addr(UI 会显示 addr)
-    "host": "47.x.x.x",           // 真实连接地址(IP/域名)。UI 不显示这个字段
-    "port": 22,                   // 可选,默认 22
-    "user": "xreal",
-    "key": "tk.pem",              // staging:指向同目录私钥纯文件名(导入后变私有 keys/<name>.pem,权限 600)
-    "basePath": "/home/xreal/work",// manifest/status 在 <basePath>/.xreal/ 下(§2/§3)。空 = 不 live-fetch
-    "via": "TK-ALIYUN",           // 可选:多跳跳板 host 名(§5)
-    "projects": [                 // seed 列表(真相由 manifest 覆盖)
-      { "session": "maestro", "name": "Maestro", "type": "maestro" }
-    ]
-  }
-]
+{
+  "proxies": [                    // 可选:命名代理表(SSH-over-443 隧道,§5.1)。无则省略整个字段
+    {
+      "name": "tk-443",           // proxy 唯一名(host 用 "proxy" 字段按名引用)
+      "url": "vmess://..."        // 标准 vmess:// 分享链接(base64 JSON;v2rayN 格式)。客户端内嵌 xray 解析
+    }
+  ],
+  "hosts": [
+    {
+      "name": "TK-ALIYUN",          // host 唯一名(也用于私钥落地文件名)
+      "addr": "tk-aliyun",          // 可选:显示别名。缺省 = host。⚠️ 真实 IP 绝不进 addr(UI 会显示 addr)
+      "host": "47.x.x.x",           // 真实连接地址(IP/域名)。UI 不显示这个字段
+      "port": 22,                   // 可选,默认 22
+      "user": "xreal",
+      "key": "tk.pem",              // staging:指向同目录私钥纯文件名(导入后变私有 keys/<name>.pem,权限 600)
+      "basePath": "/home/xreal/work",// manifest/status 在 <basePath>/.xreal/ 下(§2/§3)。空 = 不 live-fetch
+      "via": "TK-ALIYUN",           // 可选:多跳跳板 host 名(§5)
+      "proxy": "tk-443",            // 可选:经哪个 proxy 拨号(§5.1)。无则直连(默认,现有行为不变)
+      "projects": [                 // seed 列表(真相由 manifest 覆盖)
+        { "session": "maestro", "name": "Maestro", "type": "maestro" }
+      ]
+    }
+  ]
+}
 ```
 
 **安全契约(平台无关,强制):**
@@ -269,6 +296,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
+| SSH-over-443 代理(§5.1) | 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 SOCKS + sshj `setSocketFactory(SOCKS)` | 规划:`xray-core` Apple gomobile/cgo 起本地 SOCKS + Citadel 经 `SocketAddress`/自定义 channel 拨该 SOCKS(待 POC) |
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
 | 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |

@@ -37,6 +37,12 @@ data class ProjectConfig(
     }
 }
 
+/** 命名代理(SSH-over-443 隧道,见 SPEC.md §5.1)。[url] = 标准 `vmess://` 分享链接。 */
+data class ProxyConfig(
+    val name: String,
+    val url: String,
+)
+
 /** 一台 host = SSH 接入参数 + base path + 该 host 上的 project 列表。 */
 data class HostConfig(
     val name: String,
@@ -48,6 +54,9 @@ data class HostConfig(
     /** 多跳:经哪个 host 跳板(值 = 另一 host 的 [name])。非空 → SSH 经该跳板 ProxyJump 到本 host。
      *  典型:OPS(AWS 内网,只 VPN 可达)`via = "TK-ALIYUN"`,由挂着 OpenVPN 的 TK 转发。 */
     val via: String? = null,
+    /** SSH-over-443:拨号经哪个 proxy(SPEC.md §5.1)。解析时由 proxy 名解析成 [ProxyConfig](无则 null=直连)。
+     *  归属规则:本 host 作为**跳板被别人 via** 时,此 proxy 用于那条外层拨号;本 host 自己有 [via] 时此字段不生效。 */
+    val proxy: ProxyConfig? = null,
 )
 
 /** detect() 的产出:状态 + 列表预览(glyph + 一行文本)。preview 空 = 列表不显示预览行。 */

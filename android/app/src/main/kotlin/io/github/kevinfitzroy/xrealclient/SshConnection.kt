@@ -30,6 +30,9 @@ class SshConnection(
     private val knownHostsFile: File? = null,
     /** 非空 → 经该跳板 ProxyJump 连 [host](端到端认证到 host,跳板只转发)。见 [SshJump]。 */
     private val jump: JumpSpec? = null,
+    /** 非空 + 直连(无 [jump])→ SSH socket 经该 proxy 的本地 SOCKS 隧道拨号(SSH-over-443,SPEC §5.1)。
+     *  有 [jump] 时此字段不用(proxy 跟跳板走,在 [SshJump] 内生效;本连接只连 127.0.0.1)。 */
+    private val proxy: ProxyConfig? = null,
 ) : PtyChannel {
 
     private var client: SSHClient? = null
@@ -62,6 +65,8 @@ class SshConnection(
             // connect 超时:VPN 掉线时 socket 连接会长时间挂死(ssh-connect 线程静默卡住,日志只剩"连接…"
             // 后再无下文)。给个上限 → 快速抛 SocketTimeout,onOpenProject 能捕获 + 落日志。
             connectTimeout = CONNECT_TIMEOUT_MS
+            // SSH-over-443:直连且配了 proxy → 经本地 SOCKS 隧道拨号(jump 时 proxy 跟跳板走,不在这)。
+            if (jump == null && proxy != null) socketFactory = XrayProxy.socketFactory(proxy)
             addHostKeyVerifier(verifier)
             connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)

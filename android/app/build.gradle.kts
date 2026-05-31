@@ -98,6 +98,10 @@ dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.kotlinx.coroutines.android)
 
+    // SSH-over-443 隧道(可选):xray-bridge 的 gomobile 产物(从官方 xray-core 自建,见 xray-bridge/build.sh)。
+    // 缺 aar 也能编译(fileTree 命中 0 个文件)→ 未 build 隧道功能时不阻塞普通构建。
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+
     // SSH(0.2):sshj 主推,sshlib 是 Stage A.2 fallback
     implementation(libs.sshj)
     implementation(libs.bouncycastle.prov)

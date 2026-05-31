@@ -544,6 +544,7 @@ class MainActivity : Activity() {
         manifestFetcher?.close()
         dbgInput?.stop()
         poller?.shutdown()
+        runCatching { XrayProxy.stopAll() }   // SSH-over-443:关掉内嵌 xray 实例(无则 no-op)
         if (::voiceDaemon.isInitialized) voiceDaemon.shutdown()
         runCatching { activeChannel.close() }
         if (::webView.isInitialized) webView.destroy()

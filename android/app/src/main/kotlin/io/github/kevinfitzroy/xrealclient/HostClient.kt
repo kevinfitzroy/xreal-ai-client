@@ -25,6 +25,8 @@ class HostClient(
     private val knownHostsFile: File? = null,
     /** 非空 → 经该跳板 ProxyJump(端到端认证到 host)。见 [SshJump]。 */
     private val jump: JumpSpec? = null,
+    /** 非空 + 直连 → 经该 proxy 的本地 SOCKS 隧道(SSH-over-443,SPEC §5.1)。jump 时 proxy 跟跳板走。 */
+    private val proxy: ProxyConfig? = null,
 ) : Closeable {
 
     private var client: SSHClient? = null
@@ -44,6 +46,8 @@ class HostClient(
         val c = SSHClient().apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             timeout = READ_TIMEOUT_MS
+            // SSH-over-443:直连且配了 proxy → 经本地 SOCKS 隧道(jump 时 proxy 跟跳板走,不在这)。
+            if (jump == null && proxy != null) socketFactory = XrayProxy.socketFactory(proxy)
             addHostKeyVerifier(verifier)
             connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)
