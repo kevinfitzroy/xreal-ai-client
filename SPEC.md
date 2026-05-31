@@ -201,8 +201,8 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 语义 | 行为 |
 |---|---|
 | **语音** | **hold-to-talk**:按住=录音,松开=结束并注入(§4)。**不是 toggle**。 |
-| **返回列表** | 从终端回到 host/project 列表 |
-| **翻页 上 / 下** | 进 tmux copy-mode **半页**滚动(避免与 Claude Code 自身翻页冲突) |
+| **返回列表 / 退层** | 退出当前最上层:**预览层(§13)→ 终端 → 列表**。有预览层时先关预览层,无则从终端回列表(层栈语义) |
+| **翻页 上 / 下** | 进 tmux copy-mode **半页**滚动(避免与 Claude Code 自身翻页冲突);**预览层打开时改为 pan/zoom(§13),不透传 SSH** |
 | **确认/回车** | 标准 Enter(语音 overlay 确认也走它) |
 
 **物理映射(per-device,登记在此,新设备追加):**
@@ -337,3 +337,78 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 4. 平台专属细节进 §11 矩阵,不进契约正文。
 
 > 单一真相源原则:同一个契约事实(如 status.json 形状)**只在本文件权威定义一次**,其它文档**引用**它而不重新声明,避免漂移。
+
+---
+
+## 13. 富媒体预览契约(host → client 推图片 / HTML)— ⬜ 规划(P2.7)
+
+> **状态:规划中,设计已收敛、未开工**(立项 2026-06-01)。这是与 §4 语音注入**方向相反**的一条 push 通道:语音 = client→host 注入文本;预览 = host→client 推一个**只读全屏富媒体层**,补终端"只能吐字符"的表现单一。**两端(Android/iOS)同实现本节**。本节是协议单一真相源——skill、Android、iOS 三方按这份对齐。
+> **本节为 v1 追加、向后兼容**(host 不打哨兵 = 行为零变化)→ **不 bump Contract version**。
+
+**角色边界(沿用 §1)**:host 上 agent 触发,client 只读渲染。文件**经 SSH :22 拉取本地渲染**——**不引入 host web server**(零服务端增量,CLAUDE.md §5)。服务端增量 = 仅一个 `.xreal/` 下的 skill/脚本(已授权的例外目录,与 manifest/status hooks 同级)。
+
+### 13.1 触发:PTY 流内哨兵(in-band sentinel)
+
+host→client 唯一 push 通道 = client 正在读的 PTY 流。skill 往 stdout 打一个**对用户不可见的 OSC 转义序列**,载荷只带**引用**(host 绝对路径),**不内联文件字节**(大图 base64 进交互 PTY 会被 tmux 截断/卡渲染)。
+
+- **OSC 形态**:`OSC <Ps> ; <json-payload> ST`,`Ps` = 约定的私有码(实现时定一个固定值,如 `1337` 或自选;两端 + skill 必须一致),`ST` = `ESC \`(`\x1b\x5c`)。
+- **载荷(payload)= 紧凑 JSON**:
+  ```jsonc
+  { "v": 1, "kind": "image", "path": "/home/xreal/work/proj/out.png" }
+  ```
+  - `kind` 枚举:`image`(png/jpg/webp/gif)、`html`。**其它值 client 必须忽略**(白名单)。
+  - `path` = host 上**绝对路径**(skill 负责绝对化)。client 不做路径拼接,原样喂给拉取那一步。
+- **⚠️ tmux 透传(关键)**:client 读的是 **tmux 渲染层**,tmux 默认**不转发未知 OSC**。故:
+  - **skill 端**:在 tmux 内时用 tmux passthrough 包裹哨兵(`ESC P tmux ; <把内层 ESC 翻倍> ESC \`)。无 tmux(纯 SSH/abduco)时直接打裸 OSC。
+  - **client 端**:注入的 tmux conf(§5 已用 `-f conf` 注入 history-limit/翻页 bindings)追加 `set -g allow-passthrough on`。
+- **client 解析**:终端层注册私有 OSC handler 解析 payload → 触发 §13.2 拉取。**校验**:`v==1` 且 `kind` 在白名单且 `path` 非空,否则丢弃。
+
+### 13.2 拉取:独立短命 SSH exec(复刻 manifest/status 模式)
+
+client 收到合法哨兵后,**另开一条短命 exec channel**(**不是**交互 PTY,与 §3 status `cat` 同模式)跑 `base64 <path>` 取字节:
+
+- **大小上限(强制)**:`image ≤ 8MB`、`html ≤ 2MB`,超限**拒绝并提示**,不渲染。
+- **失败优雅**:文件不存在 / 不可读 / 超限 / 拉取异常 → 提示一行,**不弹层、不影响终端**(§9)。
+- **复用连接**:走该 host 已建立的 SSH(直连或经 §5 `via` 跳板、§5.1 隧道),**不新建到 host 的连接**。
+
+### 13.3 渲染:全屏只读 overlay(WebView 内,§CLAUDE.md「overlay = WebView 内 HTML」)
+
+- **默认全铺全屏**,黑底。**不是** `SYSTEM_ALERT_WINDOW`,就是 WebView 里一个 overlay `<div>`(与语音 overlay 同机制)。
+- `image` → `<img>` **fit-to-screen** 居中。
+- `html` → **`<iframe sandbox srcdoc>`**;v1/v2 **默认不开 `allow-scripts`**(静态渲染,"只看"够用)。
+- **自含单文件**:带相对资源/外链的 HTML v1 不支持(后置:tar 目录或内联资源)。
+
+### 13.4 输入语义(扩展 §6,层栈 list → terminal → preview)
+
+预览层打开时建立最上层,**吃掉**以下键、**不透传 SSH**:
+
+| 语义 | 预览层内行为 |
+|---|---|
+| **方向键** | pan(放大后平移)/ zoom(实现可选 `+`/`-` 或长按) |
+| **返回 / 退层** | 关预览层退回 terminal(§6 已改为层栈语义:有预览层先关它,无则终端→列表) |
+
+- 物理映射沿用 §6 per-device 表:Beam Pro 方向键 = 8BitDo DPAD,关闭 = **F2**(返回);硬件键盘 = 方向键 + **ESC**。
+- iOS 同语义,GameController/UIKey 映射待 POC。
+
+### 13.5 安全契约(强制)
+
+- **预览 overlay / iframe 绝不能访问终端 JS 桥(`TerminalBridge` / `window.Bridge`)**:HTML 走 `<iframe sandbox>`(默认无 `allow-scripts`、无 `allow-same-origin`),阻断恶意/失控 HTML 反向触达 SSH 输入或桥接口。
+- **kind 白名单 + 大小上限**(§13.1/§13.2)是硬门;path 虽来自同 SSH 用户(可信),仍以白名单 + cap 兜底。
+- 渲染数据经 **data URI**(base64)注入,不让 iframe/img 发起网络。
+
+### 13.6 服务端侧(零增量)
+
+- `.xreal/xreal-preview <file>`:纯 bash,判 `kind`(扩展名 / `file --mime-type`)、绝对化 `path`、按 §13.1 打哨兵(检测 `$TMUX` 决定是否 passthrough 包裹)。**无 daemon / 无端口 / 无依赖**。
+- 可同时包成 Claude Code skill `/preview <file>`,让 agent 直接调(`docs/` 给模板)。
+- 部署随 `.xreal/` 脚本一起铺(与 `xreal-project.sh` / `agent-status.sh` 同机制),不扩大服务端增量面。
+
+### 13.7 平台落点(登记 §11,不进契约正文)
+
+| 契约项 | Android | iOS |
+|---|---|---|
+| OSC handler | xterm.js `parser.registerOscHandler` | 同(共享 `index.html`) |
+| 桥入口 | `TerminalBridge.openPreview(kind, path)` `@JavascriptInterface` | `messageHandlers` 同名 |
+| 文件拉取 | sshj 独立 exec(`HostClient` 式)`base64` | Citadel `executeCommand` |
+| overlay | `index.html` `window.showPreview(kind, dataUri)` + 全屏 `<div>`(共享) | 同(共享 `index.html`) |
+| tmux passthrough | `MainActivity.tmuxAttachCommand` 注入 `allow-passthrough on` | iOS attach 命令同注入 |
+| 层栈/输入拦截 | `dispatchKeyEvent` 预览态拦方向键/F2 | `GameController`/`pressesBegan` 同 |

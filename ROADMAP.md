@@ -68,6 +68,53 @@
 | P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 数据源 P2.1(hooks 状态)已就绪;缺排序/提醒逻辑。"哪个 agent 要我反馈"一眼可见 |
 | P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 | P2.6 | 项目级**热词管理 skill** | ⬜ 未开始 | 热词读取链路已就绪(`Hotwords.BASE` 继承 + manifest `projects[].hotwords` per-project 合并喂 ASR)。**这个 skill 负责"写"那张表**:project agent 定期回顾、从语音识别明显错误里总结新热词,用户授权后刷新进该 project 的热词表。**待定:存储位置** —— manifest `projects[].hotwords` 字段(Maestro 转写)vs `<projectDir>/.xreal/hotwords.json`(project agent 自管)。实做时再定 |
+| P2.7 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
+
+### 富媒体预览设计(P2.7 —— 2026-06-01 立项,设计已收敛,未开工)
+
+**动机**:终端只能吐字符,表现单一。host 上的 agent 经常产出图片(截图 / 渲染图 / 图表)或 HTML(报告 / diff / 预览),用户在 AR 眼镜下没法离开 app 去开浏览器看。给 app 加一个**只读全屏富媒体预览层**,让 agent 一句话把图/页推到用户眼前。
+
+**两条硬决策(都被既有约束逼定,不是自由选型)**:
+
+1. **传输走 SSH :22,不做 host web server**。用户最初提的"host 上跑个 web 服务器"方案**违反零服务端增量硬约束**(CLAUDE.md §5:不引 ttyd/nginx/任何云端服务)→ 排除。改用已有 SSH 通道:client 开**一条独立短命 exec channel** 跑 `base64 <path>` 把文件字节拉回本地(**与现有 `HostClient.catFile` 拉 manifest/status 完全同模式**),WebView 本地渲染。
+2. **触发走 PTY 流内哨兵(in-band sentinel),不轮询文件**。host→client 唯一的 push 通道 = client 正在读的 PTY 流(client 事件驱动、不空轮询是既定偏好)。skill 往 stdout 打一个**对用户不可见的 OSC 转义序列**,载荷 = `{kind, path}`(**只带 host 上绝对路径引用,不内联字节**——大图 base64 灌进交互 PTY 会被 tmux 截断/卡渲染;引用 + 独立 exec 拉取更稳、能处理大文件)。
+
+**数据流**:
+```
+host agent:  .xreal/xreal-preview ./out.png
+   → 判 kind(扩展名 / file --mime)、path 绝对化
+   → 打 tmux-passthrough 包裹的 OSC 哨兵 {kind:"image", path:"/abs/out.png"}  ──PTY──▶
+client xterm.js:  registerOscHandler 解析 → Bridge.openPreview(kind, path)
+   → 原生侧独立 exec channel:  base64 <path>   ──SSH :22──▶  拿字节
+   → window.showPreview(kind, dataUri)  →  全屏 overlay <div>
+       image →  <img> fit-to-screen;方向键 pan(放大后)/ zoom;ESC/返回 关
+       html  →  <iframe sandbox srcdoc>(默认无 allow-scripts → 静态渲染,够"只看")
+```
+
+**⚠️ 头号技术风险 = tmux 拦截哨兵**:client 读到的是 **tmux 渲染层**,不是程序原始 stdout。tmux 默认**不转发未知 OSC** → 哨兵到不了外层 xterm.js。解法:skill 用 **tmux passthrough** 包裹(`\ePtmux;<ESC-seq>\e\\`)+ client 注入的 tmux conf 加一行 `set -g allow-passthrough on`(**已经在 `MainActivity.tmuxAttachCommand` 用 `-f conf` base64 注入 history-limit/翻页 bindings,加这一行同源、零服务端增量**)。纯 SSH/abduco(无 tmux)时哨兵直达 xterm.js,不用包裹。
+
+**服务端侧 = 一个 skill/脚本(零增量)**:`xreal-preview <file>` 纯 bash,放 host 的 `.xreal/`(已授权的唯一例外目录,与 `xreal-project.sh`/`agent-status.sh` 同级);可同时包成 Claude Code skill `/preview <file>` 让 agent 直接调。判 kind + 绝对化 path + 打哨兵,**无 daemon / 无端口 / 无依赖**。
+
+**输入语义(SPEC §6 扩展,层栈 list → terminal → preview)**:
+- **方向键** = pan(放大后)/ zoom,**不透传给 SSH**(预览层吃掉)。
+- **ESC(硬件键)/ F2(8BitDo 返回)** = **关预览层退一层回 terminal**,不直接回 list。即"返回"语义升级成"退出当前最上层"。
+- 物理映射沿用 per-device 表(Beam Pro:方向键 = 8BitDo DPAD;关闭 = F2)。
+
+**安全契约**:
+- 预览 overlay / iframe **绝不能访问 `TerminalBridge`**——HTML 走 `<iframe sandbox>`(默认无 `allow-scripts`、无 `allow-same-origin`),防恶意/失控 HTML 反向触达 SSH 输入或 bridge。
+- 拉取文件**大小上限**(建议图 ≤ 8MB / html ≤ 2MB),超限拒绝。
+- **kind 白名单**:image(png/jpg/webp/gif)、html;其它 kind 拒绝。path 来自 host(同 SSH 用户,可信),但仍 cap size + 白名单兜底。
+
+**分期**:
+- **v1**:图片(png/jpg/webp/gif)。最小闭环:哨兵 → 拉取 → 全屏渲染 → 方向键 pan → ESC 退。
+- **v2**:静态 HTML(`<iframe sandbox srcdoc>` 无脚本)。**自含单文件**;带相对资源/外链的 HTML 暂不支持(要支持需 tar 目录或内联资源,后置)。
+- **v3(可选)**:带脚本 HTML(图表等)需放开 `allow-scripts`,安全面变大,单独评估。
+
+**跨端**:协议(哨兵格式 / kind 枚举 / 拉取约定 / overlay 行为 / 输入语义 / 安全)= **SPEC §13**,Android/iOS 同实现。平台落点:Android = WebView overlay div + xterm.js OSC handler + sshj exec;iOS = WKWebView + 同 `index.html` overlay + Citadel exec channel。
+
+**接口点(开工时挂这些,搁置也留着)**:① `TerminalBridge` 加 `@JavascriptInterface openPreview(kind, path)`;② native 侧复用 `HostClient` 式独立 exec 拉 `base64`;③ `index.html` 加 `window.showPreview(kind, dataUri)` + 全屏 overlay + OSC handler 注册;④ `tmuxAttachCommand` 注入 `set -g allow-passthrough on`;⑤ 输入路由把预览层打开态纳入层栈(方向键/ESC 拦截)。
+
+---
 
 ### §4(历史 · 已作废)旧的抓屏路径接回清单
 
