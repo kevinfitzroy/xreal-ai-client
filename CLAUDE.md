@@ -104,7 +104,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **F1/F2 物理键主路径**(2026-05-29 Stage A.1 实测改定) | 原设计 F13/F14(326/327),但 Beam Pro 的 8BitDo 走 `/system/usr/keylayout/Generic.kl`,其中 F13–F24 全被注释 → keycode 映射不出、到不了 app。改用 **F1=语音(hold-to-talk)、F2=返回列表**(F1–F12 在 Generic.kl 活跃);Ctrl+Alt+1/2 备路径保留,F13/F14 代码分支留作其它设备兜底。详见 README「操作」章节 + memory `beam-pro-device` |
 | **session 驻留:agent 用 tmux,纯 SSH 可 abduco**(2026-05-28 修订)| 原决策是默认 abduco(单终端场景,client 自己管 scrollback)。但产品升级成"AI agent 集群指挥台"后,**状态探测 + 最近命令预览需要 `tmux capture-pane -p`,abduco 无等价能力** → agent 类 project 改用 tmux。纯 SSH project 不需要探测,abduco/tmux 均可。`SshConnection` 启动命令本就可配置。详见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md) 和 memory `product-vision` |
 | **优雅降级** | 任何组件挂了,用户能退回 Termius / Termux 继续工作。App 不是必需品 |
-| **SSH-over-443 = 客户端侧翻墙,不破零增量**(2026-05-31) | GFW 限速 :22 时,host 可选配 `proxy`(vmess 链接)→ app **内嵌 xray-core** 起本地 SOCKS、SSH 经 vmess/tls:443 出去。**复用用户已有的 :443 xray 服务,服务端零增量**(不破上面那条);**不挂系统 VPN / 不用 tun / 无 VpnService 权限**(只代理 app 自己的 SSH socket)。per-host opt-in,不配 proxy = 直连(行为不变);aar 没 build = 隧道不可用但直连 host 照常。**当前只支持 vmess**(vless/ss/trojan 暂不支持,xray-core 底层支持,缺的是客户端 URL parser)。详见 §5.1 |
+| **SSH-over-443 = 客户端侧翻墙,不破零增量**(2026-06-01) | GFW 卡 :22 时,host 配 `proxy`(vmess)→ app **内嵌 xray-core** 起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`,躲自指防环)、SSH 直连本地口经 vmess/tls:443 出去。**复用已有 :443 xray,服务端零增量**;不挂系统 VPN / 不用 tun。per-host:不配 proxy=直连(行为不变);aar 没 build=隧道不可用但直连 host 照常。**当前只支持 vmess**。⭐ **海外 host(从国内连)= proxy 必选,不是可选**(GFW 对 :22 的 DPI 干扰持续且演化)——**初始化 host 的 agent 必须装 xray 打通 443**,见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md) 第 4.6 步。详见 §5.1 + SPEC §5.1 |
 
 ---
 

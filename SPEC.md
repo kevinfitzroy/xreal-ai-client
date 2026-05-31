@@ -163,7 +163,9 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 ### 5.1 SSH-over-443 隧道(可选,per-host opt-in)
 
-**动机**:SSH 走 :22 连海外 host 常被 GFW 限速/阻断(DPI 在 KEX 阶段定点丢包),但同机 :443 的 xray(vmess+TLS)服务正常。客户端**可选**地内嵌 xray-core,起一个**仅本地**的 **dokodemo-door** inbound(`127.0.0.1:<随机口>`),把进来的 SSH 连接**目标 override 改写成服务端的 `127.0.0.1:22`** 再送进 vmess/tls:443 隧道 → SSH-over-443。客户端让 SSH **直连这个本地口**(不走 SOCKS)。
+> **这是产品能长久运行的核心能力,不是边角可选项。** 目标用户在国内,主力 host 在海外;GFW 对 :22 的 DPI 干扰是**持续、会演化**的现实威胁(今天卡这台、明天卡那台)。没有这条隧道,"随时随地用眼镜连海外 agent"这个产品承诺会周期性失效。因此**两端(Android/iOS)都必须实现本节契约**——iOS 不是"以后再说",而是与 Android 对等的一等能力。一句话:**不走 22,走 443。**
+
+**动机**:SSH 走 :22 连海外 host 常被 GFW 限速/阻断(DPI 在 KEX 阶段定点丢包,表现为时好时坏、卡住超时),但同机 :443 的 xray(vmess+TLS)服务正常。客户端**可选**地内嵌一个代理内核(Android = xray-core;iOS 见下),起一个**仅本地**的端口转发 inbound(`127.0.0.1:<随机口>`),把进来的 SSH 连接**目标 override 改写成服务端的 `127.0.0.1:22`** 再送进 vmess/tls:443 隧道 → SSH-over-443。客户端让 SSH **直连这个本地口**(不走 SOCKS)。
 
 - **⭐ 为什么是 dokodemo-door override,不是 SOCKS**(关键,踩过坑):若用 SOCKS inbound 让 SSH 去连 `节点公网IP:22`,目标正是 vmess 出口节点**自己**的地址 → 触发 xray/代理客户端的**自指防环(loop protection):拒绝把"连自己"的流量塞进通往自己的隧道 → 悄悄退化成直连** → 直连的 :22 正是被 GFW 卡的那条。dokodemo-door 把 dest override 成 `127.0.0.1:22`(不是节点公网 IP)→ 躲过防环;服务端 xray 默认 freedom 出站把 `127.0.0.1:22` 当**它自己的 localhost** 直达 sshd。(参考 `~/claude/vpn/ssh-over-vmess.md` §2-§3;sing-box 的 `direct` inbound override 同理。)
 - **零服务端增量**:复用用户已有的 :443 xray 服务 + 服务端默认 freedom 出站(§CLAUDE.md 边界的既有例外不扩大,**不需任何服务端配置改动**)。
@@ -179,6 +181,14 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - host 解析出生效 proxy(直连=自己的 `proxy`;多跳=按上面归属规则取**跳板**的 proxy)→ host 头显示一个 **🔒 + proxy 名** 的徽章(如 `🔒 tk-443`);无 proxy → 不显示(直连 host 视觉无变化)。
   - 标识取的是"实际拨公网那一跳的 proxy 名",所以经 `via` 的内网 host 也会显示其跳板的 proxy 名(因为它的流量确实经那条隧道出去)。
   - 这是**显示契约**(显示什么、何时显示),具体渲染(徽章位置/配色)是平台实现(§11)。
+- **⭐ 行为契约(平台中立,iOS 实现者照这条做,内核/语言自选)**——满足以下可观测行为即合规,**不规定用哪个库**:
+  1. **入口**:host 带 `proxy`(直连)或其 `via` 跳板带 `proxy`(多跳)时,该 host 的 SSH(终端连接 + manifest/status 轮询连接,**两类都要**,漏轮询会绕过隧道卡 :22)必须经隧道;否则直连。
+  2. **隧道形态**:本地起一个监听端口,SSH **连本地端口**;隧道内把目标 **override 成 vmess 服务端的 `127.0.0.1:<host 的 SSH 端口,通常 22>`**(**不是**节点公网 IP——这是躲自指防环的关键),outbound = 该 proxy 的 vmess(+TLS)。**多跳**:proxy 用于连**跳板**那一外层拨号(override 到跳板的 `127.0.0.1:22`),内层到内网目标的转发不叠加 proxy。
+  3. **host key**:连的是 `127.0.0.1` → 用 promiscuous/接受(传输已被 vmess+TLS 包裹、节点可信),端到端 SSH 握手仍照常认证。
+  4. **DNS**:**客户端用系统 resolver 先把 vmess 域名解析成 IP** 喂给内核拨号,**TLS SNI 仍用域名**(内嵌内核常读不到系统 DNS、内部解析超时——Android 实测踩过)。
+  5. **可选 + 降级**:不带 proxy = 直连(零变化);内核不可用 = 带 proxy 的 host 连接失败但不影响直连 host(§9)。
+  6. **不挂系统 VPN / 不用 tun**:只起本地端口转发,仅代理 app 自己的 SSH,无需 VPN 权限。
+  > Android 用 xray-core dokodemo-door 实现这套;iOS 可用 sing-box(`direct` inbound + `override_address/override_port`,语义完全等价)或 xray-core,**只要满足上面 1–6 即合规**。平台落点见 §11。
 - **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**现状(2026-05-31 核实):真实 host 已全部 ed25519** —— `xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0` 都是 ED25519,**无需迁移**。POC 当时撞 ssh-rsa 只因用了 RSA throwaway。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
 - **翻页语义**:见 §6(它是输入语义的一部分)。
 
@@ -302,8 +312,8 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
-| SSH-over-443 代理(§5.1) | 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`)+ sshj **直连**该本地口 | 规划:`xray-core`(或 sing-box `direct` inbound)Apple gomobile/cgo 起本地 dokodemo-door override + Citadel 直连本地口(待 POC) |
-| proxy 标识徽章(§5.1 UI 契约) | host 列表 JSON 加 `proxy` 字段(`StatusPoller.hostProxyLabel` 按归属规则解析)→ `index.html` 的 `.host .hproxy` 渲染 🔒+名 | 规划:host 头同位置渲染同款徽章(SwiftUI) |
+| SSH-over-443 代理(§5.1) | ✅ 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`)+ sshj **直连**该本地口 + Android resolver 预解析域名(真机验通) | **待实现(与 Android 对等的一等能力,非可选)**:推荐 **sing-box**(有官方 Apple/gomobile 库;`direct` inbound + `override_address`/`override_port` = 等价 override)或 xray-core;起本地端口转发,Citadel **直连**本地口;按 §5.1「行为契约」1–6 实现(尤其:终端+轮询两类连接都走、DNS 预解析、127.0.0.1 promiscuous)。不绑系统 VPN |
+| proxy 标识徽章(§5.1 UI 契约) | ✅ host 列表 JSON 加 `proxy` 字段(`StatusPoller.hostProxyLabel` 按归属规则解析)→ `index.html` 的 `.host .hproxy` 渲染 🔒+名 | **待实现**:host 头同位置渲染同款 🔒+proxy 名徽章(proxy 名同样按 §5.1 归属规则解析:直连用自己的、多跳用跳板的)|
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |
 | 麦克风 | `AudioRecord` → Opus | `AVAudioEngine` |

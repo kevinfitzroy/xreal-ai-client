@@ -170,7 +170,7 @@ Beam Pro 上的单个 APK
 │    ↕ Base64 over JSBridge
 ├─ SSH 模块(sshj)— TCP→SSH→PTY        ← 直连云端;可经跳板机多跳(ProxyJump)连内网 host
 ├─ xray-core(可选,内嵌)              ← SSH-over-443 隧道:GFW 限速 :22 时,SSH 经 vmess/tls:443 出去
-│                                        (per-host opt-in;仅本地 SOCKS,不挂系统 VPN;当前只支持 vmess)
+│                                        (per-host opt-in;仅本地端口,不挂系统 VPN;当前只支持 vmess)
 ├─ Voice Daemon(录音 → ASR → 直写 SSH outputStream)
 └─ 列表 ⇄ 终端 的 SPA;列表从 host 的 manifest live-fetch
         │ Raw SSH (22) 或 vmess/tls (443) 隧道
@@ -179,6 +179,19 @@ Beam Pro 上的单个 APK
 ```
 
 完整架构 + 可编译代码骨架见 [`docs/architecture.md`](docs/architecture.md)。
+
+### 🔒 SSH-over-443:不走 22,走 443(可选,治 GFW 卡顿)
+
+从国内连海外 host,**SSH 的 :22 频繁连接会被 GFW 卡**(DPI 在密钥交换阶段定点丢包,表现为时好时坏、卡住超时),但同一台服务器 :443 上的 vmess/TLS 一切正常。
+
+**解决:不走 22,走 443。** 给某台 host 配一个 vmess 代理,app 就内嵌 xray-core 在**本机起一个监听端口**,把这台 host 的 SSH 流量裹进 vmess/TLS 从 :443 送出去——GFW 只看到正常 HTTPS,认不出是 SSH。
+
+- **可选,per-host**:host 不配 `proxy` = 直连(行为不变);配了才走隧道。host 卡片显示 `🔒 <代理名>` 一眼区分。
+- **条件**:这台服务器有一个在跑的 **xray/vmess 服务(:443)**,且其默认出站能映射到自己的 `localhost`(标准 xray 默认即满足)。**服务端零改动。**
+- **关键做法**:隧道把目标 **override 成服务端的 `127.0.0.1:22`**(而非节点公网 IP)——既躲过代理的"自指防环",又让服务器把它当本机 localhost 直达 sshd。
+- 不挂系统 VPN、不用 tun,只代理 app 自己的 SSH。当前只支持 `vmess://`。
+
+> 契约见 [`SPEC.md`](SPEC.md) §5.1,Android 实现见 [`CLAUDE.md`](CLAUDE.md) §5.1 + `android/.../XrayConfig.kt`。隧道原理的命令行/PC 版参考 `~/claude/vpn/ssh-over-vmess.md`(本机笔记,非本仓库)。
 
 ---
 
