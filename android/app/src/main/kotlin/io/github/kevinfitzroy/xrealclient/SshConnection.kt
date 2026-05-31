@@ -51,11 +51,19 @@ class SshConnection(
         check(client == null) { "SshConnection.connect() 已调用过" }
         Crypto.ensureFullBouncyCastle()   // X25519 KEX 需完整 BC(幂等,见 Crypto)
 
-        // 多跳:有 jump 则先建跳板转发,真正连 127.0.0.1:localPort(终点 host key 无法 TOFU → Promiscuous)。
+        // 连哪、host key 怎么校验,三种情形(都可能连 127.0.0.1 → 那时 Promiscuous):
+        //   ① 多跳:先建跳板转发,连本地 forwarder 口(终点 host key 无法 TOFU → Promiscuous)。
+        //   ② 直连 + proxy(SSH-over-443):dokodemo-door 隧道把 127.0.0.1:本地口 override 到服务端
+        //      127.0.0.1:port,连本地口即连服务端 sshd(连的是 127.0.0.1 → Promiscuous,传输已被 vmess+tls 包)。
+        //   ③ 直连:连真 host:port,TOFU。
         val connectHost: String; val connectPort: Int; val verifier: HostKeyVerifier
         if (jump != null) {
             val j = SshJump.open(jump, host, port).also { sshJump = it }
             connectHost = "127.0.0.1"; connectPort = j.localPort; verifier = PromiscuousVerifier()
+        } else if (proxy != null) {
+            // override 目标 = 服务端自己的 127.0.0.1:port(vmess 节点 = 本 host;躲自指防环,见 XrayConfig)
+            connectPort = XrayProxy.tunnel(proxy, "127.0.0.1", port); connectHost = "127.0.0.1"
+            verifier = PromiscuousVerifier()
         } else {
             connectHost = host; connectPort = port
             verifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
@@ -65,8 +73,6 @@ class SshConnection(
             // connect 超时:VPN 掉线时 socket 连接会长时间挂死(ssh-connect 线程静默卡住,日志只剩"连接…"
             // 后再无下文)。给个上限 → 快速抛 SocketTimeout,onOpenProject 能捕获 + 落日志。
             connectTimeout = CONNECT_TIMEOUT_MS
-            // SSH-over-443:直连且配了 proxy → 经本地 SOCKS 隧道拨号(jump 时 proxy 跟跳板走,不在这)。
-            if (jump == null && proxy != null) socketFactory = XrayProxy.socketFactory(proxy)
             addHostKeyVerifier(verifier)
             connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)

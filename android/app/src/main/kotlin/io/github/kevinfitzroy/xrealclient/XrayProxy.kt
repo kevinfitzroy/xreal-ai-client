@@ -1,21 +1,20 @@
 package io.github.kevinfitzroy.xrealclient
 
 import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.Proxy
 import java.net.ServerSocket
-import java.net.Socket
-import javax.net.SocketFactory
 
 /**
- * SSH-over-443 隧道运行时(SPEC.md §5.1):内嵌 xray-core 起一个**仅本地** SOCKS5,
- * 把 app 的 SSH socket 经它转发到 host:443 的 vmess 服务 → 绕过 GFW 对 :22 的限速。
+ * SSH-over-443 隧道运行时(SPEC.md §5.1):内嵌 xray-core 起一个**仅本地** dokodemo-door inbound,
+ * 把进来的 SSH 连接 **override 改写成服务端的 `127.0.0.1:22`** 再送进 vmess/tls:443 隧道 → 绕过 GFW
+ * 对 :22 的限速,同时躲过「连节点自己 IP:22 触发自指防环 → 退化直连」的陷阱(见 [XrayConfig] 类注释)。
+ *
+ * 调用方拿到本地监听口后,让 sshj **直连** `127.0.0.1:<口>`(不再用 SocketFactory/SOCKS)。
  *
  * **xray-core 经 gomobile 产物 `xraybridge.aar` 反射调用**(见 `xray-bridge/`)。aar 不存在时
- * [available] 返回 false,[socketFactory] 抛异常 → 调用方按"代理不可用 → 该 host 连接失败"处理,
+ * [available] 返回 false,[tunnel] 抛异常 → 调用方按"代理不可用 → 该 host 连接失败"处理,
  * **不影响直连 host**(SPEC §9 优雅降级)。这样未 build wrapper 也能正常编译运行(只是隧道功能不可用)。
  *
- * 一个 proxy(按 [ProxyConfig.name])= 一个 xray 实例 + 一个本地 SOCKS 端口,进程级常驻、按需惰性启动。
+ * 一个 (proxy 名, override 目标) = 一个 xray 实例 + 一个本地端口,进程级常驻、按需惰性启动、幂等复用。
  */
 object XrayProxy {
 
@@ -23,7 +22,7 @@ object XrayProxy {
     private const val BRIDGE_CLASS = "xraybridge.Xraybridge"
 
     private val lock = Any()
-    /** proxy 名 → 已分配的本地 SOCKS 端口(已启动)。 */
+    /** 实例 key(proxy 名 + override 目标)→ 已分配的本地监听端口(已启动)。 */
     private val ports = HashMap<String, Int>()
 
     /** gomobile 产物在不在(决定隧道功能是否可用)。 */
@@ -36,40 +35,38 @@ object XrayProxy {
     }
 
     /**
-     * 确保 [proxy] 的 xray 实例在跑,返回其本地 SOCKS 端口。幂等(同 proxy 复用)。
-     * aar 缺失 / vmess 解析失败 / xray 启动失败 → 抛异常。
+     * 确保「[proxy] 经隧道 override 到 [targetHost]:[targetPort]」的 xray 实例在跑,返回其**本地监听端口**。
+     * sshj 直连 `127.0.0.1:<返回值>` 即等于连到隧道彼端的 [targetHost]:[targetPort]。
+     * 幂等:同 (proxy, target) 复用。aar 缺失 / vmess 解析失败 / xray 启动失败 → 抛异常。
+     *
+     * 典型:[targetHost]=`127.0.0.1` + [targetPort]=22 → 连 vmess 节点服务端自己的 sshd(躲防环)。
      */
-    private fun ensureStarted(proxy: ProxyConfig): Int = synchronized(lock) {
-        ports[proxy.name]?.let { return it }
+    fun tunnel(proxy: ProxyConfig, targetHost: String, targetPort: Int): Int = synchronized(lock) {
+        val key = "${proxy.name}→$targetHost:$targetPort"
+        ports[key]?.let { return it }
         val cls = bridgeClass ?: throw IllegalStateException("xraybridge.aar 未集成,SSH-over-443 不可用")
 
         val link = XrayConfig.parseVmess(proxy.url)
+        // gomobile xray-core 内部 DNS 解析常超时(读不到 Android 系统 resolver)→ 用系统 resolver 先把
+        // vmess 域名解析成 IP 传给 xray 拨号;SNI 仍用域名(TLS 证书校验)。已是 IP 则 getByName 原样返回。
+        // 注:必在后台线程调用(本方法的三个调用点 SshConnection/HostClient/SshJump 都在后台)。
+        val serverIp = runCatching { InetAddress.getByName(link.address).hostAddress }.getOrNull()
         val port = freeLocalPort()
-        val config = XrayConfig.buildXrayConfig(link, port)
+        val config = XrayConfig.buildXrayConfig(link, port, targetHost, targetPort, serverIp)
 
         // gomobile:Go `func Start(key, cfg)` → Java static `Xraybridge.start(String,String)`(首字母小写)。
         val start = findMethod(cls, "start", String::class.java, String::class.java)
-        start.invoke(null, proxy.name, config)   // 抛 InvocationTargetException(裹 Go error)即启动失败
-        ports[proxy.name] = port
-        AppLog.i(TAG, "xray 起 proxy='${proxy.name}' (${link.address}:${link.port}) → SOCKS 127.0.0.1:$port")
+        start.invoke(null, key, config)   // 抛 InvocationTargetException(裹 Go error)即启动失败
+        ports[key] = port
+        AppLog.i(TAG, "xray 起 '$key' via ${link.address}${serverIp?.let { "[$it]" } ?: ""}:${link.port} → 本地 127.0.0.1:$port")
         return port
-    }
-
-    /**
-     * 取一个经 [proxy] 隧道拨号的 [SocketFactory](注入 sshj 的 `SSHClient.setSocketFactory`)。
-     * 返回前确保 xray 已启动。SSH 的 socket 会经 `127.0.0.1:<SOCKS 口>` → vmess/tls:443 出去。
-     */
-    fun socketFactory(proxy: ProxyConfig): SocketFactory {
-        val socksPort = ensureStarted(proxy)
-        val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", socksPort))
-        return SocksSocketFactory(socksProxy)
     }
 
     /** 关掉所有 xray 实例(Activity 销毁时调;幂等)。 */
     fun stopAll() = synchronized(lock) {
         val cls = bridgeClass ?: return
         val stop = runCatching { findMethod(cls, "stop", String::class.java) }.getOrNull()
-        ports.keys.toList().forEach { name -> runCatching { stop?.invoke(null, name) } }
+        ports.keys.toList().forEach { key -> runCatching { stop?.invoke(null, key) } }
         ports.clear()
     }
 
@@ -81,21 +78,4 @@ object XrayProxy {
     private fun findMethod(cls: Class<*>, name: String, vararg params: Class<*>) =
         runCatching { cls.getMethod(name, *params) }
             .getOrElse { cls.getMethod(name.replaceFirstChar { c -> c.uppercase() }, *params) }
-
-    /** 所有 createSocket 都返回一个绑定到 SOCKS 代理的 Socket;sshj 随后对它 connect(host:port)。 */
-    private class SocksSocketFactory(private val proxy: Proxy) : SocketFactory() {
-        override fun createSocket(): Socket = Socket(proxy)
-
-        override fun createSocket(host: String, port: Int): Socket =
-            Socket(proxy).apply { connect(InetSocketAddress(host, port)) }
-
-        override fun createSocket(host: String, port: Int, localAddr: InetAddress, localPort: Int): Socket =
-            Socket(proxy).apply { bind(InetSocketAddress(localAddr, localPort)); connect(InetSocketAddress(host, port)) }
-
-        override fun createSocket(host: InetAddress, port: Int): Socket =
-            Socket(proxy).apply { connect(InetSocketAddress(host, port)) }
-
-        override fun createSocket(host: InetAddress, port: Int, localAddr: InetAddress, localPort: Int): Socket =
-            Socket(proxy).apply { bind(InetSocketAddress(localAddr, localPort)); connect(InetSocketAddress(host, port)) }
-    }
 }

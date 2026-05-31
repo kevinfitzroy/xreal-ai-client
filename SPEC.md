@@ -163,15 +163,16 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 ### 5.1 SSH-over-443 隧道(可选,per-host opt-in)
 
-**动机**:SSH 走 :22 连海外 host 常被 GFW 限速/阻断,但同机 :443 的 xray(vmess/vless+TLS)服务正常。客户端**可选**地内嵌 xray-core,起一个**仅本地** SOCKS5(`127.0.0.1:<随机口>`),把自己的 SSH socket 经 SOCKS 转发到 host:443 的 xray → SSH-over-443。
+**动机**:SSH 走 :22 连海外 host 常被 GFW 限速/阻断(DPI 在 KEX 阶段定点丢包),但同机 :443 的 xray(vmess+TLS)服务正常。客户端**可选**地内嵌 xray-core,起一个**仅本地**的 **dokodemo-door** inbound(`127.0.0.1:<随机口>`),把进来的 SSH 连接**目标 override 改写成服务端的 `127.0.0.1:22`** 再送进 vmess/tls:443 隧道 → SSH-over-443。客户端让 SSH **直连这个本地口**(不走 SOCKS)。
 
-- **零服务端增量**:复用用户已有的 :443 xray 服务(§CLAUDE.md 边界的既有例外不扩大)。
-- **不挂系统 VPN / 不用 tun**:只起一个 SOCKS inbound,**仅代理 app 自己的 SSH 连接**,不碰系统其它流量,无需 VpnService 权限。
+- **⭐ 为什么是 dokodemo-door override,不是 SOCKS**(关键,踩过坑):若用 SOCKS inbound 让 SSH 去连 `节点公网IP:22`,目标正是 vmess 出口节点**自己**的地址 → 触发 xray/代理客户端的**自指防环(loop protection):拒绝把"连自己"的流量塞进通往自己的隧道 → 悄悄退化成直连** → 直连的 :22 正是被 GFW 卡的那条。dokodemo-door 把 dest override 成 `127.0.0.1:22`(不是节点公网 IP)→ 躲过防环;服务端 xray 默认 freedom 出站把 `127.0.0.1:22` 当**它自己的 localhost** 直达 sshd。(参考 `~/claude/vpn/ssh-over-vmess.md` §2-§3;sing-box 的 `direct` inbound override 同理。)
+- **零服务端增量**:复用用户已有的 :443 xray 服务 + 服务端默认 freedom 出站(§CLAUDE.md 边界的既有例外不扩大,**不需任何服务端配置改动**)。
+- **不挂系统 VPN / 不用 tun**:只起一个 dokodemo-door inbound,**仅代理 app 自己的 SSH 连接**,不碰系统其它流量,无需 VpnService 权限。
 - **可选 + 优雅降级**:host 不带 `proxy` → 直连(现有行为完全不变)。客户端若没内嵌 xray-core(未 build wrapper)→ 带 `proxy` 的 host 视为"代理不可用",连接失败并提示,**不影响其它直连 host**(§9)。
 - **`proxies` 表**:命名代理,host 按名 `"proxy":"<name>"` 引用(多 host 可共享一个 proxy,不重复粘 URL)。
 - **⚠️ 当前只支持 `vmess://`**(标准 v2rayN 分享链接,base64 JSON)。`vless://` / `ss://` / `trojan://` 等**暂不支持**——客户端解析器只认 `vmess://` 前缀,其它前缀直接报错(该 host 连接失败,不影响直连 host)。底层 xray-core 本身支持全协议,扩展只需在客户端加 URL parser + 生成对应 outbound 配置(见各端实现),**协议范围是客户端解析层的限制,不是隧道架构的限制**。
 - **⭐ proxy 归属"拨公网的那一跳"**(与 `via` 的交互规则,平台无关):
-  - **直连 host**(无 `via`)带 `proxy` → 该 host 自己的 SSH socket 走 SOCKS。
+  - **直连 host**(无 `via`)带 `proxy` → 该 host 自己经隧道(dokodemo override 到服务端 `127.0.0.1:port`)拨号。
   - **多跳 host**(有 `via`)→ proxy 跟着 `via` 指向的**跳板** host 走(拨公网的是跳板);到达跳板后的内层转发已在隧道内,**不再**叠加 proxy。即:一个 host 的 `proxy` 字段在它**作为跳板被别人 `via`** 时生效于那条外层拨号;host 自己有 `via` 时,其 `proxy` 字段被忽略(由跳板的 proxy 决定)。
   - 第一版实现聚焦**直连 host 带 proxy**;proxy×via 复合按上述规则但可后置。
 - **⭐ UI 契约:host 头必须显示生效的 proxy 标识**(跨端,两端都要做)。用户在 AR 眼镜下要能**一眼确认这台 host 是走隧道还是直连**,否则代理生没生效完全不可见。规则:
@@ -301,7 +302,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
-| SSH-over-443 代理(§5.1) | 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 SOCKS + sshj `setSocketFactory(SOCKS)` | 规划:`xray-core` Apple gomobile/cgo 起本地 SOCKS + Citadel 经 `SocketAddress`/自定义 channel 拨该 SOCKS(待 POC) |
+| SSH-over-443 代理(§5.1) | 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`)+ sshj **直连**该本地口 | 规划:`xray-core`(或 sing-box `direct` inbound)Apple gomobile/cgo 起本地 dokodemo-door override + Citadel 直连本地口(待 POC) |
 | proxy 标识徽章(§5.1 UI 契约) | host 列表 JSON 加 `proxy` 字段(`StatusPoller.hostProxyLabel` 按归属规则解析)→ `index.html` 的 `.host .hproxy` 渲染 🔒+名 | 规划:host 头同位置渲染同款徽章(SwiftUI) |
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |

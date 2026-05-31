@@ -50,13 +50,21 @@ class SshJump private constructor(
         /** 阻塞:连跳板 + 建本地转发。失败(连不上跳板/认证失败)直接抛,由调用方按普通 SSH 失败处理。 */
         fun open(spec: JumpSpec, targetHost: String, targetPort: Int): SshJump {
             Crypto.ensureFullBouncyCastle()
-            val verifier: HostKeyVerifier = spec.knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
+            // SSH-over-443:跳板带 proxy → 连跳板这条**外层拨号**经 dokodemo-door 隧道 override 到跳板自己的
+            // 127.0.0.1:port(= 跳板的 sshd;躲自指防环,见 XrayConfig);连本地口 → Promiscuous。
+            // 内层 LocalPortForwarder→target 已在隧道内,不叠加 proxy(归属规则,SPEC §5.1)。
+            val dialHost: String; val dialPort: Int; val verifier: HostKeyVerifier
+            if (spec.proxy != null) {
+                dialPort = XrayProxy.tunnel(spec.proxy, "127.0.0.1", spec.port); dialHost = "127.0.0.1"
+                verifier = PromiscuousVerifier()
+            } else {
+                dialHost = spec.host; dialPort = spec.port
+                verifier = spec.knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
+            }
             val jc = SSHClient().apply {
                 connectTimeout = CONNECT_TIMEOUT_MS
-                // SSH-over-443:跳板带 proxy → 连跳板这条外层拨号经本地 SOCKS 隧道(内层转发已在隧道内)。
-                spec.proxy?.let { socketFactory = XrayProxy.socketFactory(it) }
                 addHostKeyVerifier(verifier)
-                connect(spec.host, spec.port)
+                connect(dialHost, dialPort)
                 authPublickey(spec.user, spec.privateKeyPath)
             }
             val ss = ServerSocket().apply {

@@ -34,15 +34,22 @@ class XrayConfigTest {
         assertFalse(link.allowInsecure)
     }
 
-    @Test fun buildsValidXrayConfigWithLocalSocks() {
+    @Test fun buildsDokodemoOverrideConfig() {
         val link = XrayConfig.parseVmess(sampleVmess)
-        val cfg = JSONObject(XrayConfig.buildXrayConfig(link, 10808))
+        // localPort=10808,override 目标 = 服务端自己的 127.0.0.1:22(躲自指防环)
+        val cfg = JSONObject(XrayConfig.buildXrayConfig(link, 10808, "127.0.0.1", 22))
 
+        // inbound = dokodemo-door,把进来的连接 override 改写到 127.0.0.1:22
         val inbound = cfg.getJSONArray("inbounds").getJSONObject(0)
-        assertEquals("socks", inbound.getString("protocol"))
+        assertEquals("dokodemo-door", inbound.getString("protocol"))
         assertEquals("127.0.0.1", inbound.getString("listen"))   // 仅本地,不暴露
         assertEquals(10808, inbound.getInt("port"))
+        val inSet = inbound.getJSONObject("settings")
+        assertEquals("127.0.0.1", inSet.getString("address"))    // override 目标 host
+        assertEquals(22, inSet.getInt("port"))                   // override 目标 port
+        assertEquals("tcp", inSet.getString("network"))
 
+        // outbound = vmess(+tls),不变
         val outbound = cfg.getJSONArray("outbounds").getJSONObject(0)
         assertEquals("vmess", outbound.getString("protocol"))
         val vnext = outbound.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
@@ -55,6 +62,28 @@ class XrayConfigTest {
         assertEquals("tcp", stream.getString("network"))
         assertEquals("tls", stream.getString("security"))
         assertEquals("example.com", stream.getJSONObject("tlsSettings").getString("serverName"))
+    }
+
+    @Test fun serverIpOverridesDialAddressButKeepsSniDomain() {
+        // 模拟:vmess add 是域名,Android 侧解析成 IP 传进来 → xray 拨 IP,SNI 仍域名
+        val json = """{"add":"example.com","port":"443","id":"u","tls":"tls","net":"tcp","sni":"example.com"}"""
+        val link = XrayConfig.parseVmess("vmess://" + java.util.Base64.getEncoder().encodeToString(json.toByteArray()))
+        val outbound = JSONObject(XrayConfig.buildXrayConfig(link, 5000, "127.0.0.1", 22, "198.51.100.7"))
+            .getJSONArray("outbounds").getJSONObject(0)
+        val vnext = outbound.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+        assertEquals("198.51.100.7", vnext.getString("address"))   // 拨号用解析出的 IP
+        assertEquals(
+            "example.com",                                          // SNI 仍域名(TLS 证书)
+            outbound.getJSONObject("streamSettings").getJSONObject("tlsSettings").getString("serverName"),
+        )
+    }
+
+    @Test fun overrideTargetDefaultsToLocalhost22() {
+        val link = XrayConfig.parseVmess(sampleVmess)
+        val inSet = JSONObject(XrayConfig.buildXrayConfig(link, 5000))   // 默认 target
+            .getJSONArray("inbounds").getJSONObject(0).getJSONObject("settings")
+        assertEquals("127.0.0.1", inSet.getString("address"))
+        assertEquals(22, inSet.getInt("port"))
     }
 
     @Test fun sniFallsBackToAddressWhenEmpty() {

@@ -7,7 +7,14 @@ import org.json.JSONObject
  * vmess:// 链接解析 + xray-core JSON 配置生成(SSH-over-443 隧道,SPEC.md §5.1)。
  *
  * **纯函数,无 Android/网络依赖** → JVM 单测覆盖(见 XrayConfigTest)。运行时把生成的配置喂给
- * [XrayProxy](内嵌 xray-core),起一个本地 SOCKS5 inbound + vmess(+tls) outbound。
+ * [XrayProxy](内嵌 xray-core),起一个本地 **dokodemo-door** inbound + vmess(+tls) outbound。
+ *
+ * **为什么是 dokodemo-door 而不是 socks**:若用 socks inbound 让 sshj 去连 `节点公网IP:22`,目标
+ * 正是 vmess 出口节点自己 → 触发 xray 的**自指防环(loop protection)**,流量被悄悄退化成直连,
+ * 而直连的 :22 正是被 GFW 卡 KEXINIT 的那条。dokodemo-door 把进来的连接 **override 改写成
+ * `127.0.0.1:<port>`** 再送进隧道:进隧道的 dest 是 127.0.0.1(不是节点公网 IP)→ 躲过防环;
+ * 服务端 xray 默认 freedom 出站把 `127.0.0.1:22` 当**它自己的 localhost** 直达 sshd。服务端零改动。
+ * (= `~/claude/vpn/ssh-over-vmess.md` §3 正解的 xray 等价物;sing-box 的 `direct` inbound override 同理。)
  *
  * vmess:// 格式(v2rayN 通用):`vmess://` + base64(JSON),JSON 字段见 [VmessLink]。
  */
@@ -60,18 +67,35 @@ object XrayConfig {
     }
 
     /**
-     * 生成完整 xray-core JSON 配置:一个本地 SOCKS5 inbound(`127.0.0.1:[socksPort]`)+ 一个 vmess outbound。
-     * app 把自己的 SSH socket 经该 SOCKS5 转发 → vmess/tls 到服务器:443 → 服务器侧解隧道连 host:22。
+     * 生成完整 xray-core JSON 配置:一个本地 **dokodemo-door** inbound(`127.0.0.1:[localPort]`,把所有
+     * 进来的连接 override 改写到 [targetHost]:[targetPort])+ 一个 vmess outbound。
+     *
+     * 用法:app 让 sshj **直连** `127.0.0.1:[localPort]`(不走 SocketFactory),dokodemo-door 接住、把
+     * dest 改写成 [targetHost]:[targetPort] 送进 vmess/tls:443 隧道,服务端 freedom 出站直达该 dest。
+     * 典型:[targetHost]=`127.0.0.1`、[targetPort]=22 → 连服务端自己的 sshd(躲自指防环,见类注释)。
      */
-    fun buildXrayConfig(link: VmessLink, socksPort: Int): String {
+    /**
+     * @param serverIp 非空 → 用它作为 vmess 拨号地址(替代 [VmessLink.address]),**SNI 仍用域名**。
+     *   用途:gomobile xray-core 在 Android 上**内部 DNS 解析常超时**(读不到系统 resolver)→ 由调用方
+     *   ([XrayProxy])用 Android 系统 resolver 先把域名解析成 IP 传进来,xray 直接拨 IP、不触发内部 DNS。
+     *   TLS SNI/证书仍按域名校验(标准做法,等同 CDN)。
+     */
+    fun buildXrayConfig(
+        link: VmessLink, localPort: Int,
+        targetHost: String = "127.0.0.1", targetPort: Int = 22, serverIp: String? = null,
+    ): String {
         val inbound = JSONObject()
-            .put("tag", "socks-in")
+            .put("tag", "ssh-in")
             .put("listen", "127.0.0.1")
-            .put("port", socksPort)
-            .put("protocol", "socks")
+            .put("port", localPort)
+            .put("protocol", "dokodemo-door")
             .put(
                 "settings",
-                JSONObject().put("udp", false).put("auth", "noauth"),
+                JSONObject()
+                    .put("address", targetHost)   // override:所有连接的目标改写成这里(= 服务端 localhost)
+                    .put("port", targetPort)
+                    .put("network", "tcp")
+                    .put("followRedirect", false),
             )
 
         val user = JSONObject()
@@ -79,7 +103,7 @@ object XrayConfig {
             .put("alterId", link.alterId)
             .put("security", link.security)
         val vnext = JSONObject()
-            .put("address", link.address)
+            .put("address", serverIp ?: link.address)   // 拨号用 IP(避 xray 内部 DNS);SNI 仍域名,见 streamSettings
             .put("port", link.port)
             .put("users", JSONArray().put(user))
         val outbound = JSONObject()

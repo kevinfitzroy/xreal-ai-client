@@ -82,7 +82,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **终端 UI**:`assets/terminal.html`(xterm.js + WebGL + unicode11 addon + overlay div)、`TerminalBridge`(`@JavascriptInterface` + Base64 双向桥)、`LocalEchoChannel`
 - **语音**:`VoiceDaemon`(状态机)、`AudioRecorder`、`VolcEngineAsr` / `VolcFrame`(豆包流式 ASR)、`Hotwords`(项目级热词)
 - **列表 / 编排**:`MainActivity`(项目列表 + 终端 + 物理键路由 + tmux conf 注入)、`ManifestFetcher` / `HostClient`(读 host manifest)、`AgentModels`(HostConfig 带 `via`)、`StatusPoller` + `AgentModels`(Agent 状态:hooks→status.json 一次性 cat)
-- **SSH-over-443 隧道(VPN/翻墙,可选)**:`XrayProxy`(内嵌 xray-core 起本地 SOCKS5 + 给 sshj 注入 `SocketFactory`;**反射调** `xraybridge.aar`,aar 缺失即优雅降级)、`XrayConfig`(vmess:// 解析 + 生成 xray JSON,纯函数,有单测 `XrayConfigTest`)、`AgentModels` 的 `ProxyConfig`(host 带 `proxy` 字段)。注入点**三处**:`SshConnection`(终端)、`SshJump`(跳板外层)、`HostClient`(状态/manifest 轮询)——漏一个轮询就绕过隧道在 :22 hang。Go 侧封装在 **`xray-bridge/`**(根目录,非 android/):`bridge.go`(封官方 xtls/xray-core,`core.StartInstance("json")` 只起 SOCKS、无 tun)+ `build.sh`(gomobile bind → `android/app/libs/xraybridge.aar`)。详见 §5.1 + SPEC §5.1。**当前只支持 vmess**。
+- **SSH-over-443 隧道(VPN/翻墙,可选)**:`XrayProxy`(内嵌 xray-core 起本地 **dokodemo-door**、override→服务端 `127.0.0.1:22`,返回本地口给 sshj **直连**;**反射调** `xraybridge.aar`,aar 缺失即优雅降级)、`XrayConfig`(vmess:// 解析 + 生成 xray JSON,纯函数,有单测 `XrayConfigTest`)、`AgentModels` 的 `ProxyConfig`(host 带 `proxy` 字段)。注入点**三处**:`SshConnection`(终端)、`SshJump`(跳板外层)、`HostClient`(状态/manifest 轮询)——漏一个轮询就绕过隧道在 :22 hang。Go 侧封装在 **`xray-bridge/`**(根目录,非 android/):`bridge.go`(封官方 xtls/xray-core,`core.StartInstance("json")`、无 tun)+ `build.sh`(gomobile bind → `android/app/libs/xraybridge.aar`)。详见 §5.1 + SPEC §5.1。**当前只支持 vmess**。⚠️ gomobile xray 内部 DNS 会超时 → `XrayProxy` 用 Android resolver 把 vmess 域名解析成 IP 传 `XrayConfig`(SNI 仍域名)。
 - **基础设施**:`XrealApp`(全局未捕获异常 + 生命周期/网络/display 监控)、`AppLog`(外存文件日志,`adb pull`)、`SettingsStore` / `ConfigActivity` / `Crypto`、`DebugInputServer`(debug 期电脑直通终端)
 - **搁置**:`AgentStatusDetector`(抓屏检测)+ `FleetFeatures.LIVE_STATUS`(实时刷新,P2,默认关)——状态展示现在走 hooks,**不是**这套
 
@@ -124,13 +124,14 @@ fallback 接口(sshj↔sshlib、Base64↔WS)仍预留。完整判据见 [`docs/s
 
 ### SSH-over-443 隧道(VPN / 翻墙,可选 per-host)
 
-GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正常。app **可选**地内嵌 xray-core 起一个**仅本地** SOCKS5,把自己的 SSH socket 经 vmess/tls:443 转发出去 → SSH-over-443。**契约单一真相源 = [`SPEC.md`](SPEC.md) §5.1**,这里只记 Android 落点 + 怎么 build。
+GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正常。app **可选**地内嵌 xray-core 起一个**仅本地** dokodemo-door inbound,把进来的 SSH 连接 override 改写成服务端 `127.0.0.1:22` 经 vmess/tls:443 送出 → SSH-over-443。**契约单一真相源 = [`SPEC.md`](SPEC.md) §5.1**,这里只记 Android 落点 + 怎么 build。
 
-- **数据流**:host 配 `proxy`(指向 `proxies[]` 里一条 vmess 链接)→ `SettingsStore` 解析成 `ProxyConfig` → `XrayProxy.socketFactory(proxy)` 起 xray 本地 SOCKS + 返回走 SOCKS 的 `SocketFactory` → 注入 sshj `SSHClient.setSocketFactory()`。
+- **⚠️ 为什么 dokodemo-door 不是 SOCKS**:SOCKS 让 SSH 连 `节点IP:22`(= vmess 节点自己)会触发**自指防环 → 退化直连 → 被 GFW 卡**。override 成 `127.0.0.1:22` 躲过(详见 SPEC §5.1 + `XrayConfig` 类注释 + `~/claude/vpn/ssh-over-vmess.md`)。
+- **数据流**:host 配 `proxy`(指向 `proxies[]` 里一条 vmess 链接)→ `SettingsStore` 解析成 `ProxyConfig` → `XrayProxy.tunnel(proxy, "127.0.0.1", port)` 起 xray dokodemo-door 实例、返回**本地监听口** → sshj **直连** `127.0.0.1:<口>`(不再用 SocketFactory)。
 - **proxy 归属"拨公网那一跳"**(与 `via` 交互,SPEC §5.1):直连 host 用自己的 proxy;经 `via` 的内网 host → proxy 跟**跳板**走(注入跳板的 `SshJump`,内层连 127.0.0.1 不叠加)。三处注入点别漏(§4 代码地图)。
 - **UI**:host 头显示 `🔒 <proxy名>` 徽章(`StatusPoller.hostProxyLabel` + `index.html .host .hproxy`),一眼区分隧道/直连。
 - **当前只支持 vmess**(`XrayConfig.parseVmess` 只认 `vmess://`;vless/ss/trojan 暂不支持,扩展只需加 URL parser)。
-- **不挂系统 VPN / 不用 tun / 无 VpnService 权限**——只代理 app 自己的 SSH socket(`tunFd=0`)。
+- **不挂系统 VPN / 不用 tun / 无 VpnService 权限**——dokodemo-door 只是个本地端口,仅代理 app 自己的 SSH 连接。
 - **`xraybridge.aar` 不进 git**(20MB,`.gitignore` 忽略),需**本机 build**:`cd xray-bridge && ./build.sh`(见 §10.1)。没 build → `XrayProxy.available()=false`,带 proxy 的 host 连接失败但**直连 host 照常**(优雅降级)。
 
 ---

@@ -35,10 +35,15 @@ class HostClient(
     private fun ensure(): SSHClient {
         client?.let { if (it.isConnected) return it }
         teardown()
+        // 三情形同 SshConnection:① 多跳 ② 直连+proxy(SSH-over-443 dokodemo override)③ 直连。
+        // ⚠️ 这条轮询路径也必须走隧道,否则状态/manifest 会绕过隧道在 :22 hang。
         val connectHost: String; val connectPort: Int; val verifier: HostKeyVerifier
         if (jump != null) {
             val j = SshJump.open(jump, host, port).also { sshJump = it }
             connectHost = "127.0.0.1"; connectPort = j.localPort; verifier = PromiscuousVerifier()
+        } else if (proxy != null) {
+            connectPort = XrayProxy.tunnel(proxy, "127.0.0.1", port); connectHost = "127.0.0.1"
+            verifier = PromiscuousVerifier()
         } else {
             connectHost = host; connectPort = port
             verifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
@@ -46,8 +51,6 @@ class HostClient(
         val c = SSHClient().apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             timeout = READ_TIMEOUT_MS
-            // SSH-over-443:直连且配了 proxy → 经本地 SOCKS 隧道(jump 时 proxy 跟跳板走,不在这)。
-            if (jump == null && proxy != null) socketFactory = XrayProxy.socketFactory(proxy)
             addHostKeyVerifier(verifier)
             connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)
