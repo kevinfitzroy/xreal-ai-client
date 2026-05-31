@@ -44,7 +44,7 @@
 - **真机截图能力**:`pymobiledevice3`(已装 ~/.local/bin)+ 用户起的 `sudo pymobiledevice3 remote tunneld` 隧道 → 我能 `developer dvt screenshot` 独立看真机屏。
 
 **➡️ 下一步(仍需硬件/用户在场)**:
-- **语音**:麦克风→AVAudioEngine + 豆包流式 ASR(ASR 凭证导入已做 Phase6,**录音→识别→注入本身没做**)。
+- **语音**(commit `3e244b0`,**编译过 + 已装真机,speak 端到端待验**):从 Android port 全套 —— `VolcFrame`(豆包 WS 二进制帧)/`VolcAsr`(URLSessionWebSocketTask 流式,凭证读导入的 asr.json)/`AudioCapture`(AVAudioEngine 16k/mono)/`VoiceController`(状态机 voiceDown→STREAMING→PREVIEW→Enter 注入,🎤 前缀)/`Hotwords`;TerminalViewController 接 `Bridge.voiceDown/voiceUp`;Info.plist 麦克风权限。index.html 语音键/overlay 共享未改。**未验**:豆包 WS 鉴权连通(sub-agent 卡在这测试上被我停)、AVAudioEngine 真录音、speak→识别→注入端到端。**怎么测**:AirDrop `~/Desktop/xreal-asr.xrhosts`(含豆包凭证,从 `.env` 取)→ 导入 asr.json → 按住语音键说话。豆包 WS 海外端点可能被 GFW 限速(参 SPEC §5.1 xray-over-443,用户并行在做)。
 - **F1/F2 物理键路由**:8BitDo→GameController(hold-to-talk 语音 / F2 返回;**列表页 F2→host 配置页**那条语义随 host 配置页一起搁 P2);翻页。
 - **AR 眼镜**:iPhone 15+ USB-C DP 直连 XREAL One Pro(用户接)。
 - disconnect→vkey 恢复(真机验)。
