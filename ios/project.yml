@@ -1,0 +1,37 @@
+name: XrealPOC
+options:
+  bundleIdPrefix: io.github.kevinfitzroy
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    from: "0.7.0"
+
+targets:
+  XrealPOC:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Sources
+      # web/ as a FOLDER REFERENCE (blue folder) so index.html's relative src/href +
+      # @font-face url() resolve, and allowingReadAccessTo: can grant the whole dir.
+      # buildPhase: resources puts it in the Copy Bundle Resources phase.
+      - path: App/web
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: Citadel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
