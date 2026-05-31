@@ -168,7 +168,8 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 - **零服务端增量**:复用用户已有的 :443 xray 服务(§CLAUDE.md 边界的既有例外不扩大)。
 - **不挂系统 VPN / 不用 tun**:只起一个 SOCKS inbound,**仅代理 app 自己的 SSH 连接**,不碰系统其它流量,无需 VpnService 权限。
 - **可选 + 优雅降级**:host 不带 `proxy` → 直连(现有行为完全不变)。客户端若没内嵌 xray-core(未 build wrapper)→ 带 `proxy` 的 host 视为"代理不可用",连接失败并提示,**不影响其它直连 host**(§9)。
-- **`proxies` 表**:命名代理,host 按名 `"proxy":"<name>"` 引用(多 host 可共享一个 proxy,不重复粘 URL)。`url` 是标准 `vmess://` 分享链接(后续可扩 `vless://`)。
+- **`proxies` 表**:命名代理,host 按名 `"proxy":"<name>"` 引用(多 host 可共享一个 proxy,不重复粘 URL)。
+- **⚠️ 当前只支持 `vmess://`**(标准 v2rayN 分享链接,base64 JSON)。`vless://` / `ss://` / `trojan://` 等**暂不支持**——客户端解析器只认 `vmess://` 前缀,其它前缀直接报错(该 host 连接失败,不影响直连 host)。底层 xray-core 本身支持全协议,扩展只需在客户端加 URL parser + 生成对应 outbound 配置(见各端实现),**协议范围是客户端解析层的限制,不是隧道架构的限制**。
 - **⭐ proxy 归属"拨公网的那一跳"**(与 `via` 的交互规则,平台无关):
   - **直连 host**(无 `via`)带 `proxy` → 该 host 自己的 SSH socket 走 SOCKS。
   - **多跳 host**(有 `via`)→ proxy 跟着 `via` 指向的**跳板** host 走(拨公网的是跳板);到达跳板后的内层转发已在隧道内,**不再**叠加 proxy。即:一个 host 的 `proxy` 字段在它**作为跳板被别人 `via`** 时生效于那条外层拨号;host 自己有 `via` 时,其 `proxy` 字段被忽略(由跳板的 proxy 决定)。

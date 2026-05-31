@@ -169,11 +169,13 @@ Beam Pro 上的单个 APK
 ├─ WebView(xterm.js + WebGL)          ← 现代 terminal UI,大字号/高对比/中英+powerline
 │    ↕ Base64 over JSBridge
 ├─ SSH 模块(sshj)— TCP→SSH→PTY        ← 直连云端;可经跳板机多跳(ProxyJump)连内网 host
+├─ xray-core(可选,内嵌)              ← SSH-over-443 隧道:GFW 限速 :22 时,SSH 经 vmess/tls:443 出去
+│                                        (per-host opt-in;仅本地 SOCKS,不挂系统 VPN;当前只支持 vmess)
 ├─ Voice Daemon(录音 → ASR → 直写 SSH outputStream)
 └─ 列表 ⇄ 终端 的 SPA;列表从 host 的 manifest live-fetch
-        │ Raw SSH (22)
+        │ Raw SSH (22) 或 vmess/tls (443) 隧道
         ▼
-你的 Ubuntu 服务器:tmux + Claude Code(无 ttyd / 无网关 / 无自定义 daemon)
+你的 Ubuntu 服务器:tmux + Claude Code(无 ttyd / 无网关 / 无自定义 daemon;443 隧道复用已有 xray 服务,零增量)
 ```
 
 完整架构 + 可编译代码骨架见 [`docs/architecture.md`](docs/architecture.md)。
@@ -200,6 +202,7 @@ Beam Pro 上的单个 APK
 │   ├── stage-a-experiments.md   ← 物理设备到位后的验证实验 + fallback
 │   ├── upstream-docs-index.md   ← 上游 term-on-demand docs 导航
 │   └── images/                  ← README 用图(app icon、8BitDo 键位图、眼镜视角)
+├── xray-bridge/         ← SSH-over-443 隧道:gomobile 封官方 xtls/xray-core 成 aar(可选功能,见 SPEC §5.1)
 └── android/             ← Android Studio 项目(Kotlin,minSdk/targetSdk 34)
 ```
 

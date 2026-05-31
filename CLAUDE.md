@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **当前状态**:**已在真机 Beam Pro X4100(Android 14)上部署运行,核心闭环全打通**——项目列表 → 开 project → 真 SSH 终端 → 物理键盘/语音 → 返回列表。两台真实 host 在用:**TK-ALIYUN**(海外,user=xreal)、**OPS**(AWS 内网,user=ubuntu,经 TK 多跳 ProxyJump 到达),各跑 Maestro 编排。
 
-最近一轮(2026-05)已落地:多跳 SSH(`via` + SshJump,手机不挂 VPN)、持久化日志 + 崩溃捕获(AppLog/XrealApp)、tmux 半页翻页(Shift+↑/↓)、虚拟键盘动态显隐、列表冷加载态、Agent 状态展示(working/waiting/disconnected/unknown,走 Claude Code hooks,见 §6)。
+最近一轮(2026-05)已落地:多跳 SSH(`via` + SshJump,手机不挂 VPN)、持久化日志 + 崩溃捕获(AppLog/XrealApp)、tmux 半页翻页(Shift+↑/↓)、虚拟键盘动态显隐、列表冷加载态、Agent 状态展示(working/waiting/disconnected/unknown,走 Claude Code hooks,见 §6)、**SSH-over-443 隧道**(可选 per-host:app 内嵌 xray-core 起本地 SOCKS,SSH 经 vmess/tls:443 绕 GFW 对 :22 的限速;**当前只支持 vmess**;见 §5.1 + SPEC §5.1)。
 
 **你的任务是在这套已运行的真机系统上继续迭代**(改 bug、加能力),不是从零搭脚手架。
 
@@ -82,6 +82,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **终端 UI**:`assets/terminal.html`(xterm.js + WebGL + unicode11 addon + overlay div)、`TerminalBridge`(`@JavascriptInterface` + Base64 双向桥)、`LocalEchoChannel`
 - **语音**:`VoiceDaemon`(状态机)、`AudioRecorder`、`VolcEngineAsr` / `VolcFrame`(豆包流式 ASR)、`Hotwords`(项目级热词)
 - **列表 / 编排**:`MainActivity`(项目列表 + 终端 + 物理键路由 + tmux conf 注入)、`ManifestFetcher` / `HostClient`(读 host manifest)、`AgentModels`(HostConfig 带 `via`)、`StatusPoller` + `AgentModels`(Agent 状态:hooks→status.json 一次性 cat)
+- **SSH-over-443 隧道(VPN/翻墙,可选)**:`XrayProxy`(内嵌 xray-core 起本地 SOCKS5 + 给 sshj 注入 `SocketFactory`;**反射调** `xraybridge.aar`,aar 缺失即优雅降级)、`XrayConfig`(vmess:// 解析 + 生成 xray JSON,纯函数,有单测 `XrayConfigTest`)、`AgentModels` 的 `ProxyConfig`(host 带 `proxy` 字段)。注入点**三处**:`SshConnection`(终端)、`SshJump`(跳板外层)、`HostClient`(状态/manifest 轮询)——漏一个轮询就绕过隧道在 :22 hang。Go 侧封装在 **`xray-bridge/`**(根目录,非 android/):`bridge.go`(封官方 xtls/xray-core,`core.StartInstance("json")` 只起 SOCKS、无 tun)+ `build.sh`(gomobile bind → `android/app/libs/xraybridge.aar`)。详见 §5.1 + SPEC §5.1。**当前只支持 vmess**。
 - **基础设施**:`XrealApp`(全局未捕获异常 + 生命周期/网络/display 监控)、`AppLog`(外存文件日志,`adb pull`)、`SettingsStore` / `ConfigActivity` / `Crypto`、`DebugInputServer`(debug 期电脑直通终端)
 - **搁置**:`AgentStatusDetector`(抓屏检测)+ `FleetFeatures.LIVE_STATUS`(实时刷新,P2,默认关)——状态展示现在走 hooks,**不是**这套
 
@@ -103,6 +104,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **F1/F2 物理键主路径**(2026-05-29 Stage A.1 实测改定) | 原设计 F13/F14(326/327),但 Beam Pro 的 8BitDo 走 `/system/usr/keylayout/Generic.kl`,其中 F13–F24 全被注释 → keycode 映射不出、到不了 app。改用 **F1=语音(hold-to-talk)、F2=返回列表**(F1–F12 在 Generic.kl 活跃);Ctrl+Alt+1/2 备路径保留,F13/F14 代码分支留作其它设备兜底。详见 README「操作」章节 + memory `beam-pro-device` |
 | **session 驻留:agent 用 tmux,纯 SSH 可 abduco**(2026-05-28 修订)| 原决策是默认 abduco(单终端场景,client 自己管 scrollback)。但产品升级成"AI agent 集群指挥台"后,**状态探测 + 最近命令预览需要 `tmux capture-pane -p`,abduco 无等价能力** → agent 类 project 改用 tmux。纯 SSH project 不需要探测,abduco/tmux 均可。`SshConnection` 启动命令本就可配置。详见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md) 和 memory `product-vision` |
 | **优雅降级** | 任何组件挂了,用户能退回 Termius / Termux 继续工作。App 不是必需品 |
+| **SSH-over-443 = 客户端侧翻墙,不破零增量**(2026-05-31) | GFW 限速 :22 时,host 可选配 `proxy`(vmess 链接)→ app **内嵌 xray-core** 起本地 SOCKS、SSH 经 vmess/tls:443 出去。**复用用户已有的 :443 xray 服务,服务端零增量**(不破上面那条);**不挂系统 VPN / 不用 tun / 无 VpnService 权限**(只代理 app 自己的 SSH socket)。per-host opt-in,不配 proxy = 直连(行为不变);aar 没 build = 隧道不可用但直连 host 照常。**当前只支持 vmess**(vless/ss/trojan 暂不支持,xray-core 底层支持,缺的是客户端 URL parser)。详见 §5.1 |
 
 ---
 
@@ -119,6 +121,17 @@ fallback 接口(sshj↔sshlib、Base64↔WS)仍预留。完整判据见 [`docs/s
 ### Agent 状态展示(当前机制)
 
 列表卡片显示 working / waiting / disconnected / unknown + 时长。检测走 **Claude Code hooks(事件驱动,非抓屏)**:Maestro 用 `xreal-project.sh` 建 claude/agent/maestro 类 project 时自动部署 `agent-status.sh` + hooks,事件触发写 `<base>/.xreal/status.json`;app 在列表加载时**一次性 cat** 该文件(`StatusPoller`)。**实时刷新(轮询/抓屏)是搁置的 P2**(`FleetFeatures.LIVE_STATUS=false` + `AgentStatusDetector`),当前不走那条。
+
+### SSH-over-443 隧道(VPN / 翻墙,可选 per-host)
+
+GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正常。app **可选**地内嵌 xray-core 起一个**仅本地** SOCKS5,把自己的 SSH socket 经 vmess/tls:443 转发出去 → SSH-over-443。**契约单一真相源 = [`SPEC.md`](SPEC.md) §5.1**,这里只记 Android 落点 + 怎么 build。
+
+- **数据流**:host 配 `proxy`(指向 `proxies[]` 里一条 vmess 链接)→ `SettingsStore` 解析成 `ProxyConfig` → `XrayProxy.socketFactory(proxy)` 起 xray 本地 SOCKS + 返回走 SOCKS 的 `SocketFactory` → 注入 sshj `SSHClient.setSocketFactory()`。
+- **proxy 归属"拨公网那一跳"**(与 `via` 交互,SPEC §5.1):直连 host 用自己的 proxy;经 `via` 的内网 host → proxy 跟**跳板**走(注入跳板的 `SshJump`,内层连 127.0.0.1 不叠加)。三处注入点别漏(§4 代码地图)。
+- **UI**:host 头显示 `🔒 <proxy名>` 徽章(`StatusPoller.hostProxyLabel` + `index.html .host .hproxy`),一眼区分隧道/直连。
+- **当前只支持 vmess**(`XrayConfig.parseVmess` 只认 `vmess://`;vless/ss/trojan 暂不支持,扩展只需加 URL parser)。
+- **不挂系统 VPN / 不用 tun / 无 VpnService 权限**——只代理 app 自己的 SSH socket(`tunFd=0`)。
+- **`xraybridge.aar` 不进 git**(20MB,`.gitignore` 忽略),需**本机 build**:`cd xray-bridge && ./build.sh`(见 §10.1)。没 build → `XrayProxy.available()=false`,带 proxy 的 host 连接失败但**直连 host 照常**(优雅降级)。
 
 ---
 
@@ -175,6 +188,7 @@ fallback 接口(sshj↔sshlib、Base64↔WS)仍预留。完整判据见 [`docs/s
 | 编译 Debug APK | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug` | 产物在 `android/app/build/outputs/apk/debug/app-debug.apk` |
 | 装到 emulator/真机 | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew installDebug` | emulator 需先启动或真机已 USB 连接 |
 | 全清重编 | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew clean assembleDebug` | Gradle 缓存或依赖出问题时用 |
+| **build SSH-over-443 隧道 aar** | `cd xray-bridge && ./build.sh` | 出 `android/app/libs/xraybridge.aar`(不进 git)→ 下次 assembleDebug 自动带隧道能力。**前置**:NDK r27c + gomobile/gobind + 翻墙(脚本默认走 SOCKS `127.0.0.1:10808`)。坑见 §5.1 / memory `ssh-over-443`:go.mod pin 兼容本机 go 的 xray-core 版本、`GOROOT` 须指向新 go(非 PATH)。**没 build 不影响普通构建**(隧道功能仅不可用) |
 
 如果嫌每次写 `JAVA_HOME` 麻烦,可以 `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` 加进 `~/.zshrc`,或在 shell 里直接 `export` 一次。
 
@@ -275,11 +289,12 @@ HANDOFF.md 也定义了**何时该更新它自己**,保持长期可用。
 │   ├── orchestrator-CLAUDE.md / agent-setup-guide.md  ← host 上 Maestro 指南 + 接入步骤
 │   ├── xreal-project.sh                           ← Maestro 建/进 project + 部署状态 hooks
 │   └── projects.example.json / images/
+├── xray-bridge/                 ← SSH-over-443 隧道:gomobile 封 xtls/xray-core 成 aar(bridge.go/build.sh;§5.1)
 ├── android/                     ← Android Studio 项目(已建,真机在跑)
 │   └── app/src/
-│       ├── main/kotlin/io/github/kevinfitzroy/xrealclient/  ← 24 个 .kt(见 §4 代码地图:
+│       ├── main/kotlin/io/github/kevinfitzroy/xrealclient/  ← 26 个 .kt(见 §4 代码地图:
 │       │     SshConnection/SshJump/PtyChannel、TerminalBridge、VoiceDaemon/VolcEngineAsr、
-│       │     MainActivity/StatusPoller/AgentModels、XrealApp/AppLog 等)
+│       │     MainActivity/StatusPoller/AgentModels、XrayProxy/XrayConfig(隧道)、XrealApp/AppLog 等)
 │       ├── main/assets/terminal.html             ← xterm.js + WebGL + unicode11 + overlay
 │       └── test/kotlin/...                        ← JVM 单测(ManifestFetcher/Hotwords/VolcFrame 等)
 └── scripts/                     ← setup-mac-host.sh、term-relay.py(调试期测试工具,见 §10.6)
