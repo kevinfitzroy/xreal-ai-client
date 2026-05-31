@@ -604,6 +604,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         )
         // inject = write into the live PTY (single-writer SSHSession.send; SPEC §4). nil when no PTY.
         voice.inject = { [weak self] data in self?.ssh?.send(data) }
+        // recorder **同步建好**:否则第一次 voiceDown 时 recorder 还 nil(旧 bug:它建在异步权限
+        // 回调里,回调比同步的 voiceDown 晚 → 首次录空,第二次才正常)。权限只决定 start 时能否真录到音。
+        voice.recorder = AudioCapture()
     }
 
     /// First voice-key press requests mic permission (Android requests RECORD_AUDIO on first F1).
@@ -612,16 +615,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private func ensureMicThenRecord() {
         guard !micRequested else { return }
         micRequested = true
-        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if granted {
-                    self.voice.recorder = AudioCapture()
-                    NSLog("[VC] mic permission granted → recorder attached")
-                } else {
-                    NSLog("[VC] mic permission DENIED → voice will produce no audio")
-                }
-            }
+        // recorder 已在 setupVoice 同步建好;这里只为首次使用弹权限对话框(已授权则无对话框、立即 granted)。
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            NSLog("[VC] mic permission = \(granted ? "granted" : "DENIED — 语音录不到音")")
         }
     }
 
