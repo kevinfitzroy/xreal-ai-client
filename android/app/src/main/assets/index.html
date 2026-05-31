@@ -75,6 +75,16 @@
   .s-loading .status { color:var(--fg-dim); background:rgba(123,162,247,.10); }
   .s-loading .status .sd{ background:transparent; position:relative; }
   .s-loading .status .sd::after{ content:""; position:absolute; inset:-2px; border-radius:50%; border:1.5px solid var(--fg-dim); border-top-color:transparent; animation:spin .8s linear infinite; }
+  /* hooks 实时态:working=绿转圈(在跑)/ waiting=琥珀脉冲(轮到你)/ disc=红(掉线)/ unknown=暗 */
+  .s-working .status { color:var(--work); background:rgba(148,224,178,.10); }
+  .s-working .status .sd{ background:var(--work); position:relative; }
+  .s-working .status .sd::after{ content:""; position:absolute; inset:-3px; border-radius:50%; border:1.5px solid var(--work); border-top-color:transparent; animation:spin .9s linear infinite; }
+  .s-waiting .status { color:var(--wait); background:rgba(255,180,84,.12); }
+  .s-waiting .status .sd{ background:var(--wait); box-shadow:0 0 8px var(--wait); animation:pulse 1.3s ease-in-out infinite; }
+  .s-disc .status { color:var(--offline); background:rgba(224,108,117,.10); }
+  .s-disc .status .sd{ background:var(--offline); }
+  .s-unknown .status { color:var(--fg-faint); background:rgba(91,100,120,.08); }
+  .s-unknown .status .sd{ background:var(--idle); }
   .subline { margin-top:6px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--fg-faint); letter-spacing:.04em; }
   .subline .type { text-transform:uppercase; letter-spacing:.1em; } .subline .sep { opacity:.5; }
   .preview { margin-top:8px; font-size:15px; color:var(--fg-dim); display:flex; gap:8px; align-items:baseline; white-space:nowrap; overflow:hidden; }
@@ -223,6 +233,22 @@
   ];
   const flat = [];
   function esc(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  // 状态时长:since=服务端进入该状态的 Unix 秒。假设两端 NTP 同步;<1m 或 异常(<0 / >24h)→ 不显示。
+  function ageText(p){ if(!p.since) return ''; const m=Math.floor((Date.now()/1000 - p.since)/60);
+    if(m<0||m>1440) return ''; return m<1?'':(m<60?m+'m':Math.floor(m/60)+'h'); }
+  // 单一真相源:卡片状态徽章 = {cls, label, show}。loading > hooks 实时 state > 旧 status 兜底。
+  function statusFor(p){
+    if(p.loading) return {cls:'s-loading', label:'加载中', show:true};
+    const s=p.state, A=ageText(p);           // hooks 实时态(working/waiting/disconnected/needs-permission/unknown)
+    if(s==='working') return {cls:'s-working', label:(A?A+' ':'')+'working', show:true};
+    if(s==='waiting')  return {cls:'s-waiting', label:(A?A+' ':'')+'waiting', show:true};
+    if(s==='needs-permission') return {cls:'s-waiting', label:'需确认', show:true};
+    if(s==='disconnected') return {cls:'s-disc', label:'offline', show:true};
+    if(s==='unknown')  return {cls:'s-unknown', label:'', show:false};   // 不清楚 → 不显示徽章
+    // 无 state(seed/未探测):保留旧逻辑
+    if(p.type==='maestro') return {cls:'', label:'on duty', show:true};
+    const S=STATUS[p.status]; return {cls:S?S.cls:'', label:S?S.label:'', show:!!S&&p.status!=='idle'};
+  }
   function render(){
     const list=document.getElementById('list'); let html=''; let idx=0; let delay=0;
     HOSTS.forEach(h=>{
@@ -231,13 +257,10 @@
       // Maestro(type=maestro)pin 到 host 首位;其余保持原序(JS sort 稳定)
       const projects=[...h.projects].sort((a,b)=>(b.type==='maestro'?1:0)-(a.type==='maestro'?1:0));
       projects.forEach(p=>{
-        const isMaestro=p.type==='maestro';
-        // loading(首屏冷加载 manifest 中)→ 在 on-duty/状态徽章那一格显示"加载中"转圈;拉到后变真状态
-        const st = p.loading ? {cls:'s-loading',label:'加载中'} : isMaestro ? {cls:'',label:'on duty'} : STATUS[p.status];
-        // 暂时:idle 不显示状态 tag(实时状态搁置时全是"未激活",噪音)。loading/Maestro/工作中/等待 仍显示
-        const statusHtml = (p.loading || isMaestro || p.status!=='idle') ? `<span class="status"><span class="sd"></span>${st.label}</span>` : '';
+        const st = statusFor(p);
+        const statusHtml = st.show ? `<span class="status"><span class="sd"></span><span class="slabel">${esc(st.label)}</span></span>` : '';
         const pv = p.preview ? `<div class="preview"><span class="glyph">${p.preview.glyph}</span><span class="txt ${p.preview.cur?'cur':''}">${esc(p.preview.text)}</span></div>` : '';
-        html+=`<div class="card ${st.cls} t-${p.type}" data-idx="${idx}" style="animation-delay:${delay}ms">
+        html+=`<div class="card ${st.cls} t-${p.type}" data-idx="${idx}" data-host="${esc(h.name)}" data-session="${esc(p.session||p.name)}" style="animation-delay:${delay}ms">
           <span class="cursor">▸</span><span class="rail"></span>
           <span class="ticon"><i>${ICONS[p.type]}</i></span>
           <div class="cbody">
@@ -356,9 +379,39 @@
   window.updateProject=function(host,name,patch){ const i=flat.findIndex(p=>p.host===host&&p.name===name); if(i<0)return; Object.assign(flat[i],patch); const keep=focusIdx; flat.length=0; render(); setFocus(keep); };
 
   /* Kotlin StatusPoller 每轮整批替换 hosts(真实状态/preview)。空数组 → 保留 mock(headless/演示)。 */
+  // 列表"结构"指纹:host + 各 session(顺序)。只有结构变了才全量重建,否则走增量 patch。
+  let lastStructKey='';
+  function structKey(data){ return data.map(h=>h.name+':'+(h.projects||[]).map(p=>p.session||p.name).join(',')).join('|'); }
+  // 增量更新:结构不变时只改变化卡片的 .status 徽章 + class,不重建 list → 不闪、不丢焦点/滚动/动画。
+  function patchStatus(data){
+    // key 必须 host+session:不同 host 可有同名 session(如各自的 maestro),只用 session 会碰撞
+    const byKey={}; document.querySelectorAll('.card').forEach(c=>byKey[c.dataset.host+' '+c.dataset.session]=c);
+    data.forEach(h=>(h.projects||[]).forEach(p=>{
+      const card=byKey[h.name+' '+(p.session||p.name)]; if(!card) return;
+      const st=statusFor(p);
+      card.classList.remove('s-loading','s-working','s-waiting','s-disc','s-unknown','s-work','s-wait','s-idle','s-offline');
+      if(st.cls) card.classList.add(st.cls);
+      let badge=card.querySelector('.status');
+      if(st.show){
+        if(!badge){ badge=document.createElement('span'); badge.className='status';
+          badge.innerHTML='<span class="sd"></span><span class="slabel"></span>'; card.querySelector('.topline').appendChild(badge); }
+        const lab=badge.querySelector('.slabel'); if(lab.textContent!==st.label) lab.textContent=st.label;
+      } else if(badge){ badge.remove(); }
+    }));
+    syncFlat(data);
+  }
+  // 同步底层数据(HOSTS + flat 原位更新),保持 focusIdx 与 openFocused 取到最新 state/since。
+  function syncFlat(data){
+    HOSTS.splice(0,HOSTS.length,...data);
+    const inc={}; data.forEach(h=>(h.projects||[]).forEach(p=>inc[h.name+' '+(p.session||p.name)]={host:h.name,...p}));
+    flat.forEach((p,i)=>{ const n=inc[p.host+' '+(p.session||p.name)]; if(n) flat[i]=n; });
+  }
   window.setHosts=function(json){
     let data; try{ data = typeof json==='string'?JSON.parse(json):json; }catch(e){ console.warn('[deck] setHosts bad json',e); return; }
     if(!Array.isArray(data)||!data.length) return;
+    const sk=structKey(data);
+    if(sk===lastStructKey && document.querySelector('.card')){ patchStatus(data); return; }   // 结构不变 → 增量
+    lastStructKey=sk;
     HOSTS.splice(0, HOSTS.length, ...data);
     const keep=focusIdx; flat.length=0; render(); setFocus(keep);
   };

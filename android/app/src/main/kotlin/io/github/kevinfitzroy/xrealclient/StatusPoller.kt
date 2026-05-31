@@ -86,7 +86,10 @@ class StatusPoller(
 
     /** JSON 形状的唯一来源(对齐 index.html 的 setHosts/HOSTS):{name,addr,up,projects:[...]}。 */
     companion object {
-        private fun projectJson(p: ProjectConfig, s: ProjectSnapshot, loading: Boolean = false): JSONObject {
+        private fun projectJson(
+            p: ProjectConfig, s: ProjectSnapshot, loading: Boolean = false,
+            state: String? = null, since: Long = 0,   // hooks 实时状态(working/waiting/disconnected/unknown)+ 进入时刻
+        ): JSONObject {
             val o = JSONObject()
                 .put("session", p.sessionName)   // JS 端 openProject 的主键(name 可能重复)
                 .put("name", p.displayName)
@@ -94,6 +97,7 @@ class StatusPoller(
                 .put("status", s.status.jsKey())
                 .put("loading", loading)         // 首屏冷加载:状态徽章显示"加载中"转圈,manifest 拉到后变真状态
                 .put("age", "")
+            if (state != null) o.put("state", state).put("since", since)   // JS 优先用 state(+since 算时长)
             o.put(
                 "preview",
                 if (s.preview.isBlank()) JSONObject.NULL
@@ -113,14 +117,34 @@ class StatusPoller(
         }
 
         /**
-         * 无 SSH 探测的静态枚举:实时状态刷新搁置时(P2,见 ROADMAP),列表仍需把真实 host/project
-         * 推给 WebView —— 否则列表退回 mock,Enter→findProject 名字匹配不上 → 开不了真终端。
-         * 状态一律 IDLE、无 preview(诚实:没探测就别假装有状态)。
+         * 真实 host/project 静态枚举,并并入 hooks 实时状态([statusByHost])。
+         * 每 project 的 state:host 不可达([reachable] 非 null 且不含该 host)→ disconnected;
+         * 否则 status.json 有 → 用之;没有 → unknown(用户拍板:不清楚就 unknown,不抓屏兜底)。
+         * [reachable] = null 表示"未探测"(首屏 seed / poll),此时 state=null,JS 走 loading / on-duty 旧逻辑。
          */
-        fun staticListJson(hosts: List<HostConfig>, loading: Boolean = false): String {
+        fun staticListJson(
+            hosts: List<HostConfig>,
+            loading: Boolean = false,
+            statusByHost: Map<String, Map<String, SessionState>> = emptyMap(),
+            reachable: Set<String>? = null,
+        ): String {
             val arr = JSONArray()
             val idle = ProjectSnapshot(ProjectStatus.IDLE, "", "")
-            for (h in hosts) arr.put(hostJson(h, h.projects.map { it to idle }, loading))
+            for (h in hosts) {
+                val hostStatus = statusByHost[h.name] ?: emptyMap()
+                val unreachable = reachable != null && h.basePath.isNotBlank() && h.name !in reachable
+                val projects = JSONArray()
+                for (p in h.projects) {
+                    val live: SessionState? = hostStatus[p.sessionName]
+                    val state: String? = when {
+                        reachable == null -> null               // 未探测:不给 state,JS 走旧逻辑
+                        unreachable -> "disconnected"
+                        else -> live?.state ?: "unknown"
+                    }
+                    projects.put(projectJson(p, idle, loading, state, live?.since ?: 0))
+                }
+                arr.put(JSONObject().put("name", h.name).put("addr", h.addr).put("up", !unreachable).put("projects", projects))
+            }
             return arr.toString()
         }
     }

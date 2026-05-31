@@ -277,11 +277,11 @@ class MainActivity : Activity() {
         val gen = ++fetchGen
         fetchExec.execute {
             if (gen != fetchGen) return@execute
-            val updated = runCatching { fetcher.fetch(hosts) }.getOrNull() ?: return@execute
+            val result = runCatching { fetcher.fetch(hosts) }.getOrNull() ?: return@execute
             runOnUiThread {
                 if (gen != fetchGen) return@runOnUiThread
-                liveProjects = updated.associate { it.name to it.projects }
-                pushHostList(StatusPoller.staticListJson(updated))
+                liveProjects = result.hosts.associate { it.name to it.projects }
+                pushHostList(StatusPoller.staticListJson(result.hosts, statusByHost = result.status, reachable = result.reachable))
             }
         }
     }
