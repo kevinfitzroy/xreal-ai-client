@@ -162,7 +162,10 @@ cmd_new() {
     case "$type" in
       # maestro 自愈:claude 退出就自动重启(--continue 续上次对话)。保证每次进入都是 Claude Code,
       # 而不是误退后掉回 bash 没法管项目。sleep 1 防 claude 起不来时热循环。
-      maestro) startup='while :; do claude --continue 2>/dev/null || claude; sleep 1; done';;
+      # trap : INT —— 让 SIGINT 只打断当前 claude(子进程拿默认处置),不连带把整个看门狗 loop
+      # 一起 break 掉回 bash(bash 在非交互 while 里收到 SIGINT 且子命令被 INT 杀会退出循环 →
+      # maestro 死、没人能远程唤醒。TK-ALIYUN 2026-05-31 栽过:loop 被 Ctrl-C 带走掉回裸 shell)。
+      maestro) startup='trap : INT; while :; do claude --continue 2>/dev/null || claude; sleep 1; done';;
       claude)  startup="claude";;
       agent)   startup="${XREAL_AGENT_CMD:-claude}";;
       ssh)     startup="";;   # 普通 shell,不自动起程序
