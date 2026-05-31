@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import GameController
+import AVFoundation
 
 /// Phase 1 core-loop controller. Mirrors Android's MainActivity:
 ///   hosts.json → Agent Deck list → openProject → SSH(ed25519) PTY terminal → back.
@@ -45,6 +46,12 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private var kbDisconnectObs: NSObjectProtocol?
     // Phase 3: app-foreground observer → refetch status when the user returns (Android onStart).
     private var foregroundObs: NSObjectProtocol?
+
+    // 语音输入(Android VoiceDaemon 的对应):状态机 + ASR + 注入。index.html 的语音键经
+    // Bridge.voiceDown/voiceUp 进来 → voice.voiceDown/voiceUp;overlay 走注入的 window.showOverlay。
+    // 实例创建后不重建(inject 闭包按 open 热切,等价 Android @Volatile channel)。
+    private var voice: VoiceController!
+    private var micRequested = false
 
     // MARK: - Bridge shim (injected at document start)
     // index.html calls window.Bridge.{onInput,onResize,openProject,goHome,vkeyEnter,...};
@@ -111,6 +118,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         webView.backgroundColor = .black
         view.addSubview(webView)
 
+        setupVoice()
+
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
 
@@ -173,6 +182,40 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         }
         if args.contains("-forceLandscape") {
             requestOrientation(.landscapeRight)
+        }
+        // Voice self-verify (no mic / no creds needed): drive the REAL bridge → VoiceController →
+        // overlay chain with MockAsr. Fires Bridge.voiceDown('zh') then voiceUp after a beat, walking
+        // 聆听中… → "ls -la" → 已识别 (PREVIEW) so a screenshot proves the injected overlay + state
+        // machine. Production launches pass no such arg → no effect.
+        if args.contains("-voiceMicTest") {
+            // Exercise the REAL recording path (AudioCapture via AVAudioEngine on the Mac mic): open a
+            // project, attach the recorder (mic pre-granted via simctl), then voiceDown to start the tap.
+            // Confirms tap fires + 16k/mono/Int16 conversion (look for [AudioCapture] tap# / started: logs).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.onOpenProject(host: "demo", session: "demo", name: "mic-test", type: "claude")
+                self?.voice.recorder = AudioCapture()   // mic pre-granted → attach directly
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    self?.voice.voiceDown(lang: "zh")   // starts AudioCapture.start → tap → ASR send
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                        self?.voice.voiceUp(lang: "zh")
+                    }
+                }
+            }
+        }
+        if args.contains("-voiceDemo") {
+            // Drive the voice chain in the REALISTIC view (terminal, where voice runs): open a mock
+            // project first (the [no SSH config] branch still flips to #view-term), then voiceDown/Up.
+            // Skip ensureMicThenRecord so no permission modal blocks the screenshot; MockAsr ignores
+            // audio. Walks 聆听中… → "ls -la" → 已识别 PREVIEW so the overlay + state machine show.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.onOpenProject(host: "demo", session: "demo", name: "voice-demo", type: "claude")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self?.voice.voiceDown(lang: "zh")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        self?.voice.voiceUp(lang: "zh")   // → MockAsr final → 已识别 PREVIEW
+                    }
+                }
+            }
         }
         // Verify the "Open in" import path without an AirDrop: -importConfigPath <file> runs the
         // exact same HostStore.importConfig + reloadHostsAfterImport an open: would (the sim can
@@ -334,11 +377,18 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         case "goHome":
             if view_ == .terminal { backToList() }
         case "vkeyEnter":
-            ssh?.send(Data([13]))   // CR — the shim routes Enter here, native must write it
+            // PREVIEW: first Enter injects the recognized text (no CR —误识安全网, SPEC §4);
+            // otherwise normal CR. Mirrors Android onVkeyEnter = if(!voice.onEnter()) writeChannelByte(13).
+            if !voice.onEnter() { ssh?.send(Data([13])) }   // CR
         case "vkeyEsc":
-            ssh?.send(Data([27]))   // ESC
-        case "voiceDown", "voiceUp":
-            break   // voice is out of Phase 1
+            if !voice.onEsc() { ssh?.send(Data([27])) }     // ESC (cancels a voice session if active)
+        case "voiceDown":
+            let lang = (a.first as? String) ?? "zh"
+            ensureMicThenRecord()
+            voice.voiceDown(lang: lang)
+        case "voiceUp":
+            let lang = (a.first as? String) ?? "zh"
+            voice.voiceUp(lang: lang)
         default:
             NSLog("[VC] bridge msg \(m) \(a)")
         }
@@ -354,9 +404,12 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         guard let h = hosts.first(where: { $0.name == host }),
               let p = (h.projects.first(where: { $0.session == session })) else {
             // mock / unconfigured — nothing to connect to; stay on the (empty) terminal.
+            applyVoiceContext(nil)   // no project context → BASE words, marker off
             writeToTerm("\r\n[no SSH config for \(session)]\r\n")
             return
         }
+        // Voice context for this project: BASE + its hotwords, 🎤 marker on for AI-agent types.
+        applyVoiceContext(p)
         // Multi-hop (SPEC §5): if this host has a `via`, resolve the jump host by name from
         // the deck (mirrors Android's byName lookup) so the PTY tunnels through it. Unknown
         // via name → nil → direct (degrade, don't fail the open).
@@ -431,6 +484,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] backToList")
         openSeq += 1     // in-flight connections are now obsolete
         sessionGen += 1  // late output chunks are now obsolete
+        voice.shutdown() // cancel any in-flight voice session + hide overlay before leaving
+        applyVoiceContext(nil)
         view_ = .list
         let old = ssh
         ssh = nil
@@ -452,12 +507,19 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] reloadHostsAfterImport: mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         hosts = HostStore.loadHosts()
         statusByHost = [:]; reachable = nil; probedHosts = []
+        // An asr-bearing import just delivered real creds → swap MockAsr → VolcAsr now (the next
+        // voice press uses live ASR without a relaunch). Mirrors Android re-reading loadAsr.
+        if result.asr, let creds = AsrCreds.load() {
+            voice.asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
+            NSLog("[VC] ASR creds imported → VolcAsr(resource=\(creds.resourceId))")
+        }
         guard pageReady else { return }   // didFinish will seed+refresh once loaded
         // If a file is opened while a PTY is live (background → "Open in" → foreground in terminal),
         // tear the session down before switching to the list — otherwise onOutput keeps painting a
         // hidden xterm and the tmux attach leaks (bump openSeq/sessionGen so late chunks no-op).
         if view_ == .terminal {
             openSeq += 1; sessionGen += 1
+            voice.shutdown(); applyVoiceContext(nil)   // cancel in-flight voice + hide overlay
             let old = ssh; ssh = nil; old?.close()
         }
         if view_ != .list { view_ = .list; eval("window.showList()") }
@@ -517,6 +579,63 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             // emits onResize; syncSize also re-pushes to the live PTY. Belt-and-braces.
             self?.eval("window.syncSize && window.syncSize()")
         }
+    }
+
+    // MARK: - Voice input (Android VoiceDaemon)
+    /// Build the VoiceController once. ASR impl = VolcAsr if asr.json creds present, else MockAsr
+    /// (mirrors Android SettingsStore.loadAsr → VolcEngineAsr/MockAsr). Overlay closures eval the
+    /// injected window.showOverlay/hideOverlay. Mic recorder is attached lazily after permission.
+    private func setupVoice() {
+        let asr: Asr
+        if let creds = AsrCreds.load() {
+            asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
+            NSLog("[VC] ASR = VolcAsr(resource=\(creds.resourceId))")
+        } else {
+            asr = MockAsr()
+            NSLog("[VC] ASR = MockAsr (no asr.json creds)")
+        }
+        voice = VoiceController(
+            asr: asr,
+            showOverlay: { [weak self] status, text in
+                guard let self else { return }
+                self.eval("window.showOverlay(\(self.jsString(status)), \(self.jsString(text)))")
+            },
+            hideOverlay: { [weak self] in self?.eval("window.hideOverlay()") }
+        )
+        // inject = write into the live PTY (single-writer SSHSession.send; SPEC §4). nil when no PTY.
+        voice.inject = { [weak self] data in self?.ssh?.send(data) }
+    }
+
+    /// First voice-key press requests mic permission (Android requests RECORD_AUDIO on first F1).
+    /// Granted → attach the AVAudioEngine recorder so the *next* press records. The triggering
+    /// press still runs (ASR opens, just no audio that first time) — matches Android's flow.
+    private func ensureMicThenRecord() {
+        guard !micRequested else { return }
+        micRequested = true
+        AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if granted {
+                    self.voice.recorder = AudioCapture()
+                    NSLog("[VC] mic permission granted → recorder attached")
+                } else {
+                    NSLog("[VC] mic permission DENIED → voice will produce no audio")
+                }
+            }
+        }
+    }
+
+    /// Apply the current project's voice context (hotwords + 🎤 marker), mirroring Android's
+    /// applyProjectHotwords. nil project (mock / list) → BASE words, marker off.
+    private func applyVoiceContext(_ project: ProjectConfig?) {
+        if let project {
+            voice.hotwords = Hotwords.merge(project.hotwords)
+            voice.voiceMarkerEnabled = project.type.isAiAgent
+        } else {
+            voice.hotwords = Hotwords.base
+            voice.voiceMarkerEnabled = false
+        }
+        NSLog("[VC] voice ctx: hotwords=\(voice.hotwords.count) marker=\(voice.voiceMarkerEnabled) project=\(project?.session ?? "none")")
     }
 
     // MARK: - helpers
