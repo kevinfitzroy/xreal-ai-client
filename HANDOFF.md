@@ -1,20 +1,29 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-05-29(优先级收敛:实时状态刷新搁置为 P2,新增 ROADMAP.md;真 host + 打字直通;终端中文/powerline 修复)
+> **最近更新**:2026-05-31(多跳 SSH + 持久日志/崩溃捕获 + tmux 翻页 + Agent 状态展示(hooks 事件驱动);早已过 Phase 0,Beam Pro X4100 真机 + 双 host 在用)
 
 ---
 
-## 0.0 优先级收敛(2026-05-29)—— 先读这条
+## 0.0 当前状态(2026-05-31)—— 先读这条
 
-新增 **[`ROADMAP.md`](ROADMAP.md)**:按 P0 核心 / P1 可用性 / P2 体验增强分级跟踪需求。
+项目**早已过 Phase 0**。核心端到端闭环 + Agent 状态展示已在 **Beam Pro X4100 真机**跑通,两台真实 host 在日常用:
 
-**用户决策**:把**实时状态刷新**(列表上 agent/shell 的 WORKING/WAITING/preview 探测)**搁置为 P2 体验增强**——它不影响整体流程打通,等核心完善后再接回。
+- **TK-ALIYUN**(海外 Aliyun,直连)+ **OPS**(AWS 内网,只 VPN 可达,`via = "TK-ALIYUN"` 经 TK 多跳)。各跑一个 Maestro。
+- **OpenVPN 从手机搬到 TK**:手机不再挂 VPN,OPS 经 TK 的 OpenVPN + ProxyJump 端到端认证可达(见下方多跳 SSH 条)。
 
-- **代码已搁置但保留**:`FleetFeatures.LIVE_STATUS = false` 关掉 `StatusPoller` 轮询。接回只需置 true(接回清单见 ROADMAP §4)。
-- **核心流程未受影响**:列表现在用 `StatusPoller.staticListJson(hosts)` **一次性静态枚举**真实 host/project(全 IDLE、无 preview),`onPageFinished` 推。Enter→开真终端、Mac dev rig 照常工作。
-- **下个 cold-start 注意**:当前列表"没有实时状态"是**有意为之**,不是 bug,别去"修"。真实状态探测的 `StatusPoller`/`AgentStatusDetector`/校准测试都还在,只是开关关着。
-- "舰队导航"语义已在 ROADMAP 拆清:**方向键列表导航 = P0 核心(不可删)**;舰队聚合 pills/状态徽章 = P2(随状态刷新一起搁置)。
+**本轮(2026-05-31)落地**(均真机验证,详见 §1):
+- **多跳 SSH(ProxyJump)**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),OPS via TK 端到端认证。
+- **Agent 状态展示**:卡片显示 working / waiting / disconnected / unknown + 时长。**走 Claude Code hooks 事件驱动,非抓屏**:hook 写 `<base>/.xreal/status.json`,app 进列表/back/onStart 各 `cat` 一次(`ManifestFetcher` 顺手拉),`xreal-project.sh` 自动部署 hooks。增量渲染防闪烁。
+- **持久化日志 + 崩溃捕获**:`AppLog` 写外存(adb pull 不需 run-as)+ `XrealApp` 全局未捕获异常处理器。
+- **tmux 半页翻页**:Shift+↑/↓ → root 表进 copy-mode(不与 Claude Code 冲突)+ history-limit 50000(`-f conf` 注入,服务端零增量)。
+- **虚拟键盘动态显隐**(8BitDo 插拔实时切)+ **列表首屏加载态**(状态徽章位冷加载转圈)。
+
+**状态展示的 hooks vs 老抓屏路径(下个 cold-start 必看,别搞混)**:
+- 现在的实时状态来自 **hooks → status.json**(事件驱动)。`status.json` schema = `{session, state, since}`,**只有 state + 时长,没有 preview(最近命令)文本**。
+- 老的 `StatusPoller`/`AgentStatusDetector` 抓屏轮询(`tmux capture-pane` 解析)**已被取代、仍 dormant**:`FleetFeatures.LIVE_STATUS` 仍是 `false`,代码留着但不是状态来源。
+- **⚠️ 别再让下个 session 去 `LIVE_STATUS=true`**——那是已死路径,翻它没用。状态由 hooks 提供。ROADMAP §4 老的"接回清单"已据此标注作废。
+- 仍**未做**:列表卡片的 **preview 文本(最近命令预览)**——它需要抓屏,随老路径一起搁置(见 ROADMAP P2.2)。
 
 ---
 
@@ -22,7 +31,7 @@
 
 产品从"单 SSH 终端"重塑成 **AI agent 集群指挥台 "Agent Deck"**(详见 memory `product-vision`)。主入口 = WebView SPA 列表页 ⇄ 终端页。已在 **Beam Pro X4100 真机**全部验证通过:
 
-- **Agent Deck 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**mock 数据**,真状态探测(tmux capture-pane)待接。
+- **Agent Deck 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**(2026-05-31 更新)四态色现由 hooks 状态(status.json)驱动,已落地;最近命令 preview 仍待抓屏路径(见 §0.0)。**
 - **横屏锁定 + 响应式**(`auto-fill minmax(360px)` 双/三列,适配眼镜 16:10)。
 - **彻底禁用系统 IME**(`FLAG_ALT_FOCUSABLE_IM`)+ **自绘虚拟键盘 v2**(13 键 2 行,只在终端显示;列表卡片可点导航)。
 - **SPA 导航**:DPAD_CENTER 进项目,⌂返回/硬件BACK 回列表(键盘专用:已去掉卡片点击 + 终端 ‹返回 触摸按钮)。
@@ -115,7 +124,9 @@ android/app/src/main/
 
 ---
 
-## 4. Emulator 启不起来 — 已知症结
+## 4. (历史 · 已不相关)Emulator 启不起来 — 已知症结
+
+> **2026-05-31 注**:早期 Phase 0 时本机内存压力起不了 emulator 的症结。**现在主战场是 Beam Pro X4100 真机**(adb 直连),emulator 不再是验证路径。这段留作历史,日常调试看 CLAUDE.md §10 + `scripts/setup-mac-host.sh`。
 
 Mac M1 Pro / macOS 26.3.1 / 16 GB RAM,但 `vm_stat` 显示 **unused 仅 328 MB**(15 GB 全被占,5.9 GB 已进 memory compressor)。Emulator 启动需要 5 GB,QEMU CPU 线程拿不到页面卡死 exit 139。三次尝试:
 1. `-gpu auto` — 段错误
@@ -126,7 +137,9 @@ Mac M1 Pro / macOS 26.3.1 / 16 GB RAM,但 `vm_stat` 显示 **unused 仅 328 MB**
 
 ---
 
-## 5. user 还没做的"准备工作"(看任务推进顺序)
+## 5. (历史)早期 Phase 0 的"准备工作"清单
+
+> **2026-05-31 注**:下表是 Phase 0 时的待办,**绝大部分早已完成**:真机(Beam Pro X4100)在用、真 SSH 双 host 在用、8BitDo F1/F2 已实测、真豆包 ASR 已接(P1.2 ✅)。仍未启用的只有真机 emulator(已不走这条路)。当前真实进度看 §0.0。
 
 | 任务 | 触发条件 | 阻塞什么 |
 |---|---|---|
@@ -140,33 +153,30 @@ Mac M1 Pro / macOS 26.3.1 / 16 GB RAM,但 `vm_stat` 显示 **unused 仅 328 MB**
 
 ---
 
-## 6. 新 session 的第一步(按 user 状态分流)
+## 6. 新 session 的第一步
 
-### 情形 A:user 说"跑 emulator 看看"
-1. 跑 vm_stat 看 PhysMem 的 unused — < 1 GB 直接拒(让 user 先关 app)
-2. ≥ 5 GB 才尝试 `$HOME/Library/Android/sdk/emulator/emulator -avd Pixel_8a -no-snapshot -gpu host &`
-3. boot_completed=1 后 `./gradlew installDebug` + `adb shell am start io.github.kevinfitzroy.xrealclient/.MainActivity`
-4. 首次跑会进 ConfigActivity — user 录入 SSH host/user/key/startup cmd 即可
+主战场是 **Beam Pro X4100 真机**(adb 直连),不走 emulator。日常构建/装机/取证命令统一在 CLAUDE.md §10。
 
-### 情形 B:user 说"接真 SSH"
-1. 先要 user 在 Mac:`System Settings → Sharing → Remote Login` ON + `brew install abduco` + 生成 ed25519 key + 加 authorized_keys
-2. 复制私钥 PEM 内容(`cat ~/.ssh/xreal_phase0`),user 录入 ConfigActivity 的 key 框
-3. host 填本机 IP(`ipconfig getifaddr en0`),user 填当前 Mac 用户(`whoami`)
-4. 保存 → MainActivity 自动 connect,失败会 fallback LocalEcho + Toast
+### 跑一遍真机(本机当测试 host)
+`./scripts/setup-mac-host.sh`(幂等:起 tmux+claude、adb reverse/forward、push key+hosts.json、重启 app)→ 列表出现真 host → 开 project → 真 SSH 终端。电脑打字直通:`python3 scripts/term-relay.py`。详见 CLAUDE.md §10.6。
 
-### 情形 C:user 说"接真豆包 ASR"
-1. user 给 Volcengine appid / token / cluster id(可选)
-2. ConfigActivity 的 provider 填 `volc`,填三个 ASR 字段保存
-3. 注意:`VolcEngineAsr.endpoint` / `parseResponse` 可能要按 user console 给的具体 API spec 微调 — 测一次看 logcat warn 就知道
+### host 接入 = 代客安装(Valet),无设置 UI
+真 host(TK-ALIYUN / OPS)经 Valet agent `adb push` key+config 到 staging,app 启动 `SettingsStore.importStagingIfPresent` 导入私有存储。**刻意不做 host 录入 UI**(老的 `ConfigActivity` 已被取代)。引导见 `docs/agent-setup-guide.md`。project 级清单由各 host 的 Maestro 写 manifest(`<base>/.xreal/projects.json`),app `cat` 拉取。
 
-### 情形 D:user 说"Phase 1 物理设备到了"
-进 docs/stage-a-experiments.md 三个实验(A.1 F13/F14、A.2 sshj BC、A.3 WebView 60fps)。
+### 状态展示部署
+hooks 由 `docs/xreal-project.sh` 自动部署(写 `<base>/.xreal/status.json`)。新 host 上的 Maestro 起 project 时会带上,app 进列表即读。
+
+### 真机取证(出问题时)
+持久日志在外存,`adb pull` 取(`AppLog`,不需 run-as)。崩溃也落盘(`XrealApp` 全局 handler)。具体路径见 CLAUDE.md §10 日志取证。
+
+### 物理设备实验(若回头补)
+docs/stage-a-experiments.md:A.1 8BitDo(已实测改用 F1/F2)、A.2 sshj BC(已随 §1 R 修复)、A.3 WebView 60fps。
 
 ---
 
 ## 7. 关键注意事项(避免新 session 踩坑)
 
-- **不要因为 emulator 起不来就质疑代码** — 编译通过 = 90% 正确。runtime 验证缺位是环境问题
+- **真机优先** — 主战场是 Beam Pro X4100(adb 直连),emulator 已不是验证路径(早期内存压力起不来,见 §4 历史)
 - **不要去 push `clawzhang89-bot/term-on-demand`** — 那是上游设计文档仓库
 - **不要重新讨论架构** — 经过 5+ 轮 review;CLAUDE.md §5 的 7 条都有理由
 - **包名 `io.github.kevinfitzroy.xrealclient`** — 个人项目,不是 zklink(zklink 是 user 邮箱域名,跟项目无关)
@@ -199,8 +209,8 @@ Mac M1 Pro / macOS 26.3.1 / 16 GB RAM,但 `vm_stat` 显示 **unused 仅 328 MB**
 
 ## 9. 这份 HANDOFF.md 何时更新
 
-- emulator 跑起来 → 更新 §4 / §1
-- 真 SSH 接通 → 更新 §1 / §5
-- 真 ASR 接通 → 同上
-- Phase 1 开始(物理设备) → 重写 §1 + §5
+- **每次一组功能落地(真机验证过)** → 在 §0.0 顶部加本轮要点 + 更新 header「最近更新」日期,把上一轮要点下沉成历史
+- 新 host / 新 host 接入方式变化 → 更新 §0.0 host 列表 + §6
+- ROADMAP 某条状态翻转(⬜→✅ 或搁置→实现) → 同步 ROADMAP **再**在 §0.0 提一句
 - 任何 fallback 路径触发(如 sshj → sshlib swap) → 在 §3 表里记
+- 老段落只要还描述"当前世界"且已过时 → 打 `(历史)` 标,别留着误导下个 cold-start

@@ -6,7 +6,7 @@
 
 **一套戴在脸上的远程开发终端** —— 用 AR 眼镜 + 口袋安卓主机 + 语音,在通勤路上 / 咖啡馆 / 公园里指挥一支跑在云端的 Claude Code「agent 舰队」。不用笔记本,不用鼠标,不用触摸。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-94e0b2.svg)](LICENSE) ![Platform](https://img.shields.io/badge/platform-Android%2014-3ddc84.svg) ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20xterm.js-7f52ff.svg) ![Status](https://img.shields.io/badge/status-Phase%200%20prototype-1f6feb.svg) ![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-d97757.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-94e0b2.svg)](LICENSE) ![Platform](https://img.shields.io/badge/platform-Android%2014-3ddc84.svg) ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20xterm.js-7f52ff.svg) ![Status](https://img.shields.io/badge/status-live%20on%20Beam%20Pro-1f6feb.svg) ![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-d97757.svg)
 
 </div>
 
@@ -26,7 +26,7 @@
 
 </div>
 
-> **现状**:Phase 0 完成,核心流程已在 Beam Pro 真机打通 —— 项目列表 → 开 project → 真 SSH 终端(中英文 + powerline 完整显示)→ 键盘/语音输入 → 返回。「代客安装 (Valet Setup)」+ Maestro 编排 + 列表 live-fetch 均已落地、真机验证。详见 [`ROADMAP.md`](ROADMAP.md)。这是一个活跃开发中的原型,不是成品。
+> **现状**:核心流程已在 Beam Pro 真机打通 —— 项目列表 → 开 project → 真 SSH 终端(中英文 + powerline 完整显示)→ 键盘/语音输入 → 返回。「代客安装 (Valet Setup)」+ Maestro 编排 + 列表 live-fetch 均已落地、真机验证。近期还接入了**多跳 SSH(ProxyJump,经跳板机连内网 host)、Agent 实时状态展示(事件驱动,见下)、终端半页翻页、持久化日志 + 崩溃捕获**。详见 [`ROADMAP.md`](ROADMAP.md)。这是一个活跃开发中的原型,不是成品。
 
 ---
 
@@ -111,7 +111,7 @@
 | **XREAL One Pro**(AR 眼镜) | 把一块桌面级虚拟大屏投到眼前(横屏、宽幅,接近 MacBook 16:10 的可视区),让你不用盯着手机小屏 |
 | **Beam Pro**(口袋安卓主机,X4100 / Android 14 / Snapdragon) | 驱动眼镜显示 + 跑这个 App;自带方向键/按键 |
 | **8BitDo Micro**(~6 键蓝牙手柄) | 主输入设备(方向键 + `Enter` + 语音键 + 返回)—— 完整键位见上方「操作」章节 |
-| **海外 Ubuntu 服务器**(你自己的) | 跑 tmux + Claude Code,被 app 经原生 SSH(22 端口)连入 |
+| **你自己的服务器**(可多台) | 跑 tmux + Claude Code,被 app 经原生 SSH(22 端口)连入;内网 host 可经跳板机多跳(ProxyJump)到达 |
 
 App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"来设计。输入只走物理键 + 语音(键位见上方「操作」章节),系统软键盘被刻意禁用(会挡半屏)。
 
@@ -168,7 +168,7 @@ App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"
 Beam Pro 上的单个 APK
 ├─ WebView(xterm.js + WebGL)          ← 现代 terminal UI,大字号/高对比/中英+powerline
 │    ↕ Base64 over JSBridge
-├─ SSH 模块(sshj)— TCP→SSH→PTY        ← 直连云端,无中间层
+├─ SSH 模块(sshj)— TCP→SSH→PTY        ← 直连云端;可经跳板机多跳(ProxyJump)连内网 host
 ├─ Voice Daemon(录音 → ASR → 直写 SSH outputStream)
 └─ 列表 ⇄ 终端 的 SPA;列表从 host 的 manifest live-fetch
         │ Raw SSH (22)

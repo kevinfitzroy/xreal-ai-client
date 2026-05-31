@@ -14,14 +14,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 你是这个项目的**实施 agent**。
 
-**任务**:实现一个 Android App,把 SSH client + 终端 UI + 语音输入全部塞进同一个进程,跑在 XREAL AR 眼镜 + Beam Pro 上,让用户通过物理按键 + 语音操作远程服务器上的 Claude Code。
+**任务**:实现一个 Android App,把 SSH client + 终端 UI + 语音输入全部塞进同一个进程,跑在 XREAL AR 眼镜 + Beam Pro 上,让用户通过物理按键 + 语音操作远程服务器上的 Claude Code(及 Maestro 编排的 agent 集群)。
 
-**当前 phase**:**Phase 0 — Mac 上脚手架 + Android Emulator 验证**(不需要任何 Android 物理设备,你可以独立完成 80% 工作)。
+**当前状态**:**已在真机 Beam Pro X4100(Android 14)上部署运行,核心闭环全打通**——项目列表 → 开 project → 真 SSH 终端 → 物理键盘/语音 → 返回列表。两台真实 host 在用:**TK-ALIYUN**(海外,user=xreal)、**OPS**(AWS 内网,user=ubuntu,经 TK 多跳 ProxyJump 到达),各跑 Maestro 编排。
 
-**不在 Phase 0 范围**:
-- 8BitDo 物理按键真机测试(必须用户在场 + 物理设备,留给 Phase 1)
-- 麦克风真机录音端到端(emulator 麦克风太弱,留给 Phase 1)
-- Beam Pro 特定的 NebulaOS 后台 / GPU / AR 显示验证(留给 Phase 2)
+最近一轮(2026-05)已落地:多跳 SSH(`via` + SshJump,手机不挂 VPN)、持久化日志 + 崩溃捕获(AppLog/XrealApp)、tmux 半页翻页(Shift+↑/↓)、虚拟键盘动态显隐、列表冷加载态、Agent 状态展示(working/waiting/disconnected/unknown,走 Claude Code hooks,见 §6)。
+
+**你的任务是在这套已运行的真机系统上继续迭代**(改 bug、加能力),不是从零搭脚手架。
+
+**你做不了、需要用户协助的事**(无物理设备无法验):8BitDo 物理按键真机端到端、真麦克风录音、Beam Pro 特定的 NebulaOS 后台/GPU/AR 显示行为。
 
 ---
 
@@ -53,39 +54,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │  SSH 模块(sshj 0.39+) — TCP → SSH → PTY                │
 │       ↑                                                  │
 │  Voice Daemon(Foreground Service)                       │
-│  ├─ HID 监听 F13/F14 (8BitDo 物理键)                     │
+│  ├─ dispatchKeyEvent 路由 F1/F2 (8BitDo 物理键)          │
 │  ├─ AudioRecord → Opus → 豆包 ASR                       │
 │  ├─ WebView.evaluateJavascript("showOverlay(...)")       │
 │  └─ Enter 确认 → sshSession.outputStream.write(text)    │
 │                                                          │
 └────────────────┬─────────────────────────────────────────┘
-                 │ Raw SSH (port 22)
+                 │ Raw SSH (port 22)，内网 host 经跳板机 ProxyJump
                  ▼
-       海外 Ubuntu 服务器
-       └─ tmux: dev session → claude code --resume
-       (无 ttyd / 无 nginx / 无 Voice Gateway —— 跟标准 SSH 接入完全一样)
+       多台 host(TK-ALIYUN 直连 / OPS 经 TK 多跳)
+       └─ tmux: 每 host 一个 Maestro + N 个 project session
+          claude / agent / ssh,Maestro 编排;hooks 写 .xreal/status.json
+       (无 ttyd / 无 nginx / 无 Voice Gateway;唯一服务端增量见 §5)
 ```
 
 详细版含可编译代码骨架:[`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
-## 4. Phase 0 完成清单(你的具体任务)
+## 4. 已建成的系统组件(代码地图)
 
-按顺序做。每完成一项就向用户汇报,不要批量打包。
+脚手架 + 核心闭环早已完成,真机在跑。下面是主要模块,改东西前先定位:
 
-- [ ] **0.1** 在 `/Users/foxer/claude/xreal-ai-client/android/` 下 init Android Studio 项目(Kotlin,minSdk 34,targetSdk 35)
-- [ ] **0.2** 加 sshj 0.39+ 依赖,写 `SshConnection` 类(connect / authPublickey / allocatePTY / startShell / read / write / resize / disconnect)
-- [ ] **0.3** Mac 自己开 sshd(`System Preferences → Sharing → Remote Login`),用 emulator 跑 SSH 连本机,验证基本命令(`ls / vim / Ctrl+C`)。**SSH session 驻留方案默认用 abduco**(不要硬编码 tmux,见 [`docs/session-persistence-options.md`](docs/session-persistence-options.md))— Phase 0 测试时 Mac 上 `brew install abduco`,启动命令默认 `abduco -A dev bash`,留接口允许用户切到 tmux/screen
-- [ ] **0.4** 写 `assets/terminal.html`(xterm.js + WebGL addon + 暗色主题 + overlay 元素),WebView 加载
-- [ ] **0.5** 写 `TerminalBridge`(Kotlin `@JavascriptInterface` + Base64 双向桥接),把 SSH inputStream 推 WebView,把 WebView onData 写 SSH outputStream
-- [ ] **0.6** 写 `VoiceDaemon` 状态机骨架(纯逻辑,先不接豆包 — mock 一个 "fake ASR 返回固定文本",验证 overlay show/hide + Enter 写 SSH 路径)
-- [ ] **0.7** `dispatchKeyEvent` 路由:`KEYCODE_F13`/`KEYCODE_F14`(raw int 326/327)→ VoiceDaemon;Enter/Esc 按 overlay 状态决定
-- [ ] **0.8** APK 编译产出,在 emulator 上能演示:WebView 里按键 → 字符进 SSH → 输出回流 + emulator 模拟 F13 触发 mock 录音 → overlay 显示 → Enter 注入文本
+- **SSH 层**:`SshConnection`(connect/auth/PTY/shell/resize/disconnect)、`SshJump`(多跳 ProxyJump,sshj 本地端口转发)、`PtyChannel`、`TofuKnownHosts`(TOFU known_hosts)
+- **终端 UI**:`assets/terminal.html`(xterm.js + WebGL + unicode11 addon + overlay div)、`TerminalBridge`(`@JavascriptInterface` + Base64 双向桥)、`LocalEchoChannel`
+- **语音**:`VoiceDaemon`(状态机)、`AudioRecorder`、`VolcEngineAsr` / `VolcFrame`(豆包流式 ASR)、`Hotwords`(项目级热词)
+- **列表 / 编排**:`MainActivity`(项目列表 + 终端 + 物理键路由 + tmux conf 注入)、`ManifestFetcher` / `HostClient`(读 host manifest)、`AgentModels`(HostConfig 带 `via`)、`StatusPoller` + `AgentModels`(Agent 状态:hooks→status.json 一次性 cat)
+- **基础设施**:`XrealApp`(全局未捕获异常 + 生命周期/网络/display 监控)、`AppLog`(外存文件日志,`adb pull`)、`SettingsStore` / `ConfigActivity` / `Crypto`、`DebugInputServer`(debug 期电脑直通终端)
+- **搁置**:`AgentStatusDetector`(抓屏检测)+ `FleetFeatures.LIVE_STATUS`(实时刷新,P2,默认关)——状态展示现在走 hooks,**不是**这套
 
-Phase 0 验证通过的标准:**用 Android emulator(Pixel 7 Pro API 34)就能演示整套架构的"非硬件依赖"部分都跑通**。
-
-Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告,**等用户决定何时开始 Phase 1**(连真机做 8BitDo / 真麦克风测试)。
+服务端侧:`docs/xreal-project.sh`(Maestro 建/进 project + 自动部署状态 hooks)、`docs/orchestrator-CLAUDE.md`(host 上 Maestro 的指南)、`docs/agent-setup-guide.md`(host 接入步骤)。
 
 ---
 
@@ -95,7 +93,7 @@ Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告
 
 | 约束 | 解释 |
 |---|---|
-| **零服务端增量** | 不要引入 ttyd / nginx / 任何云端 Voice Gateway / tmux-send-keys daemon。服务端只跑用户已有的 tmux + Claude Code |
+| **零服务端增量(一个例外)** | 不要引入 ttyd / nginx / 任何云端 Voice Gateway / tmux-send-keys daemon。服务端只跑用户已有的 tmux + Claude Code。**唯一用户显式授权的例外**:每个 host 的 maestro 目录(`.xreal/`)放 `agent-status.sh` + Claude Code hooks,事件驱动写 `.xreal/status.json` 供 app cat(状态展示用,非抓屏)。除此之外仍守零增量 |
 | **单 App 闭环** | 不要做"主 app + 辅助 service"双进程架构。所有逻辑在一个 APK 内 |
 | **Overlay = WebView 内 HTML** | 不要用 `SYSTEM_ALERT_WINDOW` 权限。Voice 预览 overlay 就是 WebView 里的 `<div>`,通过 JSBridge show/hide |
 | **Voice → SSH 直写** | Voice Daemon 拿到 ASR 文本,**直接写 ssh.outputStream**,字符走 SSH 到远端 shell,shell echo 回送,xterm.js 渲染。Voice 路径不需要知道 xterm.js 存在 |
@@ -106,17 +104,19 @@ Phase 0 完成后产出 git commit(本地)+ 给用户一个"Phase 0 done" 报告
 
 ---
 
-## 6. Stage A 三个实验(物理设备到位后的验证项)
+## 6. Stage A 三个实验(全部已在真机闭环)
 
-Phase 0 写的代码,等用户拿到物理设备后,跑这 3 个 ~1 周的实验决定 80% 架构风险:
+三个 80% 架构风险实验,真机部署后都已过:
 
-- **A.1** ✅ 已实测(2026-05-29):8BitDo F13/F14 在 Beam Pro **到不了 app**(`Generic.kl` 注释掉 F13–F24)→ 改用 **F1/F2**;真机端到端验证 F1 hold-to-talk 触发豆包 ASR
-- **A.2**(2 天)sshj 0.39+ 在 Beam Pro 真机上 BouncyCastle 加载是否通
-- **A.3**(2 天)WebView + xterm.js + JSBridge 在 Snapdragon 7 Gen 2 GPU 上 60fps 大输出是否流畅
+- **A.1** ✅(2026-05-29):8BitDo F13/F14 在 Beam Pro **到不了 app**(`Generic.kl` 注释掉 F13–F24)→ 改用 **F1/F2**;真机端到端验证 F1 hold-to-talk 触发豆包 ASR
+- **A.2** ✅:sshj + BouncyCastle 在 Beam Pro 真机加载通,SSH(含多跳 ProxyJump)端到端在用
+- **A.3** ✅:WebView + xterm.js + JSBridge 真机上跑得动,大输出可用(未做正式 fps 基准,留接口可切 Base64↔localhost WebSocket)
 
-每个实验有 named fallback。**完整 pass/fail 判据 + fallback 路径见 [`docs/stage-a-experiments.md`](docs/stage-a-experiments.md)**。
+fallback 接口(sshj↔sshlib、Base64↔WS)仍预留。完整判据见 [`docs/stage-a-experiments.md`](docs/stage-a-experiments.md)。
 
-你 Phase 0 写代码时,把这 3 个实验的 fallback 路径都预留接口(比如 SSH 模块要能切换 sshj↔sshlib,JSBridge 要能切换 Base64↔localhost WebSocket)。
+### Agent 状态展示(当前机制)
+
+列表卡片显示 working / waiting / disconnected / unknown + 时长。检测走 **Claude Code hooks(事件驱动,非抓屏)**:Maestro 用 `xreal-project.sh` 建 claude/agent/maestro 类 project 时自动部署 `agent-status.sh` + hooks,事件触发写 `<base>/.xreal/status.json`;app 在列表加载时**一次性 cat** 该文件(`StatusPoller`)。**实时刷新(轮询/抓屏)是搁置的 P2**(`FleetFeatures.LIVE_STATUS=false` + `AgentStatusDetector`),当前不走那条。
 
 ---
 
@@ -146,38 +146,23 @@ Phase 0 写的代码,等用户拿到物理设备后,跑这 3 个 ~1 周的实验
 - `git config user.email`: `kevinfitzroy715@gmail.com`
 - 设置:在仓库内 `git config user.name "Evan" && git config user.email "kevinfitzroy715@gmail.com"`(局部,不动 global)
 
-但 **Phase 0 默认全本地,不要主动 push**。等用户说"push 到 X"再做。
+默认全本地,**不要主动 push**。等用户说"push 到 X"再做。
 
 ---
 
-## 9. 工具准备(用户 Mac 上需要装什么)
+## 9. 工具准备(环境基线)
 
-如果用户第一句话是"开始",先 verify 这些工具,缺啥引导他装:
+开发环境早已就绪(Android Studio + SDK 已装,项目能编译并装到真机)。日常只需:
 
-```bash
-# 检查清单(你可以直接跑 Bash 验证)
-command -v adb || echo "缺 Android SDK platform-tools"
-command -v emulator || echo "缺 Android emulator"
-test -d /Applications/Android\ Studio.app && echo "Android Studio OK" || echo "缺 Android Studio"
-java -version 2>&1 | head -1  # 需要 JDK 17+
-brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
-```
-
-如果用户没装 Android Studio:
-- 推荐从 [developer.android.com/studio](https://developer.android.com/studio) 直接下载首推的 stable 版本(2026-05 是 **Panda 4 Patch 1**,代号按动物字母滚动)
-- Mac 上选 `*-mac_arm.dmg`(Apple Silicon,M 系列)或 `*-mac.dmg`(Intel)
-- 也可以 `brew install --cask android-studio`(会触发权限提示)
-- **不要纠结具体版本号**:Android Studio 只有一个版本(不像 IntelliJ 有 Ultimate/Community),首推 stable 即可
-
-第一次启动 Android Studio 时它会下 Android SDK,通常 ~5-10GB,会需要 20-60 分钟。配置时确认:
-- **Android SDK Platform 34**(Beam Pro 是 Android 14 = API 34)已装
-- 在 **Tools → Device Manager** 创建一个 Pixel 7 Pro API 34 emulator 用于 Phase 0 验证
+- **构建**:`./gradlew` 必须用 Android Studio 自带 JBR 21,见 §10.1 的 `JAVA_HOME`(系统默认 `java` 是 Java 8,AGP 8.x 不支持)
+- **真机调试主力是 Beam Pro X4100**(Android 14 = API 34),adb 通道安装(NebulaOS 装 APK 见 memory `beam-pro-device`)。emulator 仅在没真机时跑非硬件逻辑用,主路径(8BitDo/麦克风)emulator 验不了
+- 偶发缺工具(换机/重装)时再按需补:`command -v adb`、`command -v emulator`、Android Studio、JDK 17+
 
 ---
 
-## 10. 常用命令(Phase 0 完成时填充)
+## 10. 常用命令
 
-> Android 项目还没 init,这一节先占位。每完成一个 Phase 0 子任务,把可重复跑的命令补进对应小节。**HANDOFF.md 不放命令,命令统一进这里**,后续 session 找命令只看这一个地方。
+> 命令统一进这里,**HANDOFF.md 不放命令**,后续 session 找命令只看这一个地方。
 
 ### 10.1 构建 / 安装
 
@@ -196,7 +181,7 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 | 操作 | 命令 | 备注 |
 |---|---|---|
 | 单元测试(全部) | `cd android && ./gradlew test` | JVM 测试 |
-| 单测(单个类) | `cd android && ./gradlew test --tests "com.xreal.aiclient.SshConnectionTest"` | 替换全限定类名 |
+| 单测(单个类) | `cd android && ./gradlew test --tests "io.github.kevinfitzroy.xrealclient.ManifestFetcherTest"` | 替换全限定类名(现有:ManifestFetcher / Hotwords / VolcFrame / PcmChunker 等)|
 | Lint | `cd android && ./gradlew lint` | 报告在 `android/app/build/reports/lint-results-debug.html` |
 
 ### 10.3 Emulator / adb
@@ -207,20 +192,22 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 | adb 设备列表 | `adb devices` | |
 | 模拟 F1=语音(KEYCODE 131) | `adb shell input keyevent 131` | 主路径(真机 8BitDo B 键发 F1)。**F13/F14(326/327)在 Beam Pro 到不了 app**(Generic.kl 注释掉),别再用 |
 | 模拟 F2=返回列表(KEYCODE 132) | `adb shell input keyevent 132` | 终端 → 列表 |
+| 模拟翻页 Shift+↑ / Shift+↓ | `adb shell input keycombination 59 19` / `... 59 20` | 59=SHIFT_LEFT,19/20=DPAD_UP/DOWN(真机 8BitDo R 键=Shift)→ tmux root 表进 copy-mode 半页滚(见 §6/§5)。命令语法在真机验过;是否端到端进 copy-mode 需在终端态内自测 |
 | 看 app 日志(过滤) | `adb logcat -s VoiceDaemon:V SshConnection:V TerminalBridge:V` | tag 名按 Kotlin 代码里实际声明 |
 | 清空 logcat | `adb logcat -c` | |
 | **拉持久化崩溃/连接日志** | `adb pull /sdcard/Android/data/io.github.kevinfitzroy.xrealclient/files/logs/app.log` | `AppLog` 写的文件日志(生命周期/SSH 连接/display 增删/WebView render-gone/全局未捕获崩溃栈)。NebulaOS 直接 pull,不需 run-as。超 512KB 滚一份 `app.log.1` |
 | **重开后看上次为啥崩** | `adb logcat -s AppLogPrev` | app 一启动就把上一会话(上次进程)日志尾部重喷 logcat。闪退在眼镜上发生、当时没接电脑也能事后复盘 |
 
-### 10.4 服务端验证(Phase 0 用 Mac 本机 sshd)
+### 10.4 服务端 / host(真 host = TK-ALIYUN / OPS;本机 Mac 当临时测试 host)
 
 | 操作 | 命令 | 备注 |
 |---|---|---|
-| 开启 Mac sshd | System Settings → Sharing → Remote Login | 系统级设置,user 手动 |
-| 验证 sshd 在跑 | `sudo systemsetup -getremotelogin` | 输出 `Remote Login: On` 即可 |
-| 装 abduco(默认 session 驻留方案) | `brew install abduco` | |
-| 启动 / attach abduco session | `abduco -A dev bash` | `-A` = attach 或 create |
-| 列出 abduco session | `abduco` | |
+| Maestro 建 project(自动部署状态 hooks) | `<base>/.xreal/xreal-project.sh new claude <session> [名]` | claude/agent/maestro 类型 `new` 时自动装 `agent-status.sh` + hooks → 写 `.xreal/status.json` |
+| 给现有 project 补/刷状态 hooks | `<base>/.xreal/xreal-project.sh hooks` | `hooks` 子命令:给 manifest 里所有 AI-agent project 一次性铺开 hooks(已有 host 升级用) |
+| 列 / 删 project | `xreal-project.sh ls` / `xreal-project.sh rm <session> [--kill]` | rm 从 manifest 移除,`--kill` 同时杀 tmux session |
+| host 接入步骤 | 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md) | banner 隐 IP、Maestro 保活等 |
+| 开启 Mac sshd(临时测试 host) | System Settings → Sharing → Remote Login | 验证:`sudo systemsetup -getremotelogin` 输出 `Remote Login: On` |
+| abduco(纯 SSH project 的 session 驻留备选) | `brew install abduco` → `abduco -A dev bash`(`abduco` 列出) | agent 类 project 用 tmux(需 capture-pane);见 §5 session 驻留行 |
 
 ### 10.5 Git(本地,不 push)
 
@@ -260,31 +247,35 @@ brew list openjdk@17 2>&1 | head -1 || echo "brew install openjdk@17"
 **先读 [`HANDOFF.md`](HANDOFF.md)**(动态状态文档),它告诉你 user 当前实际在哪一步、哪些已经准备好、第一步该怎么走(按 user 状态分了 A/B/C/D 四种情形)。
 
 简短规则:
-- user 没说话 / 第一次启动 → 跑 §9 工具检查 → 看 HANDOFF.md §5 选情形 → 行动
-- user 直接说"开始 / go" → 跑 §9 工具检查 → 进 Phase 0 §4 任务 0.1
-- user 问"项目是啥" → 复述 §1-§3,问 user 想从哪开始
+- user 没说话 / 第一次启动 → 读 HANDOFF.md 看当前在哪、最近一轮做到哪 → 行动
+- user 直接给具体任务(改 bug / 加能力)→ 用 §4 代码地图定位模块 → 干
+- user 问"项目是啥" → 复述 §1-§3(已部署真机系统),问 user 想从哪开始
 
-HANDOFF.md 也定义了**何时该更新它自己**(每次 phase 切换时),保持长期可用。
+HANDOFF.md 也定义了**何时该更新它自己**,保持长期可用。
 
 ---
 
-## 13. 项目根目录结构(Phase 0 完成后大致样子)
+## 13. 项目根目录结构(当前)
 
 ```
 /Users/foxer/claude/xreal-ai-client/
 ├── CLAUDE.md                    ← 本文件
+├── HANDOFF.md                   ← 动态状态(当前进度,先读它)
 ├── README.md                    ← 给人类看的目录说明
 ├── docs/
-│   ├── background.md                  ← 完整项目背景 + 为什么
-│   ├── architecture.md                ← 完整架构 + 可编译代码骨架
-│   ├── session-persistence-options.md ← tmux 替代方案调研 + 推荐(abduco)
-│   ├── stage-a-experiments.md         ← Stage A 实验 + pass/fail
-│   └── upstream-docs-index.md         ← 上游 docs 链接 + 何时读
-├── android/                     ← Android Studio 项目(Phase 0 你来 init)
-│   ├── app/
-│   │   ├── src/main/kotlin/...
-│   │   └── src/main/assets/terminal.html
-│   ├── build.gradle.kts
-│   └── settings.gradle.kts
-└── scripts/                     ← 可选,setup 脚本等
+│   ├── background.md / architecture.md           ← 背景 + 架构
+│   ├── session-persistence-options.md            ← tmux vs abduco
+│   ├── stage-a-experiments.md                    ← Stage A 实验 + pass/fail
+│   ├── upstream-docs-index.md                    ← 上游 docs 索引
+│   ├── orchestrator-CLAUDE.md / agent-setup-guide.md  ← host 上 Maestro 指南 + 接入步骤
+│   ├── xreal-project.sh                           ← Maestro 建/进 project + 部署状态 hooks
+│   └── projects.example.json / images/
+├── android/                     ← Android Studio 项目(已建,真机在跑)
+│   └── app/src/
+│       ├── main/kotlin/io/github/kevinfitzroy/xrealclient/  ← 24 个 .kt(见 §4 代码地图:
+│       │     SshConnection/SshJump/PtyChannel、TerminalBridge、VoiceDaemon/VolcEngineAsr、
+│       │     MainActivity/StatusPoller/AgentModels、XrealApp/AppLog 等)
+│       ├── main/assets/terminal.html             ← xterm.js + WebGL + unicode11 + overlay
+│       └── test/kotlin/...                        ← JVM 单测(ManifestFetcher/Hotwords/VolcFrame 等)
+└── scripts/                     ← setup-mac-host.sh、term-relay.py(调试期测试工具,见 §10.6)
 ```

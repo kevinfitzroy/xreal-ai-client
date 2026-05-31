@@ -1,7 +1,7 @@
 # ROADMAP — 分级需求跟踪
 
 > 按**优先级分层**跟踪需求,而不是按 phase。判据是:**这条断了,整体流程还能不能打通?**
-> - **P0 核心**:断了 = app 不可用。当前焦点,优先做完、做对。
+> - **P0 核心**:断了 = app 不可用。**已全部打通**(Beam Pro X4100 真机日常用);焦点已移到 P1 收尾 + P2。
 > - **P1 可用性**:核心打通后优先补,影响"能不能脱离 dev rig 真正用起来"。
 > - **P2 体验增强**:不影响主流程,可随时搁置 / 接回。**搁置的必须留接口 + 在本文件记接回清单**。
 >
@@ -9,21 +9,23 @@
 
 ---
 
-## P0 — 核心流程(整体打通,当前焦点)
+## P0 — 核心流程(已全部打通)
 
 最小端到端闭环:**开 app → 看到真实项目列表 → 键盘导航 → Enter 开真 SSH 终端 → 打字(硬件键+虚拟键盘)/语音 → BACK 回列表**。任何一环断了主流程就断。
 
 | # | 需求 | 状态 | 备注 |
 |---|---|---|---|
-| P0.1 | 列表静态枚举真实 host/project | ✅ | `StatusPoller.staticListJson` → `onPageFinished` 推 `window.setHosts`。**这是开真终端的前提**(Enter→`findProject` 靠名字匹配) |
+| P0.1 | 列表枚举真实 host/project | ✅ | 静态 seed(`StatusPoller.staticListJson`)→ `ManifestFetcher` live-fetch manifest 覆盖(见 P1.1c)→ `window.setHosts`。**这是开真终端的前提**(Enter→`findProject` 按 session 查、seed 兜底) |
 | P0.2 | 列表键盘导航(方向键 + Enter) | ✅ | index.html `setFocus`/`keydown` + 虚拟键盘 `vkey`。**键盘专用 app 的命根子,任何时候都不能移除**(≠ §P2 的舰队聚合 pills) |
-| P0.3 | per-project 真 SSH 终端(attach tmux) | ✅ | `onOpenProject`→`SshConnection`+`tmuxAttachCommand`;channel 热切(`switchTo`/`startReaderFor`) |
-| P0.4 | 终端显示(xterm WebGL + 中英文 + powerline) | ✅ | Meslo(Latin/powerline)+ Sarasa(CJK)+ WebGL 字体就绪;远端 `tmux -u` + UTF-8 locale |
-| P0.5 | 硬件键路由(+ 虚拟键盘兜底) | ✅ | `dispatchKeyEvent` 路由 **F1=语音 / F2=返回**(Stage A.1 实测:Beam Pro 的 8BitDo F13–F24 被 `Generic.kl` 注释、到不了 app;F13/F14 + Ctrl+Alt+1/2 分支保留作兜底)。默认有 8BitDo,底部虚拟键盘 + 说明条已隐藏 |
+| P0.3 | per-project 真 SSH 终端(attach tmux,含**多跳**) | ✅ | `onOpenProject`→`SshConnection`+`tmuxAttachCommand`;channel 热切(`switchTo`/`startReaderFor`)。**多跳 SSH(ProxyJump)已落地**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),OPS via TK 端到端认证(OPS 在 AWS 内网,只 TK 的 OpenVPN 可达)。 |
+| P0.4 | 终端显示(xterm WebGL + 中英文 + powerline + **翻页**) | ✅ | Meslo(Latin/powerline)+ Sarasa(CJK)+ WebGL 字体就绪;远端 `tmux -u` + UTF-8 locale。**tmux 半页翻页**:Shift+↑/↓ → root 表进 copy-mode(不与 Claude Code 冲突)+ history-limit 50000(`-f conf` 注入,服务端零增量)。 |
+| P0.5 | 硬件键路由(+ 虚拟键盘兜底) | ✅ | `dispatchKeyEvent` 路由 **F1=语音 / F2=返回**(Stage A.1 实测:Beam Pro 的 8BitDo F13–F24 被 `Generic.kl` 注释、到不了 app;F13/F14 + Ctrl+Alt+1/2 分支保留作兜底)。**虚拟键盘动态显隐**:8BitDo 插拔实时切(插着隐、拔了出),去掉多余 hint 说明条 |
 | P0.6 | 语音 daemon 状态机(overlay show/hide + Enter 注入) | ✅ | 骨架完成,ASR 仍是 mock(真豆包见 P1.2) |
 | P0.7 | BACK 返回列表 / 优雅降级 | ✅ | BACK 键 + home 键;SSH 失败回退 LocalEcho 不卡 |
 
-> P0 当前**已全部打通**(emulator + Beam Pro X4100 真机验证)。剩余 P0 风险是物理设备项(Stage A.1 8BitDo 真键、真麦克风),留 Phase 1。
+> P0 当前**已全部打通并在 Beam Pro X4100 真机日常用**(双 host:TK-ALIYUN 直连 + OPS 经 TK 多跳,各跑 Maestro)。物理设备项(8BitDo F1/F2、真麦克风)已实测。
+>
+> **可观测性(支撑性,非 P0 闭环)**:持久化日志 + 崩溃捕获已落地 —— `AppLog` 写外存(`adb pull`,不需 run-as)+ `XrealApp` 全局未捕获异常处理器落盘崩溃。出问题先 `adb pull` 取证。
 
 ---
 
@@ -60,25 +62,21 @@
 
 | # | 需求 | 状态 | 接口/开关 |
 |---|---|---|---|
-| P2.1 | 实时状态刷新(WORKING/WAITING/preview 探测) | ⏸️ 搁置 | `FleetFeatures.LIVE_STATUS=false`。置 true 即恢复 `StatusPoller` 5s 轮询 `tmux capture-pane` |
-| P2.2 | 列表卡片状态展示(徽章 + preview 文本) | ⏸️ 搁置 | 依赖 P2.1。index.html `render` 的 `STATUS`/`preview` 已能消费,数据来源关了就一律 IDLE/无 preview |
-| P2.3 | 舰队聚合 pills(顶部 需要你/工作中/未激活/已断开 计数) | ⏸️ 搁置(随 P2.1) | index.html `#fleet`。纯展示,数据来自 P2.1;关了显示全 0/全 idle。**注意:这才是用户说的"舰队导航",≠ P0.2 方向键导航** |
-| P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 依赖 P2.1。"哪个 agent 要我反馈"一眼可见的排序/提醒 |
+| P2.1 | 实时状态刷新(WORKING/WAITING/时长) | ✅ 已用 **hooks** 实现(2026-05-31,真机验证) | **改走事件驱动,非抓屏**:Claude Code hooks 写 `<base>/.xreal/status.json`(`{session,state,since}`),`ManifestFetcher.fetch` 同连接顺手 `cat`,app 进列表/back/onStart 各拉一次(零空轮询)。`xreal-project.sh` 自动部署 hooks。**老的 `StatusPoller`/`AgentStatusDetector` 抓屏轮询(`tmux capture-pane`)已被取代、仍 dormant**(`FleetFeatures.LIVE_STATUS=false` 不再是状态来源,别去翻它,见 §4)。**注意**:hooks 只给 state + 时长,**不给 preview(最近命令)文本** → 见 P2.2 |
+| P2.2 | 列表卡片 **preview 文本(最近命令预览)** | ⏸️ 仍搁置 | 状态徽章(working/waiting/disconnected/unknown + 时长)已由 hooks 落地(P2.1);但 **preview 文本需抓屏**(`tmux capture-pane`),hooks 给不了 → 随老抓屏路径一起搁置。index.html `render` 的 `preview` 字段已能消费,数据源未接 |
+| P2.3 | 舰队聚合 pills(顶部 需要你/工作中/未激活/已断开 计数) | ⬜ 未开始(列表 UI 精简时撤掉了顶部 `#fleet`) | 纯展示。**数据源 P2.1 已就绪(hooks 状态)**,缺的是顶部聚合 pills 这块 UI 本身。**注意:这才是用户说的"舰队导航",≠ P0.2 方向键导航** |
+| P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 数据源 P2.1(hooks 状态)已就绪;缺排序/提醒逻辑。"哪个 agent 要我反馈"一眼可见 |
 | P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 | P2.6 | 项目级**热词管理 skill** | ⬜ 未开始 | 热词读取链路已就绪(`Hotwords.BASE` 继承 + manifest `projects[].hotwords` per-project 合并喂 ASR)。**这个 skill 负责"写"那张表**:project agent 定期回顾、从语音识别明显错误里总结新热词,用户授权后刷新进该 project 的热词表。**待定:存储位置** —— manifest `projects[].hotwords` 字段(Maestro 转写)vs `<projectDir>/.xreal/hotwords.json`(project agent 自管)。实做时再定 |
 
-### §4 接回清单(P2.1 实时状态刷新)
+### §4(历史 · 已作废)旧的抓屏路径接回清单
 
-搁置时**代码全部保留**,接回只需:
+> **⚠️ 2026-05-31:状态展示已改走 hooks(P2.1 ✅),下面这套抓屏(`tmux capture-pane`)接回清单不再是获取状态的方式,别照它去 `LIVE_STATUS=true`(那是已死路径,翻它没用)。** 整套 `StatusPoller`/`AgentStatusDetector`/校准测试代码仍保留,但只在将来要补 **preview 文本(最近命令预览,P2.2)** 时才可能用得上 —— 因为 hooks 给不了 pane 文本内容。即便那时,也只是作为 preview 的数据源,而非状态来源。下面原文留作那个场景的参考:
 
-1. **开开关**:`FleetFeatures.LIVE_STATUS = true`(`FleetFeatures.kt`)。一行。
-2. **生命周期已挂好**:`MainActivity.onStart/onStop` 已 `poller?.start()/stop()`,无需改。
-3. **校准检查**:`AgentStatusDetector` 的启发式按 **Claude Code v2.1.153** 标定(WORKING 看 "esc to interrupt";WAITING 看 "Do you want to proceed?"+"❯ 1.")。Claude Code TUI 改版后可能要重标 —— 跑 `AgentStatusDetectorTest` + `ClaudeCodePaneCalibrationTest`(fixtures 在 `test/resources/panes/`)。
-4. **JSON 形状契约**(单一来源,别让两端漂移):
-   - Kotlin 侧:`StatusPoller.Companion`(`staticListJson` / `pollOnce` 共用 `projectJson`/`hostJson`)
-   - JS 侧:index.html `window.setHosts` / `render`
-   - 形状:`[{name,addr,up,projects:[{name,type,status,age,preview}]}]`,`preview` = null 或 `{glyph,text,cur}`
-5. **静态 vs 实时如何叠加**:开关关时只推一次静态枚举(全 IDLE);开关开时 poller 每 5s 用真实状态**整批覆盖**同一份列表。两者走同一个 `pushHostList` → `window.setHosts`。
+1. ~~**开开关**:`FleetFeatures.LIVE_STATUS = true`~~(已作废 —— 状态走 hooks,见 P2.1)
+2. **生命周期已挂好**:`MainActivity.onStart/onStop` 已 `poller?.start()/stop()`。
+3. **校准检查**:`AgentStatusDetector` 启发式按 **Claude Code v2.1.153** 标定(WORKING 看 "esc to interrupt";WAITING 看 "Do you want to proceed?"+"❯ 1.")。TUI 改版后要重标 —— 跑 `AgentStatusDetectorTest` + `ClaudeCodePaneCalibrationTest`(fixtures 在 `test/resources/panes/`)。
+4. **JSON 形状契约(注意:这条本身仍 live,不属于作废范围)**:`StatusPoller.Companion` 的 `projectJson`/`hostJson` → `window.setHosts`/`render` **就是当前列表渲染用的契约**(`StatusPoller.staticListJson` + `ManifestFetcher` 并入 hooks 状态都走它)—— **作废的只是上面 capture-pane 那个数据源,不是这个 JSON 形状**。改列表 JSON 时两端别漂移。形状 `[{name,addr,up,projects:[{name,type,status,age,preview}]}]`,`preview` = null 或 `{glyph,text,cur}`(`preview` 当前恒 null,见 P2.2)。
 
 ---
 

@@ -1,6 +1,8 @@
 # Stage A:3 个实验决定 80% 架构风险
 
-> Phase 0 写的代码,等用户拿到物理设备后,跑这 3 个实验 — 1 周内决定整个架构是否成立。每个实验有 named fallback。
+> Phase 0 写的代码,拿到物理设备后跑这 3 个实验决定整个架构是否成立。每个实验有 named fallback。
+>
+> **现状(2026-05,Beam Pro X4100 真机)**:三个实验都已在真机上验过 —— A.1 ✅(假设 FAIL,已切 F1/F2 预案)、A.2 ✅(隐含通过)、A.3 🟡(功能通过,正式压测未跑)。详见各节顶部状态条 + 文末「通过判据总结」。下文各节正文为原始实验设计,留作记录。
 
 ---
 
@@ -55,6 +57,8 @@
 ---
 
 ## A.2(2 天)sshj 0.39+ 在 Android 14 上的 BouncyCastle 实战
+
+> ✅ **已隐含通过(2026-05,Beam Pro 真机)**:sshj `SSHClient` + `Crypto.ensureFullBouncyCastle()`(X25519 KEX 需完整 BC)在真机上连通海外 host(TK-ALIYUN)+ 经跳板多跳到内网 host(OPS via ProxyJump),终端端到端跑通,`connect/authPublickey/PTY/resize` 均无异常。**没出现 `NoClassDefFoundError` / 算法不支持**,主路径成立,无需切 sshlib(`SshConnection` 仍保留可切换抽象)。下文为原始实验设计,留作记录。
 
 ### 假设要验证
 
@@ -133,6 +137,8 @@ sshj 0.39+(经过 PR #636 等多轮修复)在 Android 14 / Beam Pro 的 NebulaOS
 
 ## A.3(2 天)WebView + xterm.js + JSBridge 全栈端到端
 
+> 🟡 **功能层已通过,性能未正式基准(2026-05,Beam Pro 真机)**:WebView + xterm.js + Base64 JSBridge 端到端跑通真 SSH 终端 —— 键盘/语音输入进 SSH、输出回流、中英文 + powerline + emoji(unicode11 addon)正确渲染、PTY resize 同步、Ctrl+C 中断、tmux copy-mode 翻页都正常,日常 Claude Code TUI 体感流畅。**尚未跑「`top` 5s+ 稳定 30fps」「50000 行 cat 5s 内不冻 UI」这两条正式压测**,故标 🟡;主路径已可用,正式基准 + WebGL renderer 确认留待需要时补。下文为原始实验设计。
+
 ### 假设要验证
 
 xterm.js + WebGL renderer 在 Beam Pro 的 Snapdragon 7 Gen 2 GPU 上能流畅(60fps)处理大量输出(如 `top`、`htop`、`cat large.log`),并且 Base64 over `evaluateJavascript` 的 JSBridge 在这种吞吐下不卡。
@@ -193,11 +199,13 @@ xterm.js + WebGL renderer 在 Beam Pro 的 Snapdragon 7 Gen 2 GPU 上能流畅(6
 
 ## 通过判据总结
 
-| Stage A | 全过 | 部分过(用 fallback)|
-|---|---|---|
-| A.1 + A.2 + A.3 | 主路径全成立,进 Phase 1(Voice Daemon 集成真豆包 + 真麦克风测试)| 用 fallback 路径替换对应组件,仍可进 Phase 1,但 fallback 代码要先合到 Phase 0 commit |
+| Stage A | 现状(2026-05,Beam Pro 真机)|
+|---|---|
+| **A.1** 8BitDo 物理键 | ✅ 已实测,假设 FAIL → 切 Fallback:主路径改 **F1/F2**(F13/F14 在 `Generic.kl` 被注释,到不了 app),端到端验过真豆包 ASR |
+| **A.2** sshj / BouncyCastle | ✅ 隐含通过:真机连通海外 host + 多跳到内网 host,无 BC/算法异常,无需切 sshlib |
+| **A.3** WebView + xterm GPU | 🟡 功能通过(终端 + 中英 + powerline + emoji + 翻页 + resize 全正常),正式 60fps/大输出压测未跑 |
 
-如果 A.1/A.2/A.3 都需要 fallback,**整个架构仍然成立**,只是需要切到二线技术栈。这就是为什么每个实验都列了 fallback — 整体设计对单点失效是 robust 的。
+三个实验主路径均已成立(A.1 走的是预案 Fallback,A.2/A.3 走主路径),架构已进入「堆体验 + 稳定性」阶段(语音、状态展示、多跳、日志均已落地)。每个实验仍保留 fallback 接口(sshj↔sshlib、WebGL↔Canvas、Base64↔WebSocket),对单点失效 robust。
 
 ---
 

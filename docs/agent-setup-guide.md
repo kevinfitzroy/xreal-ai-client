@@ -34,6 +34,7 @@ adb shell pm path io.github.kevinfitzroy.xrealclient || {
 - **host 地址**(IP 或域名)、**端口**(默认 22)、**登录用户名**
 - **base path**:这台 host 上放所有项目的根目录(如 `/home/evan/work`)。Maestro和所有项目都在它下面。
 - 一个**短名字**给这台 host(列表显示用,如 `beam-server`)
+- **是否内网 host**(只 VPN/跳板可达,如 AWS 内网的 OPS):若是,还需先把那台**跳板 host**(如挂 OpenVPN 的 TK)也装成一个 host,然后本 host 在 hosts.json 里加 `"via": "<跳板的 name>"` —— app 会经它 ProxyJump、端到端认证到本 host(**手机不用挂 VPN**)。直连 host 留空即可。详见第 5 步。
 
 ## 第 2 步 — 生成专用 key(绝不用用户主 key)
 
@@ -74,6 +75,8 @@ ssh -i "$KEY" <user>@<host> "
 "
 ```
 
+> **状态上报 hooks 自动部署**:`new maestro`(以及之后 Maestro 建 claude/agent 项目)会自动给该 project 写 `.claude/settings.json` 的 Claude Code hooks(事件驱动,非抓屏:working / waiting / disconnected / needs-permission),hook 调 `<base>/.xreal/agent-status.sh` 写 `<base>/.xreal/status.json`,app 一次性 cat 显示卡片状态。**无需额外步骤**。现有 host 想一次性铺开所有老 project,可单跑 `xreal-project.sh hooks`。
+
 > **首次 trust**:保活循环第一次起 claude 时,Claude Code 会问「Is this a project you trust?」。在 app 的 Maestro 终端里按一次 Enter 确认(信任的是你自己的 base 目录);确认后写进 `~/.claude.json`,之后保活重启 `--continue` 不再询问。**部署完别忘了这一步,否则保活循环会一直停在 trust 提示。**
 
 ## 第 5 步 — 拼 import bundle 并推到 app staging
@@ -102,9 +105,11 @@ cat > /tmp/xreal_hosts.json <<JSON
 ]
 JSON
 
+> **内网 host(经跳板)**:host 对象可加顶层 `"via": "<跳板 host 的 name>"`,值指向**同一 bundle 里另一台已配置的 host**(那台跳板得有自己的连接信息 + key,通常先按第 1–6 步单独装好)。app 会经跳板 ProxyJump、端到端认证到本 host(SSH 凭证不经跳板)。典型:`OPS`(AWS 内网,只 VPN 可达)`"via": "TK"`,由挂 OpenVPN 的 `TK` 转发 —— **手机自身不用挂 VPN**。直连 host 不加这个字段。
+
 # ── OPTIONAL:语音(豆包流式 ASR)凭证 ────────────────────────────────
 # 不推这个文件 → app 用 MockAsr(语音键返回固定串),不影响 SSH/终端。
-# 推了 → app 接真豆包双向流式 ASR(按住 F13/F14 说话 → 识别 → 注入 SSH)。
+# 推了 → app 接真豆包双向流式 ASR(按住语音键 F1 说话 → 识别 → 注入 SSH)。
 # 凭证问用户拿(火山引擎控制台:语音技术 → 流式语音识别),全局一份(不分 host)。
 cat > /tmp/xreal_asr.json <<JSON
 { "provider": "volc",

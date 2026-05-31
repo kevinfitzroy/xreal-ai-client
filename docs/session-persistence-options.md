@@ -1,6 +1,8 @@
 # 服务端 SSH Session 驻留方案调研
 
 > 用户在过往 tmux 使用中体感不好:**卡** + **历史信息有问题**。这份文档评估替代方案,并给出对本项目场景的推荐。
+>
+> **当前结论(2026-05-28 修订,已落地)**:产品从「单终端 SSH client」升级成「AI agent 集群指挥台」后,**agent 类 project 改用 tmux** —— 状态探测(`capture-pane`)、copy-mode 半页翻页、以及 Claude Code 状态上报 hooks 都需要一个真 tmux session,abduco 无等价能力。**纯 SSH 场景(不需要探测/翻页)仍可用 abduco**(零 UI、零卡顿)。`SshConnection` 的启动命令本就可配,二者无缝切换。下文调研保留 abduco 视角作为「纯 SSH」分支的依据;「卡」痛点在 agent 路径上靠精简 tmux 配置(见 §4.1)+ client 端 xterm.js scrollback 化解。
 
 ---
 
@@ -87,8 +89,12 @@
 # 不要 status bar(节省一行 + CPU)
 set -g status off
 
-# 减少 scrollback(client 端有 10000 行,服务端不需要那么多)
-set -g history-limit 500
+# scrollback:agent 路径实际用 50000(往回翻历史输出);纯终端可调小
+set -g history-limit 50000
+
+# 半页翻页(agent 路径):Shift+↑/↓ 进 copy-mode,走 root 表 Claude Code 收不到 → 不冲突
+bind -n S-Up   "copy-mode ; send-keys -X halfpage-up"
+bind -n S-Down 'if -F "#{pane_in_mode}" "send-keys -X halfpage-down"'
 
 # 关闭 mouse(我们用键盘 + xterm.js 自己的 mouse)
 set -g mouse off
@@ -105,7 +111,7 @@ set -g destroy-unattached on
 
 启动:`tmux new -A -s dev "claude code --resume"`
 
-### 4.2 abduco(推荐 ⭐)
+### 4.2 abduco(纯 SSH 场景推荐 ⭐)
 
 **优**:
 - 极简(<1k LoC),零 status bar / panes / mouse 等"多余" 功能
@@ -193,26 +199,38 @@ mosh 不做 session 驻留,做的是"SSH 断网自动重连 + local echo"。
 
 ---
 
-## 5. 推荐:abduco + xterm.js scrollback
+## 5. 推荐:按场景二分 —— agent 类用 tmux,纯 SSH 用 abduco
 
-**本项目推荐方案**:
+产品升级为「agent 集群指挥台」后,驻留方案按 project 类型二分:
+
+### 5a. agent 类 project(主路径)→ **tmux**
+
+```
+服务端(每个 agent 一个 session):
+  tmux -u -f <精简conf> new -A -s <session>   # app 用此命令 cold-start;-A = attach if exists
+  # session 内跑 claude code;Maestro 经 xreal-project.sh 建,带 -x200 -y50 防袖珍尺寸首连重绘
+```
+
+**为什么 agent 类必须 tmux(abduco 做不到)**:
+1. **状态探测**:列表卡片要显示各 agent「working/waiting」+ 时长,早期靠 `tmux capture-pane -p` 抓屏(现已改 hooks 事件驱动,但 hooks 仍需要一个常驻 tmux session 承载 Claude Code)
+2. **半页翻页**:Shift+↑/↓ → tmux root 表 `bind -n S-Up/S-Down` 进 copy-mode 半页滚(abduco 无 copy-mode)
+3. **scrollback**:`set -g history-limit 50000`(默认 2000),配合 client 端 xterm.js 往回翻
+
+「卡」痛点在此路径上靠精简 conf 化解(见 §4.1 + §6 配置):无 status bar、无 mouse、无 plugins、escape-time 短。
+
+### 5b. 纯 SSH project(不需探测/翻页)→ **abduco**(可选)
 
 ```
 服务端:
-  abduco -A dev claude code --resume
+  abduco -A dev <command>          # 零 UI、零卡顿,< 1 MB
 
 客户端(我们的 Android App):
-  xterm.js scrollback = 10000 行
-  + SearchAddon(Ctrl+F)
-  + SerializeAddon(可选,"导出 buffer 到文件" 功能)
+  xterm.js scrollback + SearchAddon(Ctrl+F)+ SerializeAddon(可选导出)
 ```
 
-**为什么**:
-1. 服务端零负担(abduco < 1 MB,无 status bar 无 mouse 无 plugins)
-2. 用户痛点 1(卡)— 直接消除,abduco 不渲染任何 UI
-3. 用户痛点 2(历史)— 转移到客户端 xterm.js,有现代 search 体验
-4. SSH 协议层我们用 sshj 直连,无需 mosh/ET
-5. 断网重连:sshj 自动重连 + abduco session 还在 → 重新 SSH 后 `abduco -A dev` 立刻回到原状
+不需要状态探测 / copy-mode 的纯终端场景,abduco 仍是最契合的极简选择;`SshConnection.startupCommand` 默认即 `abduco -A dev bash`,改一行配置就切到 tmux。
+
+**两路共同点**:SSH 协议层都用 sshj 直连(无需 mosh/ET);断网靠 sshj 重连 + 服务端 session 还在 → 重连后 `-A` 立刻回到原状。
 
 ---
 
@@ -228,12 +246,11 @@ mosh 不做 session 驻留,做的是"SSH 断网自动重连 + local echo"。
 
 ## 7. Phase 0 怎么处理
 
-Phase 0 写 SSH 模块代码时:
+SSH 模块代码(已落地):
 
-- **不要把 session 命令硬编码**。`SshConnection` 应该接受一个"启动命令"参数,默认从配置读
-- 默认配置:`abduco -A dev claude code --resume`(本文推荐方案)
-- 提供一个 fallback 配置:`tmux new -A -s dev "claude code --resume"`(用户已有的 tmux 流可以无缝切到本 App)
-- App 设置页面(Phase C)给用户选 abduco / tmux / screen / 自定义命令
+- **session 命令不硬编码**。`SshConnection.startupCommand` 是可配参数,默认 `abduco -A dev bash`(纯 SSH 兜底)
+- **agent 类 project 实际用 tmux**:app cold-start 命令是 `tmux -u -f <conf> new -A -s <session>`,conf 里注入 `history-limit 50000` + copy-mode 翻页 binds(见 §5a / §6);Maestro 经 `xreal-project.sh` 建 session(带 `-x200 -y50`)
+- 产品刻意无设置 UI(见 `CLAUDE.md` 理念),启动命令由 Valet/Maestro 在部署时定,不在眼镜里让用户选
 
 代码上不需要为每个 multiplexer 写特殊处理 — 都是"一行启动命令"的差别。SSH PTY 协议本身不区分服务端跑的是 abduco 还是 tmux。
 
@@ -241,4 +258,4 @@ Phase 0 写 SSH 模块代码时:
 
 ## 8. 一句话总结
 
-**服务端用 [abduco](https://github.com/martanne/abduco) 做 session 驻留(零 UI 零卡顿)+ 客户端 xterm.js 自带 10000 行 scrollback + Ctrl+F 搜索 = 同时解决"tmux 卡"和"历史信息难查"两个痛点。SSH 协议层走 sshj 直连,不需要 mosh/ET。**
+**agent 类 project 用 tmux(状态探测 / copy-mode 翻页 / 状态 hooks 都依赖它,精简 conf 化解"卡");纯 SSH 场景可用 [abduco](https://github.com/martanne/abduco)(零 UI 零卡顿)。历史靠服务端 tmux scrollback(50000)+ 客户端 xterm.js scrollback 双保险。SSH 协议层走 sshj 直连,不需要 mosh/ET。`SshConnection.startupCommand` 可配,两者一行切换。**
