@@ -22,3 +22,9 @@ keystore.properties
 
 # 本地工具 / 个人 skill(与 app 无关,纯本地需求)
 .claude/
+
+# 构建产物 / 大二进制(不进 git;按需本地 build)
+# xraybridge.aar = SSH-over-443 隧道的 gomobile 产物(33MB),换机重跑 xray-bridge/build.sh 重建
+android/app/libs/
+*.aar
+*.so
