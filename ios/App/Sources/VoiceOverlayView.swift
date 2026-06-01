@@ -3,17 +3,26 @@ import UIKit
 /// 语音预览浮层(原生),替代 index.html 的 `#voice-overlay` div —— 终端改原生 SwiftTerm 后,overlay 也得原生。
 /// 样式对齐 index.html:暗色圆角卡片,状态行 + 绿色识别文本 + 提示行;底部居中,不挡终端主体。
 /// 由 `VoiceController` 经 `show(status:text:)` / `hide()` 驱动(状态机不变)。
-final class VoiceOverlayView: UIView {
+final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
+    enum TapZone { case card, aboveCard }
+
     private let statusLabel = UILabel()
     private let textLabel = UILabel()
     private let hintLabel = UILabel()
     private let card = UIView()
+    private var cardBottomConstraint: NSLayoutConstraint!
+
+    var onTapZone: ((TapZone) -> Void)?
+    var onVoicePress: ((Bool) -> Void)?
+    var reservedBottomInset: CGFloat = 0 {
+        didSet { updateCardBottom() }
+    }
 
     init() {
         super.init(frame: .zero)
         isHidden = true
-        isUserInteractionEnabled = false   // 纯展示,不挡触摸
-        // self 由 VC 用 frame+autoresizingMask 填满父 view(不设 translatesAutoresizing=false);内部子 view 用约束。
+        isUserInteractionEnabled = false
+        // self 由 VC 设成 terminal 核心 frame(已排除 vkey);overlay 三段只在核心区内生效。
 
         card.translatesAutoresizingMaskIntoConstraints = false
         card.backgroundColor = UIColor(white: 0.08, alpha: 0.95)
@@ -40,9 +49,10 @@ final class VoiceOverlayView: UIView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
 
+        cardBottomConstraint = card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24)
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
-            card.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -24),
+            cardBottomConstraint,
             card.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 16),
             card.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16),
             card.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
@@ -52,6 +62,16 @@ final class VoiceOverlayView: UIView {
             stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
         ])
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
+        addGestureRecognizer(tap)
+
+        let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleVoicePress(_:)))
+        voicePress.minimumPressDuration = 0
+        voicePress.cancelsTouchesInView = true
+        voicePress.delegate = self
+        addGestureRecognizer(voicePress)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
@@ -62,7 +82,46 @@ final class VoiceOverlayView: UIView {
         textLabel.text = text
         textLabel.isHidden = text.isEmpty
         isHidden = false
+        isUserInteractionEnabled = true
     }
 
-    func hide() { isHidden = true }
+    func hide() {
+        isHidden = true
+        isUserInteractionEnabled = false
+    }
+
+    private func updateCardBottom() {
+        guard cardBottomConstraint != nil else { return }
+        cardBottomConstraint.constant = -max(24, reservedBottomInset + 12)
+    }
+
+    private func isBelowCard(_ p: CGPoint) -> Bool { p.y > card.frame.maxY }
+
+    @objc private func handleTap(_ g: UITapGestureRecognizer) {
+        let p = g.location(in: self)
+        if card.frame.contains(p) { onTapZone?(.card) }
+        else if p.y < card.frame.minY { onTapZone?(.aboveCard) }
+    }
+
+    @objc private func handleVoicePress(_ g: UILongPressGestureRecognizer) {
+        switch g.state {
+        case .began:
+            onVoicePress?(true)
+        case .ended, .cancelled, .failed:
+            onVoicePress?(false)
+        default:
+            break
+        }
+    }
+
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        let p = gestureRecognizer.location(in: self)
+        if gestureRecognizer is UILongPressGestureRecognizer {
+            return isBelowCard(p)
+        }
+        if gestureRecognizer is UITapGestureRecognizer {
+            return !isBelowCard(p)
+        }
+        return true
+    }
 }

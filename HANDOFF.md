@@ -1,7 +1,7 @@
 # HANDOFF — 当前实际进度与下一步
 
 > 状态交接给**下一个接手的 Claude Code session**。CLAUDE.md 是永久指南,这里是动态状态。
-> **最近更新**:2026-06-01(**第三客户端 HarmonyOS 立项**:脚手架 + ~1900 行 ArkTS 骨架 + 文档,见 [`harmony/`](harmony/);上一轮:第二客户端 iOS 定调 + 真机闭环;ROADMAP P1 富媒体预览 + SPEC §13)
+> **最近更新**:2026-06-01(**第三客户端 HarmonyOS 立项**:脚手架 + ~1900 行 ArkTS 骨架 + 文档,见 [`harmony/`](harmony/);上一轮:第二客户端 iOS 定调 + 真机闭环;ROADMAP P1 富媒体预览 + terminal 触摸热区;SPEC §6/§13)
 
 ---
 

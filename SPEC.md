@@ -213,7 +213,21 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 > 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
 
-**触摸翻页(触屏设备,与翻页上/下同语义):** 终端显示区分**上下两半** —— 触摸**上半** = 翻页上(进 tmux copy-mode 半页上,等价 Shift+↑)、触摸**下半** = 翻页下(等价 Shift+↓)。与物理键 Shift+↑/↓ **同语义同字节**(`ESC[1;2A` / `ESC[1;2B`),由 tmux 的 `S-Up`/`S-Down` 绑定(各端 attach 时注入)接住做半页滚。给无物理翻页键的纯触屏场景一个一致的翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现(`TerminalViewController.handleTermPageTap`);Android 锁横屏 + 物理键为主,按需补。
+**终端触摸热区(触屏设备,只按 terminal 核心区域计算):** 下面所有比例都只针对 **terminal 核心显示区** 计算,也就是扣除 vkey / inputAccessoryView / 系统键盘避让后的区域。**有 vkey 时,vkey 区域完全不参与 5-unit / overlay 三段计算**。
+
+terminal 核心显示区纵向分成 **5 unit**:
+
+- **top 2 unit**:触摸 = 翻页上(进 tmux copy-mode 半页上,等价 Shift+↑),发送同语义字节 `ESC[1;2A`。触发时用柔和半透明 overlay 覆盖整个 top 2 unit,叠加加大加粗的向上箭头,短暂驻留后淡出。
+- **middle 2 unit**:触摸 = 翻页下(等价 Shift+↓),发送 `ESC[1;2B`。触发时用同样的半透明 overlay 覆盖整个 middle 2 unit,叠加加大加粗的向下箭头,短暂驻留后淡出。
+- **bottom 1 unit**:仅其**底部 2/3** 是语音 hold-to-talk 热区(即整体高度约 `13/15` 以下):按住=开始录音,松开=结束。bottom 1 unit 顶部 1/3 留空,避免误触。
+
+与物理键 Shift+↑/↓ **同语义同字节**,由 tmux 的 `S-Up`/`S-Down` 绑定(各端 attach 时注入)接住做半页滚。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`);Android 锁横屏 + 物理键为主,按需补。
+
+**语音 overlay 点击语义:** overlay 的布局和点击分区同样只覆盖 terminal 核心显示区,不能覆盖 vkey。overlay 必须避开 bottom 语音热区,至少不能遮盖 bottom 1 unit 的底部 2/3。overlay 出现后,terminal 翻页热区自然失效,terminal 核心区触摸只剩三块:
+
+- 点击 overlay 卡片本身 = Enter,确认并注入当前语音识别文本。
+- 点击 overlay 卡片上方 = Esc,取消本次语音输入。
+- 按压 overlay 卡片下方 = 重新激活录音(取消旧 preview/识别中状态并开始新一轮 hold-to-talk)。
 
 ### 6.1 屏幕方向 + 虚拟键盘(UI 契约,**per-platform 不同**)
 

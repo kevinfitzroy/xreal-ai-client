@@ -22,6 +22,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var term: TerminalHostView!
     // 语音预览浮层(原生)。
     private let voiceOverlay = VoiceOverlayView()
+    private let pageCueView = UIImageView()
     private let terminalBottomCover = UIView()
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
@@ -36,10 +37,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
     private var edgeDragging = false
+    private weak var termPageTap: UITapGestureRecognizer?
+    private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
 
     private enum ViewState { case list, terminal }
+    private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private var view_ = ViewState.list
 
     // Active PTY session(终端态活动;**列表态保活中也非 nil**,见 iOS.7)。
@@ -108,10 +112,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
             else if gr is UIPanGestureRecognizer, gr !== t.panGestureRecognizer { gr.isEnabled = false }
         }
-        // tmux 触摸翻页(SPEC §6):点终端上半 = Shift+Up、下半 = Shift+Down。
+        // terminal 触摸分区(SPEC §6):只按 term.frame 核心显示区切 5 份;vkey/inputAccessoryView 不参与计算。
         let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
         pageTap.cancelsTouchesInView = false
+        pageTap.delegate = self
         t.addGestureRecognizer(pageTap)
+        self.termPageTap = pageTap
+        let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermVoicePress(_:)))
+        voicePress.minimumPressDuration = 0
+        voicePress.cancelsTouchesInView = true
+        voicePress.delegate = self
+        t.addGestureRecognizer(voicePress)
+        self.termVoicePress = voicePress
         let returnPan = UIPanGestureRecognizer(target: self, action: #selector(handleTermReturnPan(_:)))
         returnPan.delegate = self
         returnPan.cancelsTouchesInView = false
@@ -127,7 +139,26 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // 语音浮层最上层,默认隐藏。frame 由 layoutTerm 跟随 term(缩到 keybar 之上)。
         voiceOverlay.frame = view.bounds
         voiceOverlay.autoresizingMask = []
+        voiceOverlay.onTapZone = { [weak self] zone in
+            guard let self, self.view_ == .terminal else { return }
+            switch zone {
+            case .card:
+                if self.voice.onEnter() {
+                    self.keyHaptic.prepare(); self.keyHaptic.impactOccurred()
+                }
+            case .aboveCard:
+                if self.voice.onEsc() {
+                    self.keyHaptic.prepare(); self.keyHaptic.impactOccurred()
+                }
+            }
+        }
+        voiceOverlay.onVoicePress = { [weak self] down in self?.touchVoicePress(pressed: down) }
         view.addSubview(voiceOverlay)
+        pageCueView.isHidden = true
+        pageCueView.alpha = 0
+        pageCueView.isUserInteractionEnabled = false
+        pageCueView.contentMode = .center
+        view.addSubview(pageCueView)
         terminalBottomCover.backgroundColor = .black
         terminalBottomCover.isHidden = true
         view.addSubview(terminalBottomCover)
@@ -252,6 +283,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if let termPageTap, gestureRecognizer === termPageTap {
+            guard view_ == .terminal, !term.isHidden, voice.currentState == .idle else { return false }
+            let zone = terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height)
+            return zone == .pageUp || zone == .pageDown
+        }
+        if let termVoicePress, gestureRecognizer === termVoicePress {
+            guard view_ == .terminal, !term.isHidden else { return false }
+            return terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height) == .voice
+        }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         if let termReturnPan, gestureRecognizer === termReturnPan {
             guard view_ == .terminal, !term.isHidden else { return false }
@@ -490,6 +530,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         slideTerminal(toX: 0)
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         view.bringSubviewToFront(terminalBottomCover)
         term.isHidden = false
@@ -500,6 +541,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     private func showListView(reloadList: Bool = true) {
         voiceOverlay.hide()
+        pageCueView.isHidden = true
         suppressTermAccessory = true
         updateTermAccessory()
         _ = term.resignFirstResponder()
@@ -546,6 +588,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func termBaseFrame() -> CGRect {
         let overlap = forcedKeyboardOverlap ?? keyboardOverlap
+        // terminal 核心区 = 整屏扣掉 vkey/inputAccessoryView overlap;5-unit 热区和 overlay 三段都基于这个 frame。
         return CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - overlap))
     }
     private func slideTerminal(toX x: CGFloat) {
@@ -553,6 +596,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let f = base.offsetBy(dx: x, dy: 0)
         term.frame = f
         voiceOverlay.frame = f
+        voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
         if !terminalBottomCover.isHidden {
             terminalBottomCover.frame = CGRect(
                 x: x,
@@ -569,6 +613,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         slideTerminal(toX: view.bounds.width)
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
         _ = term.becomeFirstResponder()
@@ -592,6 +637,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         if !edgeDragging { slideTerminal(toX: view.bounds.width) }
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
         _ = term.becomeFirstResponder()
@@ -671,14 +717,75 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let f = termBaseFrame()
         term.frame = f
         voiceOverlay.frame = f
+        voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
     }
 
-    /// tmux 触摸翻页:终端上半 → Shift+Up(`ESC[1;2A`);下半 → Shift+Down(`ESC[1;2B`)。
+    /// terminal 触摸分区:上 2/5 → Shift+Up;中 2/5 → Shift+Down;底部热区由 `handleTermVoicePress` 接管。
     @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
         guard view_ == .terminal else { return }
+        let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
+        guard zone == .pageUp || zone == .pageDown else { return }
         keyHaptic.prepare(); keyHaptic.impactOccurred()
-        let topHalf = g.location(in: term).y < term.bounds.height / 2
-        ssh?.send(Data(topHalf ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41] : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))
+        let up = zone == .pageUp
+        ssh?.send(Data(up ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41] : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))
+        showPageCue(up: up)
+    }
+
+    @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {
+        switch g.state {
+        case .began:
+            touchVoicePress(pressed: true)
+        case .ended, .cancelled, .failed:
+            touchVoicePress(pressed: false)
+        default:
+            break
+        }
+    }
+
+    private func terminalTouchZone(at p: CGPoint, height: CGFloat) -> TerminalTouchZone {
+        // `height` 来自 term.bounds.height,也就是已经排除 vkey 后的 terminal 核心高度。
+        guard height > 0 else { return .none }
+        if p.y < height * 2 / 5 { return .pageUp }
+        if p.y < height * 4 / 5 { return .pageDown }
+        if p.y >= height * 13 / 15 { return .voice }
+        return .none
+    }
+
+    private func terminalBottomVoiceZoneHeight(in height: CGFloat) -> CGFloat {
+        max(0, height * 2 / 15)
+    }
+
+    private func touchVoicePress(pressed: Bool) {
+        if pressed {
+            keyHaptic.prepare(); keyHaptic.impactOccurred()
+        }
+        voiceKeyAction(pressed: pressed)
+    }
+
+    private func showPageCue(up: Bool) {
+        let zoneY = term.frame.minY + (up ? 0 : term.bounds.height * 2 / 5)
+        let zoneFrame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: term.bounds.height * 2 / 5)
+        let config = UIImage.SymbolConfiguration(pointSize: 58, weight: .semibold)
+        pageCueView.image = UIImage(systemName: up ? "arrow.up" : "arrow.down", withConfiguration: config)
+        pageCueView.tintColor = UIColor.white.withAlphaComponent(0.64)
+        pageCueView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
+        pageCueView.frame = zoneFrame
+        pageCueView.layer.borderWidth = 1 / UIScreen.main.scale
+        pageCueView.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        pageCueView.layer.removeAllAnimations()
+        pageCueView.isHidden = false
+        pageCueView.alpha = 0
+        view.bringSubviewToFront(pageCueView)
+        view.bringSubviewToFront(voiceOverlay)
+        UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.pageCueView.alpha = 1
+        } completion: { _ in
+            UIView.animate(withDuration: 0.36, delay: 0.38, options: [.curveEaseIn, .allowUserInteraction]) {
+                self.pageCueView.alpha = 0
+            } completion: { _ in
+                self.pageCueView.isHidden = true
+            }
+        }
     }
 
     // MARK: - App foreground → refetch status(列表态)
