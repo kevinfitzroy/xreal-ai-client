@@ -141,6 +141,7 @@ final class VolcAsr: Asr {
             self.session = session
             task = session.webSocketTask(with: req)
             task.resume()
+            AgentLog.info("asr", "WS start resource=\(resourceId)")
             receiveLoop()
         }
 
@@ -151,6 +152,7 @@ final class VolcAsr: Asr {
                 guard let self else { return }
                 if self.cancelled { self.task.cancel(with: .normalClosure, reason: nil); return }
                 NSLog("[VolcAsr] WS open")
+                AgentLog.info("asr", "WS open")
                 self.rawSend(VolcFrame.buildFullClientRequest(self.requestJson()))
                 while !self.pending.isEmpty {
                     self.rawSend(VolcFrame.buildAudio(self.pending.removeFirst(), last: false))
@@ -168,6 +170,7 @@ final class VolcAsr: Asr {
             queue.async { [weak self] in
                 guard let self, !self.cancelled else { return }
                 NSLog("[VolcAsr] WS closed code=\(closeCode.rawValue) (finishRequested=\(self.finishRequested))")
+                AgentLog.warn("asr", "WS closed code=\(closeCode.rawValue) finishRequested=\(self.finishRequested)")
                 self.resolveFinal()
             }
         }
@@ -183,6 +186,7 @@ final class VolcAsr: Asr {
                     self.queue.async {
                         guard !self.cancelled else { return }
                         NSLog("[VolcAsr] WS failure (finishRequested=\(self.finishRequested)): \(error.localizedDescription)")
+                        AgentLog.error("asr", "WS failure finishRequested=\(self.finishRequested): \(error.localizedDescription)")
                         self.resolveError(error.localizedDescription)
                     }
                 }
@@ -207,6 +211,7 @@ final class VolcAsr: Asr {
                 }
             case let .error(code, msg):
                 NSLog("[VolcAsr] server error code=\(code) msg=\(msg)")
+                AgentLog.error("asr", "server error code=\(code) msg=\(msg.prefix(120))")
                 resolveError("code=\(code)")
             case let .unknown(type):
                 NSLog("[VolcAsr] unknown msg type=\(type)")
@@ -273,7 +278,10 @@ final class VolcAsr: Asr {
 
         private func rawSend(_ data: Data) {
             task.send(.data(data)) { err in
-                if let err { NSLog("[VolcAsr] send error: \(err.localizedDescription)") }
+                if let err {
+                    NSLog("[VolcAsr] send error: \(err.localizedDescription)")
+                    AgentLog.error("asr", "send error: \(err.localizedDescription)")
+                }
             }
         }
 
@@ -290,6 +298,7 @@ final class VolcAsr: Asr {
             let words = Hotwords.cap(hotwords)
             if !words.isEmpty {
                 NSLog("[VolcAsr] hotwords sent: \(words.count)/\(hotwords.count) (cap=200chars)")  // 只打数量
+                AgentLog.debug("asr", "hotwords sent \(words.count)/\(hotwords.count)")
                 let inner: [String: Any] = ["hotwords": words.map { ["word": $0] }]
                 if let ctxData = try? JSONSerialization.data(withJSONObject: inner, options: []),
                    let ctx = String(data: ctxData, encoding: .utf8) {

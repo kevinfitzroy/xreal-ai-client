@@ -49,6 +49,7 @@ enum ManifestFetcher {
         _ hosts: [HostConfig],
         onHostResolved: (@MainActor (HostFetchResult) -> Void)? = nil
     ) async -> FetchResult {
+        AgentLog.info("network", "manifest fetch start hosts=\(hosts.count)")
         // via (SPEC §5) is a host *name*; resolve it against the full list (mirrors Android
         // ManifestFetcher's `byName[it]`). Built once here, passed into each probe so a
         // via-host's manifest cat rides the jump tunnel just like its PTY does.
@@ -85,6 +86,7 @@ enum ManifestFetcher {
     /// the timeout so a half-open host (connects, then stalls on cat) can't stall either.
     private static func probe(host h: HostConfig, via: HostConfig?) async -> HostFetchResult {
         if h.basePath.isEmpty {
+            AgentLog.debug("network", "\(h.name): skip live probe (no basePath)")
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: false)
         }
         let result: HostFetchResult? = await withTimeout(ms: perHostTimeoutMs) {
@@ -92,6 +94,7 @@ enum ManifestFetcher {
         }
         guard let result else {
             NSLog("[ManifestFetcher] \(h.name): probe timed out (\(perHostTimeoutMs)ms) → offline, others unaffected")
+            AgentLog.warn("network", "\(h.name): probe timeout \(perHostTimeoutMs)ms")
             // timeout → seed projects, unreachable → disconnected badges
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: true)
         }
@@ -105,6 +108,7 @@ enum ManifestFetcher {
         let base = h.basePath.hasSuffix("/") ? String(h.basePath.dropLast()) : h.basePath
         guard let conn = await connect(host: h, via: via) else {
             NSLog("[ManifestFetcher] \(h.name): connect failed → keep seed, host offline")
+            AgentLog.warn("network", "\(h.name): manifest SSH connect failed")
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: true)
         }
         // Close BOTH target + jump (the via-host's cats rode the jump tunnel; SshConnect).
@@ -117,10 +121,12 @@ enum ManifestFetcher {
             updated.projects = projects
             XrayDebugLog.append("manifest \(h.name): projects=\(projects.count) states=\(status.count)")
             NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(status.count) live states")
+            AgentLog.info("network", "\(h.name): manifest OK projects=\(projects.count) states=\(status.count)")
             return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true)
         }
         XrayDebugLog.append("manifest \(h.name): missing/bad states=\(status.count)")
         NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
+        AgentLog.warn("network", "\(h.name): manifest missing/bad states=\(status.count)")
         return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true)
     }
 
@@ -162,12 +168,15 @@ enum ManifestFetcher {
         do {
             let through = via.map { " via \($0.name)" } ?? ""
             NSLog("[ManifestFetcher] connecting \(h.name)\(through)…")   // visible while a dead host hangs
+            AgentLog.debug("network", "SSH connect \(h.name)\(through)")
             let conn = try await SshConnect.connect(target: h, via: via)
             XrayDebugLog.append("ssh connected \(h.name)\(through)")
+            AgentLog.info("network", "SSH connected \(h.name)\(through)")
             return conn
         } catch {
             XrayDebugLog.append("ssh failed \(h.name): \(String(describing: error).prefix(160))")
             NSLog("[ManifestFetcher] connect(\(h.name)) failed: \(error)")
+            AgentLog.warn("network", "SSH failed \(h.name): \(String(describing: error).prefix(160))")
             return nil
         }
     }

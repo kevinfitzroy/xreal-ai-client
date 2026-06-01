@@ -69,6 +69,7 @@ final class VoiceController: AsrCallback {
             if gen == self.asrGen { self.stream?.send(chunk) }
         }
         NSLog("[VoiceController] STREAMING start lang=\(lang) recorder=\(recorder != nil) hotwords=\(hotwords.count)")
+        AgentLog.info("voice", "stream start lang=\(lang) recorder=\(recorder != nil) hotwords=\(hotwords.count)")
     }
 
     func voiceUp(lang: String) {
@@ -77,6 +78,7 @@ final class VoiceController: AsrCallback {
         stream?.finish()             // 发最后一包(负包),等最终结果
         state = .asrPending
         showOverlay("识别中…", currentText ?? "")
+        AgentLog.debug("voice", "stream finish requested")
     }
 
     // MARK: - AsrCallback(经 GenCallback 带上 gen)
@@ -100,11 +102,13 @@ final class VoiceController: AsrCallback {
             showOverlay("🎤 已识别", text)
         }
         NSLog("[VoiceController] FINAL chars=\(text.count)")   // 只打字数,不打内容
+        AgentLog.info("voice", "final chars=\(text.count)")
     }
 
     fileprivate func onError(gen: Int, _ reason: String) {
         guard gen == asrGen else { return }
         NSLog("[VoiceController] ASR error: \(reason)")
+        AgentLog.error("voice", "ASR error: \(reason.prefix(180))")
         resetIdle()
     }
 
@@ -121,6 +125,7 @@ final class VoiceController: AsrCallback {
         guard let text = currentText else { resetIdle(); return false }
         let payload = voiceMarkerEnabled ? VoiceController.voiceMarker + text : text
         inject?(Data(payload.utf8))   // 不 auto-\n:语音误识安全网,再按 Enter 才执行
+        AgentLog.info("voice", "inject preview chars=\(text.count) marker=\(voiceMarkerEnabled)")
         resetIdle()
         return true
     }
@@ -133,6 +138,7 @@ final class VoiceController: AsrCallback {
         recorder?.cancel()
         resetIdle()
         NSLog("[VoiceController] ESC cancel")
+        AgentLog.info("voice", "cancel")
         return true
     }
 
@@ -145,6 +151,7 @@ final class VoiceController: AsrCallback {
         state = .idle
         currentText = nil
         stream = nil
+        AgentLog.debug("voice", "shutdown")
     }
 
     private func resetIdle() {

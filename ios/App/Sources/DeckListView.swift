@@ -20,7 +20,7 @@ struct DeckSection {
     let rows: [DeckRow]
 }
 
-/// **原生** Agent Deck 列表(iOS 全面原生化,采用苹果原生设计语言):insetGrouped UITableView、SF Symbols
+/// **原生** Agent Station 列表(iOS 全面原生化,采用苹果原生设计语言):insetGrouped UITableView、SF Symbols
 /// 图标、系统色状态、disclosure 指示、下拉刷新、点 cell 进 project、滑动滚动。物理键盘(8BitDo)经 VC 调
 /// `moveSelection`/`openSelected` 导航(触屏与物理键并存)。
 final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {

@@ -12,6 +12,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Agent Station</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -45,7 +47,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>按住语音键说话,把语音识别成文本注入远程终端。</string>
 	<!-- SPEC §8 real-device config-injection channel: a self-contained `.xrhosts`
-	     bundle (Valet output) AirDropped to the phone → "用 XrealPOC 打开" → import.
+	     bundle (Valet output) AirDropped to the phone → "用 Agent Station 打开" → import.
 	     We OWN the type (UTExportedTypeDeclarations) and claim Owner rank so AirDrop
 	     offers us. We do NOT list public.json in LSItemContentTypes (would noisily
 	     grab every .json); the type conforms to public.data/public.json only so the
@@ -54,7 +56,7 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>XREAL Host Config</string>
+			<string>Agent Station Config</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
@@ -69,7 +71,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>io.github.kevinfitzroy.xrealclient.hosts</string>
 			<key>UTTypeDescription</key>
-			<string>XREAL Host Config</string>
+			<string>Agent Station Config</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.json</string>

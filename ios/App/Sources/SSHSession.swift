@@ -49,6 +49,7 @@ final class SSHSession {
                  onConnected: @escaping () -> Void,
                  onFailure: @escaping (String) -> Void) {
         let startup = Self.tmuxAttachCommand(session)
+        AgentLog.info("terminal", "connect start host=\(h.name) session=\(session) via=\(via?.name ?? "-")")
         runTask = Task {
             // `live` flips once the PTY is up. A throw BEFORE that = a real connect failure
             // (→ onFailure). A throw AFTER (Citadel's withPTY throws "Already closed" when the
@@ -63,10 +64,16 @@ final class SSHSession {
                 self.jumpClient = conn.jump
                 let client = conn.target
                 live = true
+                AgentLog.info("terminal", "PTY opening host=\(h.name) session=\(session)")
                 onConnected()
                 try await self.runPTY(client: client, startup: startup, cols: cols, rows: rows)
             } catch {
-                if !live { onFailure("\(error)") }   // only a pre-go-live error is a connect failure
+                if !live {
+                    AgentLog.error("terminal", "connect failed host=\(h.name) session=\(session): \(String(describing: error).prefix(180))")
+                    onFailure("\(error)")
+                } else {
+                    AgentLog.warn("terminal", "PTY ended host=\(h.name) session=\(session): \(String(describing: error).prefix(180))")
+                }
             }
             // The PTY loop ended (back-to-list close, server drop, or connect failure). The
             // tunnel is dead either way → close the jump client here so a mid-session drop
@@ -75,6 +82,7 @@ final class SSHSession {
             let jc = self.jumpClient
             self.jumpClient = nil
             try? await jc?.close()
+            AgentLog.debug("terminal", "session closed host=\(h.name) session=\(session)")
             self.onClosed?()
         }
     }
@@ -88,6 +96,7 @@ final class SSHSession {
     /// Tear down: finish the stream (→ writer Task ends) and close the client
     /// (→ inbound terminates → the reader loop exits → withPTY returns).
     func close() {
+        AgentLog.debug("terminal", "close requested")
         eventCont.finish()
         let client = self.client
         let jump = self.jumpClient

@@ -47,9 +47,11 @@ enum SshConnect {
         let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
         let dial: (host: String, port: Int)
         if let proxy {
+            AgentLog.info("network", "\(h.name): ensure xray proxy=\(proxy.name) localPort=\(proxy.localPort)")
             try XrayProxy.tunnel(hostName: h.name, proxy: proxy, targetHost: "127.0.0.1", targetPort: h.ssh.port)
             dial = ("127.0.0.1", proxy.localPort)
         } else {
+            AgentLog.debug("network", "\(h.name): direct SSH port=\(h.ssh.port)")
             dial = (h.ssh.host, h.ssh.port)
         }
         var s = SSHClientSettings(
@@ -73,6 +75,7 @@ enum SshConnect {
         } catch {
             guard let retry = proxyRestartTarget(target: h, via: via) else { throw error }
             XrayDebugLog.append("ssh failed \(h.name), restart tunnel \(retry.host.name): \(String(describing: error).prefix(160))")
+            AgentLog.warn("network", "\(h.name): SSH failed, restart xray tunnel on \(retry.host.name)")
             try XrayProxy.restart(hostName: retry.host.name, proxy: retry.proxy, targetHost: "127.0.0.1", targetPort: retry.host.ssh.port)
             return try await connectOnce(target: h, via: via)
         }
@@ -81,16 +84,19 @@ enum SshConnect {
     private static func connectOnce(target h: HostConfig, via: HostConfig?) async throws -> Connected {
         let targetSettings = try settings(for: h, proxy: via == nil ? h.proxy : nil)
         guard let jh = via else {
+            AgentLog.debug("network", "\(h.name): SSH handshake direct")
             let c = try await SSHClient.connect(to: targetSettings)
             return Connected(target: c, jump: nil)
         }
         // Multi-hop: jump host first (its own ed25519), then tunnel to the target.
+        AgentLog.info("network", "\(h.name): SSH handshake via \(jh.name)")
         let jumpClient = try await SSHClient.connect(to: try settings(for: jh, proxy: jh.proxy))
         do {
             let targetClient = try await jumpClient.jump(to: targetSettings)
             return Connected(target: targetClient, jump: jumpClient)
         } catch {
             try? await jumpClient.close()   // target handshake failed — don't leak the jump
+            AgentLog.warn("network", "\(h.name): target handshake through \(jh.name) failed")
             throw error
         }
     }
@@ -243,54 +249,52 @@ enum XrayProxy {
     ) throws {
         let key = "\(hostName)→\(targetHost):\(targetPort)"
         lock.lock()
+        defer { lock.unlock() }
         if let running = ports[key] {
             if running == proxy.localPort && !forceRestart && localPortIsOpen(running) {
                 XrayDebugLog.append("reuse \(hostName) localPort=\(proxy.localPort)")
-                lock.unlock()
+                AgentLog.debug("xray", "\(hostName): reuse tunnel localPort=\(proxy.localPort)")
                 return
             }
             ports.removeValue(forKey: key)
-            lock.unlock()
             XrayDebugLog.append("\(forceRestart ? "restart" : "stale") \(hostName) oldPort=\(running) newPort=\(proxy.localPort)")
+            AgentLog.warn("xray", "\(hostName): \(forceRestart ? "restart" : "stale") tunnel oldPort=\(running) newPort=\(proxy.localPort)")
             try? XrayBridge.load()?.stop(key: key)
             Thread.sleep(forTimeInterval: 0.2)
         } else if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
             if localPortIsOpen(other.value) {
-                lock.unlock()
                 throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
             }
             ports.removeValue(forKey: other.key)
-            lock.unlock()
             XrayDebugLog.append("remove stale port \(proxy.localPort) owner=\(other.key)")
+            AgentLog.warn("xray", "remove stale localPort=\(proxy.localPort) owner=\(other.key)")
             try? XrayBridge.load()?.stop(key: other.key)
             Thread.sleep(forTimeInterval: 0.2)
-        } else {
-            lock.unlock()
         }
 
         guard let bridge = XrayBridge.load() else {
             XrayDebugLog.append("bridge missing \(hostName)")
+            AgentLog.error("xray", "\(hostName): bridge missing")
             throw XrayError.unavailable("Xraybridge.framework 未集成,SSH-over-443 不可用")
         }
         let link = try XrayConfig.parseVmess(proxy.url)
         let serverIp = resolveAddress(link.address)
         let config = try XrayConfig.build(link: link, localPort: proxy.localPort, targetHost: targetHost, targetPort: targetPort, serverIp: serverIp)
         XrayDebugLog.append("start \(hostName) proxy=\(proxy.name) localPort=\(proxy.localPort) vmess=\(link.address):\(link.port) resolved=\(serverIp ?? "-")")
+        AgentLog.info("xray", "\(hostName): start proxy=\(proxy.name) localPort=\(proxy.localPort) target=\(targetHost):\(targetPort)")
         try bridge.start(key: key, config: config)
 
-        lock.lock()
         if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
-            lock.unlock()
             try? bridge.stop(key: key)
             throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
         }
         ports[key] = proxy.localPort
-        lock.unlock()
         // xray-core StartInstance can return a beat before the inbound is fully usable.
         // Without this, the very first SSH probe after app launch can get ECONNRESET while
         // the next user-opened terminal succeeds.
         Thread.sleep(forTimeInterval: 0.5)
         XrayDebugLog.append("started \(hostName) localPort=\(proxy.localPort)")
+        AgentLog.info("xray", "\(hostName): started localPort=\(proxy.localPort)")
         NSLog("[XrayProxy] start \(key) via \(link.address)\(serverIp.map { "[\($0)]" } ?? ""):\(link.port) → 127.0.0.1:\(proxy.localPort)")
     }
 
@@ -302,6 +306,7 @@ enum XrayProxy {
         lock.unlock()
         keys.forEach { try? bridge.stop(key: $0) }
         if !keys.isEmpty { XrayDebugLog.append("stopped \(keys.count) tunnel(s)") }
+        if !keys.isEmpty { AgentLog.info("xray", "stopped tunnels count=\(keys.count)") }
     }
 
     private static func resolveAddress(_ host: String) -> String? {

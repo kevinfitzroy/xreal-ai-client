@@ -31,9 +31,12 @@ enum HostStore {
         guard let data = try? Data(contentsOf: file),
               let root = parseStoredRoot(data) else {
             NSLog("[HostStore] no hosts.json (or invalid) → empty (mock)")
+            AgentLog.warn("config", "hosts.json missing or invalid")
             return []
         }
-        return parseHosts(root.hosts, docsDir: docs)
+        let hosts = parseHosts(root.hosts, docsDir: docs)
+        AgentLog.info("config", "hosts parsed valid=\(hosts.count) records=\(root.hosts.count)")
+        return hosts
     }
 
     private struct StoredRoot {
@@ -58,6 +61,7 @@ enum HostStore {
             if let proxy = h.proxy {
                 if let other = usedProxyPorts[proxy.localPort] {
                     NSLog("[HostStore] skip host '\(h.name)': proxy localPort \(proxy.localPort) conflicts with '\(other)'")
+                    AgentLog.error("config", "skip host \(h.name): proxy localPort \(proxy.localPort) conflicts with \(other)")
                     continue
                 }
                 usedProxyPorts[proxy.localPort] = h.name
@@ -72,11 +76,13 @@ enum HostStore {
               let host = o["host"] as? String, !host.isEmpty,
               let user = o["user"] as? String, !user.isEmpty else {
             NSLog("[HostStore] skip host missing name/host/user")
+            AgentLog.warn("config", "skip host missing name/host/user")
             return nil
         }
         let keyName = (o["key"] as? String) ?? ""
         guard let pem = readKeySafe(keyName, in: docsDir) else {
             NSLog("[HostStore] skip host '\(name)': bad/missing key '\(keyName)'")
+            AgentLog.error("config", "skip host \(name): bad or missing key")
             return nil
         }
         let port = (o["port"] as? Int) ?? 22
@@ -88,6 +94,7 @@ enum HostStore {
             proxy = try parseProxy(o["proxy"], hostName: name)
         } catch {
             NSLog("[HostStore] skip host '\(name)': \(error)")
+            AgentLog.error("config", "skip host \(name): \(error)")
             return nil
         }
         let projects = (o["projects"] as? [[String: Any]] ?? []).compactMap(parseProject)
@@ -131,6 +138,7 @@ enum HostStore {
     private static func readKeySafe(_ keyName: String, in docsDir: URL) -> String? {
         guard !keyName.isEmpty, !keyName.contains("/"), !keyName.contains("..") else {
             NSLog("[HostStore] key must be a bare filename: '\(keyName)'")
+            AgentLog.warn("config", "reject key path: not a bare filename")
             return nil
         }
         let url = docsDir.appendingPathComponent(keyName)
@@ -167,7 +175,7 @@ enum HostStore {
     /// Result of an import: the host disposition, how many hosts landed, whether ASR creds came too.
     struct ImportResult { let mode: ImportMode; let hosts: Int; let asr: Bool }
 
-    /// Import a self-contained `.xrhosts` config bundle (AirDrop → "用 XrealPOC 打开", or via the
+    /// Import a self-contained `.xrhosts` config bundle (AirDrop → "用 Agent Station 打开", or via the
     /// config page's document picker; SPEC §8 iOS real-device channel). Each inline PEM is written
     /// to `Documents/<safeName>.pem` (a BARE filename — readKeySafe rejects any `/`, 0600), `key` is
     /// rewritten to that filename and the inline PEM stripped, and the BARE array is atomically
@@ -242,6 +250,7 @@ enum HostStore {
 
         let modeStr = mode == .replace ? "replace" : (mode == .append ? "append" : "asr-only")
         NSLog("[HostStore] import OK [\(modeStr)]: \(hostCount) host(s)\(asrImported ? " + ASR creds" : "") → private store")
+        AgentLog.info("config", "import OK mode=\(modeStr) hosts=\(hostCount) asr=\(asrImported)")
         return ImportResult(mode: mode, hosts: hostCount, asr: asrImported)
     }
 

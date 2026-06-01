@@ -1,6 +1,6 @@
 import Foundation
 
-/// Agent Deck data model — Host (level 1) → Project (level 2). Mirrors Android's
+/// Agent Station data model — Host (level 1) → Project (level 2). Mirrors Android's
 /// AgentModels.kt. Config comes from hosts.json (SPEC §8); the project list's
 /// source of truth is the per-host manifest (`<basePath>/.xreal/projects.json`).
 

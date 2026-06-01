@@ -18,6 +18,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     // 原生列表(替代 WKWebView/index.html)。
     private let deckList = DeckListView(frame: .zero)
+    // 列表页右滑进入的运行日志容器。
+    private let logPanel = LogPanelView(frame: .zero)
     // 原生终端(SwiftTerm):终端态渲染 + 键盘;列表态隐藏。
     private var term: TerminalHostView!
     // 语音预览浮层(原生)。
@@ -44,8 +46,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
+    private weak var listLogPan: UIPanGestureRecognizer?
+    private var logDragging = false
 
-    private enum ViewState { case list, terminal }
+    private enum ViewState { case list, terminal, logs }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private var view_ = ViewState.list
     private static let minPageTapInterval: CFTimeInterval = 0.22
@@ -103,6 +107,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             deckList.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             deckList.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        logPanel.onClose = { [weak self] in self?.hideLogPanel(animated: true) }
+        logPanel.isHidden = true
+        view.addSubview(logPanel)
 
         // 原生终端(SwiftTerm),覆盖在列表之上,默认隐藏,终端态显示。
         TerminalKeyInterceptor.installOnce()   // swizzle pressesBegan 拦 F1/F2 + 语音 Enter/Esc
@@ -177,6 +184,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
+        AgentLog.info("app", "loaded hosts count=\(hosts.count)")
         deckList.setEmptyText(hosts.isEmpty ? "暂无 host\n\nAirDrop 一个 .xrhosts 配置导入" : nil)
         if !hosts.isEmpty {
             deckList.setSections(buildSections())   // 初始 = 全部 loading
@@ -198,6 +206,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         resumePan.cancelsTouchesInView = false
         view.addGestureRecognizer(resumePan)
         self.listResumePan = resumePan
+        let logPan = UIPanGestureRecognizer(target: self, action: #selector(handleListLogPan(_:)))
+        logPan.delegate = self
+        logPan.cancelsTouchesInView = false
+        view.addGestureRecognizer(logPan)
+        self.listLogPan = logPan
 
         #if DEBUG
         applyDebugLevers()
@@ -298,6 +311,44 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
+    /// 列表页右滑 → 日志容器;日志容器左滑 → 回列表。
+    @objc private func handleListLogPan(_ g: UIPanGestureRecognizer) {
+        let tx = g.translation(in: view).x
+        let vx = g.velocity(in: view).x
+        let width = max(view.bounds.width, 1)
+        let threshold = min(140, width * 0.28)
+
+        switch (view_, g.state) {
+        case (.list, .began):
+            prepareLogPanelFromLeft()
+        case (.list, .changed):
+            guard logDragging else { return }
+            slideLogPanel(toX: min(0, -width + max(0, tx)))
+        case (.list, .ended):
+            guard logDragging else { return }
+            let shouldCommit = tx > threshold || vx > 650
+            shouldCommit ? showLogPanel(animated: true, alreadyPrepared: true) : cancelLogSlide(toX: -width, hideAfter: true)
+        case (.list, .cancelled), (.list, .failed):
+            if logDragging { cancelLogSlide(toX: -width, hideAfter: true) }
+
+        case (.logs, .began):
+            logDragging = true
+            logPanel.isHidden = false
+            view.bringSubviewToFront(logPanel)
+        case (.logs, .changed):
+            guard logDragging else { return }
+            slideLogPanel(toX: max(-width, min(0, tx)))
+        case (.logs, .ended):
+            guard logDragging else { return }
+            let shouldClose = -tx > threshold || vx < -650
+            shouldClose ? hideLogPanel(animated: true) : showLogPanel(animated: true, alreadyPrepared: true)
+        case (.logs, .cancelled), (.logs, .failed):
+            if logDragging { showLogPanel(animated: true, alreadyPrepared: true) }
+        default:
+            break
+        }
+    }
+
     /// terminal 页内容区右滑 → 回列表。只接明显横向右滑,避免抢垂直滚动/点按翻页。
     @objc private func handleTermReturnPan(_ g: UIPanGestureRecognizer) {
         guard view_ == .terminal else { return }
@@ -345,6 +396,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 && v.x < -60
                 && abs(v.x) > abs(v.y) * 1.05
         }
+        if let listLogPan, gestureRecognizer === listLogPan {
+            let v = pan.velocity(in: view)
+            if view_ == .list {
+                return v.x > 60 && abs(v.x) > abs(v.y) * 1.05
+            }
+            if view_ == .logs {
+                return v.x < -60 && abs(v.x) > abs(v.y) * 1.05
+            }
+            return false
+        }
         return true
     }
 
@@ -352,6 +413,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         if let termReturnPan, gestureRecognizer === termReturnPan || otherGestureRecognizer === termReturnPan { return true }
         if let listResumePan, gestureRecognizer === listResumePan || otherGestureRecognizer === listResumePan { return true }
+        if let listLogPan, gestureRecognizer === listLogPan || otherGestureRecognizer === listLogPan { return true }
         return false
     }
 
@@ -365,6 +427,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutTerm()
+        layoutLogPanel()
     }
 
     // MARK: - 列表数据:hosts + 状态 → [DeckSection](SPEC §3 状态映射,对齐 DeckJSON 逻辑)
@@ -403,11 +466,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// discards a superseded fetch.
     private func refreshManifests() {
         let snapshot = hosts
+        AgentLog.info("manifest", "refresh start hosts=\(snapshot.count)")
         fetchGen += 1
         let gen = fetchGen
         Task {
             let result = await ManifestFetcher.fetch(snapshot) { [weak self] r in
                 guard let self, gen == self.fetchGen else { return }
+                let level: AgentLogLevel = !r.liveFetched ? .debug : (r.reachable ? .info : .warn)
+                AgentLog.shared.log(level, "manifest", "\(r.host.name) resolved reachable=\(r.reachable) projects=\(r.host.projects.count) states=\(r.status.count)")
                 self.probedHosts.insert(r.host.name)
                 self.statusByHost[r.host.name] = r.status
                 if r.liveFetched {
@@ -425,6 +491,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.reachable = result.reachable
                 self.probedHosts = Set(result.hosts.map { $0.name })
                 self.pushList()
+                AgentLog.info("manifest", "refresh done reachable=\(result.reachable.count)/\(result.hosts.count)")
                 #if DEBUG
                 self.maybeAutoOpen()
                 #endif
@@ -435,6 +502,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // MARK: - Open project → PTY
     private func onOpenProject(host: String, session: String, name: String, type: String, resetAutoReconnect: Bool = true) {
         NSLog("[VC] openProject host=\(host) session=\(session)")
+        AgentLog.info("terminal", "open host=\(host) session=\(session) type=\(type)")
         if resetAutoReconnect {
             autoReconnectAttempts = 0
             cancelAutoReconnect()
@@ -449,6 +517,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         guard let h = hosts.first(where: { $0.name == host }),
               let p = (h.projects.first(where: { $0.session == session })) else {
             applyVoiceContext(nil)
+            AgentLog.warn("terminal", "missing SSH config for session=\(session)")
             writeToTerm("\r\n[no SSH config for \(session)]\r\n")
             return
         }
@@ -471,6 +540,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             DispatchQueue.main.async {
                 guard let self, self.sessionGen == gen, self.ssh === s else { return }
                 NSLog("[VC] PTY dropped gen=\(gen) view=\(self.view_ == .terminal ? "term" : "warm")")
+                AgentLog.warn("terminal", "PTY dropped host=\(h.name) session=\(p.session)")
                 self.ssh = nil
                 self.warmHost = nil; self.warmSession = nil   // 保活终端也断了 → 清理
                 self.cancelKeepWarm()
@@ -492,6 +562,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                     self.autoReconnectAttempts = 0
                     self.cancelAutoReconnect()
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session) view=\(self.view_ == .terminal ? "term" : "warm")")
+                    AgentLog.info("terminal", "PTY live host=\(h.name) session=\(p.session)")
                     if self.view_ == .terminal {
                         let t = self.term.getTerminal()
                         self.ssh?.resize(cols: t.cols, rows: t.rows)   // 补推当前终端尺寸
@@ -507,6 +578,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 DispatchQueue.main.async {
                     guard let self, seq == self.openSeq else { return }
                     NSLog("[VC] PTY connect failed: \(err)")
+                    AgentLog.error("terminal", "connect failed host=\(h.name) session=\(p.session): \(err.prefix(180))")
                     if self.warmHost == h.name, self.warmSession == p.session {
                         self.warmHost = nil; self.warmSession = nil
                         self.cancelKeepWarm()
@@ -522,6 +594,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func backToList(animated: Bool = false) {
         NSLog("[VC] backToList (keep-warm)")
+        AgentLog.debug("ui", "back to list keepWarm=\(ssh != nil || warmHost != nil)")
         voiceKeyHeld = false
         voice.shutdown()
         applyVoiceContext(nil)
@@ -550,6 +623,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         keepWarmWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             NSLog("[VC] keep-warm 超时 → 关闭最近终端 SSH(tmux session 服务端仍在)")
+            AgentLog.debug("terminal", "keep-warm timeout, close SSH client")
             self?.closeWarm()
         }
         keepWarmWork = work
@@ -563,6 +637,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         autoReconnectAttempts += 1
         let attempt = autoReconnectAttempts
         let delay = 0.8 * Double(attempt)
+        AgentLog.warn("network", "proxy-backed PTY dropped, auto reconnect \(attempt)/\(Self.maxProxyReconnectAttempts) host=\(host) session=\(session)")
         writeToTerm("\r\n\u{1b}[33m[xray tunnel 断开,正在自动重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…]\u{1b}[0m\r\n")
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.view_ == .terminal else { return }
@@ -588,6 +663,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func resumeWarm(animated: Bool = false) {
         guard warmHost != nil else { return }   // 无保活终端(或已超时/失败清理)→ 不动
         NSLog("[VC] resume warm terminal \(warmHost ?? "")/\(warmSession ?? "")")
+        AgentLog.debug("terminal", "resume warm host=\(warmHost ?? "") session=\(warmSession ?? "")")
         cancelKeepWarm()
         if let h = hosts.first(where: { $0.name == warmHost }),
            let p = h.projects.first(where: { $0.session == warmSession }) { applyVoiceContext(p) }
@@ -599,6 +675,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     // MARK: - 终端/列表 view 切换
     private func showTerminalView(clear: Bool = true) {
+        logPanel.isHidden = true
+        logDragging = false
         if clear { term.feed(text: "\u{1b}c") }   // 新连接 RIS 全复位;保活滑回**不清屏**(保留原内容)
         suppressTermAccessory = false
         primeTermAccessoryForTerminal()
@@ -621,6 +699,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func showListView(reloadList: Bool = true) {
         voiceOverlay.hide()
         pageCueView.isHidden = true
+        logPanel.isHidden = true
+        logDragging = false
         suppressTermAccessory = true
         updateTermAccessory()
         _ = term.resignFirstResponder()
@@ -630,8 +710,77 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         _ = becomeFirstResponder()      // 列表态 VC 收硬件键 → 列表导航
         if reloadList { pushList() }
         navigationController?.setNavigationBarHidden(false, animated: false) // 列表:恢复 nav bar(大标题)
+        navigationItem.title = "Agent Station"
+        navigationItem.largeTitleDisplayMode = .always
         setNeedsStatusBarAppearanceUpdate()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+
+    // MARK: - 日志容器
+    private func layoutLogPanel() {
+        guard !logDragging else { return }
+        let x: CGFloat = view_ == .logs ? 0 : -view.bounds.width
+        logPanel.frame = view.bounds.offsetBy(dx: x, dy: 0)
+    }
+
+    private func prepareLogPanelFromLeft() {
+        logDragging = true
+        logPanel.refresh()
+        logPanel.isHidden = false
+        slideLogPanel(toX: -view.bounds.width)
+        view.bringSubviewToFront(logPanel)
+    }
+
+    private func slideLogPanel(toX x: CGFloat) {
+        logPanel.frame = view.bounds.offsetBy(dx: x, dy: 0)
+    }
+
+    private func showLogPanel(animated: Bool, alreadyPrepared: Bool = false) {
+        if !alreadyPrepared { prepareLogPanelFromLeft() }
+        view_ = .logs
+        navigationItem.title = ""
+        navigationItem.largeTitleDisplayMode = .never
+        navigationController?.setNavigationBarHidden(false, animated: false)
+        logPanel.refresh()
+        logPanel.isHidden = false
+        view.bringSubviewToFront(logPanel)
+        let finish = {
+            self.logDragging = false
+            self.slideLogPanel(toX: 0)
+        }
+        guard animated else { finish(); return }
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: finish)
+    }
+
+    private func hideLogPanel(animated: Bool) {
+        view_ = .list
+        navigationItem.title = "Agent Station"
+        navigationItem.largeTitleDisplayMode = .always
+        let finish = {
+            self.logDragging = false
+            self.slideLogPanel(toX: -self.view.bounds.width)
+        }
+        let completion: (Bool) -> Void = { _ in
+            self.logPanel.isHidden = true
+            self.layoutLogPanel()
+            self.pushList()
+        }
+        guard animated else {
+            finish()
+            completion(true)
+            return
+        }
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: finish, completion: completion)
+    }
+
+    private func cancelLogSlide(toX x: CGFloat, hideAfter: Bool = false) {
+        UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.slideLogPanel(toX: x)
+        } completion: { _ in
+            self.logDragging = false
+            if hideAfter { self.logPanel.isHidden = true }
+            self.layoutLogPanel()
+        }
     }
 
     private var shouldShowTermAccessory: Bool { GCKeyboard.coalesced == nil }
@@ -886,11 +1035,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // MARK: - Valet "Open in" import → reload list (SPEC §8)
     func reloadHostsAfterImport(_ result: HostStore.ImportResult) {
         NSLog("[VC] reloadHostsAfterImport: mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
+        AgentLog.info("config", "imported mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         hosts = HostStore.loadHosts()
         statusByHost = [:]; reachable = nil; probedHosts = []
         if result.asr, let creds = AsrCreds.load() {
             voice.asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
             NSLog("[VC] ASR creds imported → VolcAsr(resource=\(creds.resourceId))")
+            AgentLog.info("config", "ASR credentials loaded resource=\(creds.resourceId)")
         }
         // 导入会改 hosts → 旧的活动/保活终端身份可能失效,统一关掉。
         voice.shutdown(); applyVoiceContext(nil)
@@ -910,6 +1061,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     func reportImportFailure(_ message: String) {
         NSLog("[VC] import failure: \(message)")
+        AgentLog.error("config", "import failed: \(message)")
         nativeToast("导入失败:\(message)")
     }
 

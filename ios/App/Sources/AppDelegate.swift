@@ -1,6 +1,6 @@
 import UIKit
 
-/// 导航容器:大标题「Deck」列表(苹果原生设计语言)。状态栏/home indicator **交给顶层 VC** 决定
+/// 导航容器:大标题「Agent Station」列表(苹果原生设计语言)。状态栏/home indicator **交给顶层 VC** 决定
 /// (列表态显示、终端态全屏隐藏)。
 final class DeckNavController: UINavigationController {
     override var childForStatusBarHidden: UIViewController? { topViewController }
@@ -20,6 +20,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         window.rootViewController = nav
         window.makeKeyAndVisible()
         self.window = window
+        AgentLog.info("app", "launch")
         return true
     }
 
@@ -28,7 +29,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         (window?.rootViewController as? UINavigationController)?.viewControllers.first as? TerminalViewController
     }
 
-    // MARK: - "Open in XrealPOC" import (SPEC §8 real-device channel)
+    // MARK: - "Open in Agent Station" import (SPEC §8 real-device channel)
     /// A `.xrhosts` file AirDropped (or shared) into the app arrives here. AirDrop copies it into
     /// `Documents/Inbox/`; a document-picker / Files share may pass a security-scoped URL. We
     /// unpack the self-contained bundle into private storage (HostStore.importConfig) and tell the
@@ -37,6 +38,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ app: UIApplication, open url: URL,
                      options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
         NSLog("[AppDelegate] open url: \(url.lastPathComponent)")
+        AgentLog.info("config", "open import file \(url.lastPathComponent)")
         // Inbox/container URLs return false here (already inside our sandbox) — NOT a failure; only
         // a true return means we must stop accessing afterward. Proceed regardless.
         let scoped = url.startAccessingSecurityScopedResource()
@@ -50,12 +52,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             return true
         } catch {
             NSLog("[AppDelegate] import failed: \(error)")
+            AgentLog.error("config", "import failed: \(error)")
             terminalVC?.reportImportFailure("\(error)")
             return false
         }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
+        AgentLog.info("app", "terminate: stop xray tunnels")
         XrayProxy.stopAll()
     }
 }
