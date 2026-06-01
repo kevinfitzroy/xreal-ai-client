@@ -64,6 +64,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
     private static let maxProxyReconnectAttempts = 2
+    private static let terminalBackgroundColor = UIColor(red: 0x28 / 255.0, green: 0x29 / 255.0, blue: 0x2b / 255.0, alpha: 1)
+    private static let terminalForegroundColor = UIColor(red: 0xd6 / 255.0, green: 0xd8 / 255.0, blue: 0xdc / 255.0, alpha: 1)
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
     private static let shiftUpBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]
     private static let shiftDownBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]
@@ -108,8 +110,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         t.autoresizingMask = []   // 高度由 layoutTerm 按触屏 vkey 避让管理
         t.terminalDelegate = self
         t.keyHandler = self
-        t.nativeBackgroundColor = .black
-        t.nativeForegroundColor = UIColor(white: 0.9, alpha: 1)
+        configureTerminalTheme(t)
         t.inputView = UIView(frame: .zero)   // 0 高度 → 不弹软键盘,但仍是键盘 first responder(硬件键进)
         t.isHidden = true
         view.addSubview(t)
@@ -168,7 +169,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         pageCueView.isUserInteractionEnabled = false
         pageCueView.contentMode = .center
         view.addSubview(pageCueView)
-        terminalBottomCover.backgroundColor = .black
+        terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
         terminalBottomCover.isHidden = true
         view.addSubview(terminalBottomCover)
 
@@ -201,6 +202,35 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         #if DEBUG
         applyDebugLevers()
         #endif
+    }
+
+    private func configureTerminalTheme(_ terminalView: TerminalHostView) {
+        terminalView.nativeBackgroundColor = Self.terminalBackgroundColor
+        terminalView.nativeForegroundColor = Self.terminalForegroundColor
+        let terminal = terminalView.getTerminal()
+        terminal.ansi256PaletteStrategy = .xterm
+        terminalView.installColors([
+            Self.termColor(0x74, 0x78, 0x80), // ANSI black as foreground: visible on dark gray.
+            Self.termColor(0xd4, 0x6a, 0x6a),
+            Self.termColor(0x72, 0xbf, 0x78),
+            Self.termColor(0xc6, 0xa8, 0x5a),
+            Self.termColor(0x8e, 0xa3, 0xe6),
+            Self.termColor(0xc4, 0x8d, 0xd7),
+            Self.termColor(0x6f, 0xbb, 0xc2),
+            Self.termColor(0xd6, 0xd8, 0xdc),
+            Self.termColor(0x98, 0x9e, 0xa8),
+            Self.termColor(0xe0, 0x7a, 0x7a),
+            Self.termColor(0x89, 0xcc, 0x8d),
+            Self.termColor(0xd9, 0xbc, 0x6c),
+            Self.termColor(0xa8, 0xb6, 0xf0),
+            Self.termColor(0xd2, 0xa0, 0xe2),
+            Self.termColor(0x8a, 0xcf, 0xd5),
+            Self.termColor(0xec, 0xee, 0xf2),
+        ])
+    }
+
+    private static func termColor(_ r: UInt16, _ g: UInt16, _ b: UInt16) -> Color {
+        Color(red: r * 257, green: g * 257, blue: b * 257)
     }
 
     /// iOS.6:终端左缘右滑 → 回列表;列表右缘左滑 → 滑回最近终端。跟手拖动,松手过阈值才提交。
