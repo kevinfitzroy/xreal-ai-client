@@ -33,9 +33,10 @@ final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .systemBackground
+        // insetGrouped 标准配色:分组背景(浅灰/深),cell 用 secondarySystemGroupedBackground(白/深)→ 卡片边缘有对比。
+        backgroundColor = .systemGroupedBackground
         table.translatesAutoresizingMaskIntoConstraints = false
-        table.backgroundColor = .systemBackground
+        table.backgroundColor = .systemGroupedBackground
         table.dataSource = self
         table.delegate = self
         table.register(DeckProjectCell.self, forCellReuseIdentifier: "cell")
@@ -139,6 +140,7 @@ final class DeckProjectCell: UITableViewCell {
     private let dot = UIView()
     private let stateLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
+    private let badgeColumn = UIView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -157,9 +159,30 @@ final class DeckProjectCell: UITableViewCell {
         textCol.axis = .vertical; textCol.spacing = 2
         let badge = UIStackView(arrangedSubviews: [dot, stateLabel])
         badge.axis = .horizontal; badge.spacing = 5; badge.alignment = .center
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        badgeColumn.translatesAutoresizingMaskIntoConstraints = false
+        badgeColumn.addSubview(badge)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        badgeColumn.addSubview(spinner)
         NSLayoutConstraint.activate([dot.widthAnchor.constraint(equalToConstant: 8), dot.heightAnchor.constraint(equalToConstant: 8)])
 
-        let row = UIStackView(arrangedSubviews: [iconView, textCol, badge, spinner])
+        // 固定宽状态列:圆点钉在列首,3/4 字符状态的小圆点保持同一 x。
+        NSLayoutConstraint.activate([
+            badgeColumn.widthAnchor.constraint(equalToConstant: 80),
+            badgeColumn.heightAnchor.constraint(greaterThanOrEqualToConstant: 24),
+            badge.leadingAnchor.constraint(equalTo: badgeColumn.leadingAnchor),
+            badge.trailingAnchor.constraint(lessThanOrEqualTo: badgeColumn.trailingAnchor),
+            badge.centerYAnchor.constraint(equalTo: badgeColumn.centerYAnchor),
+            spinner.leadingAnchor.constraint(equalTo: badgeColumn.leadingAnchor),
+            spinner.centerYAnchor.constraint(equalTo: badgeColumn.centerYAnchor),
+        ])
+
+        // spacer 撑开 → 固定宽状态列靠右。
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = UIStackView(arrangedSubviews: [iconView, textCol, spacer, badgeColumn])
         row.axis = .horizontal; row.spacing = 12; row.alignment = .center
         row.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(row)
@@ -198,9 +221,9 @@ final class DeckProjectCell: UITableViewCell {
         }
     }
 
-    /// 物理键导航高亮(用系统 selected 背景近似)。
+    /// 物理键导航高亮:蓝色 tint(浅/深色都可见;tertiarySystemGroupedBackground 在浅色下≈分组灰,看不出)。
     func setKeyFocused(_ on: Bool) {
-        backgroundColor = on ? .tertiarySystemGroupedBackground : .secondarySystemGroupedBackground
+        backgroundColor = on ? UIColor.systemBlue.withAlphaComponent(0.18) : .secondarySystemGroupedBackground
     }
 
     // MARK: - 类型 → SF Symbol / 系统色

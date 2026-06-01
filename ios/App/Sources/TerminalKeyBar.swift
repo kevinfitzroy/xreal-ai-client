@@ -47,6 +47,19 @@ final class TerminalKeyBar: UIInputView {
         super.init(frame: CGRect(x: 0, y: 0, width: width, height: Self.rowHeight), inputViewStyle: .keyboard)
         autoresizingMask = [.flexibleWidth, .flexibleHeight]   // flexibleHeight 必需:否则键盘系统用 frame 高度(忽略 intrinsicContentSize)
         allowsSelfSizing = true
+        overrideUserInterfaceStyle = .dark   // 终端永远暗
+
+        // 不透明深色背景盖住系统键盘的浅色底(overrideUserInterfaceStyle 对 .keyboard 的 blur 底不生效)。
+        let bg = UIView()
+        bg.backgroundColor = UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1)
+        bg.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bg)
+        NSLayoutConstraint.activate([
+            bg.topAnchor.constraint(equalTo: topAnchor),
+            bg.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bg.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bg.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
 
         container.axis = .vertical
         container.spacing = Self.rowSpacing

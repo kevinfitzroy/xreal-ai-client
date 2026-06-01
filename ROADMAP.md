@@ -40,8 +40,8 @@
 | iOS.3 | **tmux 触摸翻页** | ✅ | 见 P2.8(点终端上/下半 = Shift+↑/↓) |
 | iOS.4 | **列表改原生(苹果设计语言)** | 🔄 进行中(已编译,待真机验) | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
-| iOS.6 | **边缘滑动手势** | ⬜ 待做 | **列表页**:最右侧往左滑 → 打开**最近一次打开的终端**;**终端页**:从左侧往右滑 → 回列表。标准 iOS edge-swipe 手感 |
-| iOS.7 | **最近终端保活(keep-warm)** | ⬜ 待做(与 iOS.6 配套) | 离开终端后**短时间不 close tmux/SSH**,保留 SwiftTerm 绘制状态 → iOS.6 的"右滑开最近终端"能瞬间滑回原终端(而非重连)。需:保活时长策略 + 超时真正 close(tmux session 服务端仍在,只断 client)+ race 与现有 openSeq/sessionGen 协调 |
+| iOS.6 | **边缘滑动手势** | 🔄 进行中(已实现并装机,待手势真机确认) | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
+| iOS.7 | **最近终端保活(keep-warm)** | 🔄 进行中(已实现并装机,待手势真机确认) | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
 
 ---
 
