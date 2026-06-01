@@ -363,7 +363,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 ---
 
-## 13. 富媒体预览契约(host → client 推图片 / HTML)— ⬜ 规划(P2.7)
+## 13. 富媒体预览契约(host → client 推图片 / HTML)— ⬜ 规划(P1)
 
 > **状态:规划中,设计已收敛、未开工**(立项 2026-06-01)。这是与 §4 语音注入**方向相反**的一条 push 通道:语音 = client→host 注入文本;预览 = host→client 推一个**只读全屏富媒体层**,补终端"只能吐字符"的表现单一。**两端(Android/iOS)同实现本节**。本节是协议单一真相源——skill、Android、iOS 三方按这份对齐。
 > **本节为 v1 追加、向后兼容**(host 不打哨兵 = 行为零变化)→ **不 bump Contract version**。

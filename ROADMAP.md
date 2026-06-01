@@ -2,7 +2,7 @@
 
 > 按**优先级分层**跟踪需求,而不是按 phase。判据是:**这条断了,整体流程还能不能打通?**
 > - **P0 核心**:断了 = app 不可用。**已全部打通**(Beam Pro X4100 真机日常用);焦点已移到 P1 收尾 + P2。
-> - **P1 可用性**:核心打通后优先补,影响"能不能脱离 dev rig 真正用起来"。
+> - **P1 可用性**:当前唯一未完成 P1 = **富媒体预览**。其它未完成项默认降到 P2/P3,不抢主线。
 > - **P2 体验增强**:不影响主流程,可随时搁置 / 接回。**搁置的必须留接口 + 在本文件记接回清单**。
 >
 > 维护规则:状态变化随手改这里(✅ done / 🚧 进行中 / ⏸️ 搁置 / ⬜ 未开始)。搁置一个功能时,把它的接口点写进 §4「接回清单」。
@@ -45,9 +45,9 @@
 
 ---
 
-## P1 — 可用性 / 录入(核心打通后优先)
+## P1 — 当前唯一高优先级:富媒体预览
 
-让 app 脱离 dev rig(`scripts/setup-mac-host.sh` + adb push)也能真正用起来。
+> 2026-06-01 重排:真正的 P1 只有 **rich media preview**。Host 接入 / manifest / ASR 等是已完成基线;session 驻留可配置、preview 文本、fleet pills、通知、多窗口、热词管理等全部降到 P2。
 
 | # | 需求 | 状态 | 备注 |
 |---|---|---|---|
@@ -55,8 +55,7 @@
 | P1.1b | Maestro CLAUDE.md + manifest 契约 | ✅ 文档 | `docs/orchestrator-CLAUDE.md` 定义角色 + manifest schema(`<base>/.xreal/projects.json`,Maestro写 app 读)。base path 存 app 配置(Valet 写),不存 manifest(防循环信任) |
 | P1.1c | app live-fetch manifest | ✅ 真机验证 | `ManifestFetcher` 经 `HostClient.catFile` 拉 `<basePath>/.xreal/projects.json` → `liveProjects`(findProject 按 **session** 查、seed 兜底)→ `pushHostList` 内容去重防闪烁。**刷新 = 事件驱动零空轮询**:列表首显 / back-to-list / onStart 各拉一次(`fetchExec` 单线程串行 + `fetchGen` 防乱序;拉取失败保留当前列表)。Maestro 改 manifest → 回列表即现 |
 | P1.2 | 真豆包 ASR(替 mock) | ✅ 真机验证 | **真双向流式**(`bigmodel_async` WS,`VolcFrame` 二进制协议+gzip)。按住即连 WS、`AudioRecorder` 边录边吐 200ms 裸 PCM 块(非 Opus)、中间结果实时上屏、松手发负包拿 final。会话式 `Asr` seam(`open/send/finish/cancel`+回调);race 防御=generation counter + `cancelled`/`done`。creds 走 Valet `asr.json`(无 UI)。**热词**:`corpus.context` 内联,`Hotwords.BASE`(Claude Code 控制命令)所有 project 继承 + manifest per-project 合并、按 token 预算 cap。语音键收为单 🎤。`VolcFrame`/`PcmChunker` 有 JVM 单测 |
-| P1.3 | session 驻留可配置(abduco/tmux/screen) | ⬜ | `tmuxAttachCommand` 现在硬编 tmux;agent 类需 tmux(capture-pane),纯 SSH 可 abduco。做成 per-project 配置 |
-| P1.4 | host 分组头展示 | ✅(已有) | index.html `<div class="host">` 按 host 分组。**non-core 但有用**,先留着;若将来嫌乱可降级 |
+| P1.3 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 当前唯一未完成 P1。见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
 
 ### Project 创建模型(2026-05-29 收敛 —— Maestro agent 驱动)
 
@@ -84,10 +83,11 @@
 | P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 数据源 P2.1(hooks 状态)已就绪;缺排序/提醒逻辑。"哪个 agent 要我反馈"一眼可见 |
 | P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 | P2.6 | 项目级**热词管理 skill** | ⬜ 未开始 | 热词读取链路已就绪(`Hotwords.BASE` 继承 + manifest `projects[].hotwords` per-project 合并喂 ASR)。**这个 skill 负责"写"那张表**:project agent 定期回顾、从语音识别明显错误里总结新热词,用户授权后刷新进该 project 的热词表。**待定:存储位置** —— manifest `projects[].hotwords` 字段(Maestro 转写)vs `<projectDir>/.xreal/hotwords.json`(project agent 自管)。实做时再定 |
-| P2.7 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
 | P2.8 | **触摸翻页(终端上/下半屏)** | ✅ iOS 已实现(2026-06-01) | 触屏设备的翻页入口:点终端**上半**=翻页上(Shift+↑,进 copy-mode 半页上)、**下半**=翻页下。与物理键 Shift+↑/↓ **同语义同字节**(`ESC[1;2A/B`),tmux `S-Up/S-Down` 绑定接住。给纯触屏(无物理翻页键)一致翻页。契约 = **SPEC §6**。iOS:`TerminalViewController.handleTermPageTap`(`UITapGestureRecognizer`,不挡 SwiftTerm 选择手势)。Android 锁横屏 + 物理键为主,按需补。预览层(§13)打开时不触发。 |
+| P2.9 | session 驻留可配置(abduco/tmux/screen) | ⬜ 未开始(从 P1 降级) | `tmuxAttachCommand` 现在硬编 tmux;agent 类需 tmux(capture-pane),纯 SSH 可 abduco。做成 per-project 配置。不影响当前主流程,暂不抢 P1 |
+| P2.10 | host 分组头展示 | ✅ 已有(从 P1 降级) | index.html `<div class="host">` 按 host 分组。non-core 但有用,先留着;若将来嫌乱可降级 |
 
-### 富媒体预览设计(P2.7 —— 2026-06-01 立项,设计已收敛,未开工)
+### 富媒体预览设计(P1.3 —— 2026-06-01 立项,设计已收敛,未开工)
 
 **动机**:终端只能吐字符,表现单一。host 上的 agent 经常产出图片(截图 / 渲染图 / 图表)或 HTML(报告 / diff / 预览),用户在 AR 眼镜下没法离开 app 去开浏览器看。给 app 加一个**只读全屏富媒体预览层**,让 agent 一句话把图/页推到用户眼前。
 
