@@ -17,13 +17,13 @@
 |---|---|---|---|
 | P0.1 | 列表枚举真实 host/project | ✅ | 静态 seed(`StatusPoller.staticListJson`)→ `ManifestFetcher` live-fetch manifest 覆盖(见 P1.1c)→ `window.setHosts`。**这是开真终端的前提**(Enter→`findProject` 按 session 查、seed 兜底) |
 | P0.2 | 列表键盘导航(方向键 + Enter) | ✅ | index.html `setFocus`/`keydown` + 虚拟键盘 `vkey`。**键盘专用 app 的命根子,任何时候都不能移除**(≠ §P2 的舰队聚合 pills) |
-| P0.3 | per-project 真 SSH 终端(attach tmux,含**多跳**) | ✅ | `onOpenProject`→`SshConnection`+`tmuxAttachCommand`;channel 热切(`switchTo`/`startReaderFor`)。**多跳 SSH(ProxyJump)已落地**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),OPS via TK 端到端认证(OPS 在 AWS 内网,只 TK 的 OpenVPN 可达)。 |
+| P0.3 | per-project 真 SSH 终端(attach tmux,含**多跳**) | ✅ | `onOpenProject`→`SshConnection`+`tmuxAttachCommand`;channel 热切(`switchTo`/`startReaderFor`)。**多跳 SSH(ProxyJump)已落地**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),private-worker via jump-edge 端到端认证(private-worker 在 AWS 内网,只 jump-edge 的 OpenVPN 可达)。 |
 | P0.4 | 终端显示(xterm WebGL + 中英文 + powerline + **翻页**) | ✅ | Meslo(Latin/powerline)+ Sarasa(CJK)+ WebGL 字体就绪;远端 `tmux -u` + UTF-8 locale。**tmux 半页翻页**:Shift+↑/↓ → root 表进 copy-mode(不与 Claude Code 冲突)+ history-limit 50000(`-f conf` 注入,服务端零增量)。 |
 | P0.5 | 硬件键路由(+ 虚拟键盘兜底) | ✅ | `dispatchKeyEvent` 路由 **F1=语音 / F2=返回**(Stage A.1 实测:Beam Pro 的 8BitDo F13–F24 被 `Generic.kl` 注释、到不了 app;F13/F14 + Ctrl+Alt+1/2 分支保留作兜底)。**虚拟键盘动态显隐**:8BitDo 插拔实时切(插着隐、拔了出),去掉多余 hint 说明条 |
 | P0.6 | 语音 daemon 状态机(overlay show/hide + Enter 注入) | ✅ | 骨架完成,ASR 仍是 mock(真豆包见 P1.2) |
 | P0.7 | BACK 返回列表 / 优雅降级 | ✅ | BACK 键 + home 键;SSH 失败回退 LocalEcho 不卡 |
 
-> P0 当前**已全部打通并在 Beam Pro X4100 真机日常用**(双 host:TK-ALIYUN 直连 + OPS 经 TK 多跳,各跑 Maestro)。物理设备项(8BitDo F1/F2、真麦克风)已实测。
+> P0 当前**已全部打通并在 Beam Pro X4100 真机日常用**(双 host:jump-edge 直连 + private-worker 经 jump-edge 多跳,各跑 Maestro)。物理设备项(8BitDo F1/F2、真麦克风)已实测。
 >
 > **可观测性(支撑性,非 P0 闭环)**:持久化日志 + 崩溃捕获已落地 —— `AppLog` 写外存(`adb pull`,不需 run-as)+ `XrealApp` 全局未捕获异常处理器落盘崩溃。出问题先 `adb pull` 取证。
 
@@ -75,7 +75,7 @@
 
 ## P2 — 体验增强(已搁置,留接口随时接回)
 
-不影响主流程打通。这是"AI agent 集群指挥台"愿景(见 memory `product-vision`)的差异化部分,但**核心流程能跑之后再接**。
+不影响主流程打通。这是 Agent Station / Agent 工作站("a mobile command station for AI agents")愿景的差异化部分,但**核心流程能跑之后再接**。
 
 | # | 需求 | 状态 | 接口/开关 |
 |---|---|---|---|

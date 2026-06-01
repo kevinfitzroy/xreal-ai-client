@@ -19,7 +19,7 @@
 # 开机自启(扎实化 maestro):tmux/claude 不随重启回来。`install-autostart` 装一条用户级 @reboot cron
 #   (`@reboot bash -lc '… restore'`),重启后自动重建 maestro 守护循环 + 所有 project session。免 root、免 sudo。
 #   maestro session 内仍是自愈 loop(claude 退了自动重起);cron 只负责把 tmux 在 boot 时拉起来。
-#   ⚠️ 两个前提缺一不可:① 这条 cron 行真装了(漏装则重启后 maestro 不回来、没人能远程唤醒——TK-ALIYUN 栽过);
+#   ⚠️ 两个前提缺一不可:① 这条 cron 行真装了(漏装则重启后 maestro 不回来、没人能远程唤醒——已有事故);
 #      ② cron/crond 服务真在跑(@reboot 只在服务起着时触发;最小化云镜像常没起 → 行白装)。maestro 启动应自检二者。
 #   替代方案(更"正"但通常要 sudo 开 linger):systemd user service,见 agent-setup-guide.md。
 #
@@ -164,7 +164,7 @@ cmd_new() {
       # 而不是误退后掉回 bash 没法管项目。sleep 1 防 claude 起不来时热循环。
       # trap : INT —— 让 SIGINT 只打断当前 claude(子进程拿默认处置),不连带把整个看门狗 loop
       # 一起 break 掉回 bash(bash 在非交互 while 里收到 SIGINT 且子命令被 INT 杀会退出循环 →
-      # maestro 死、没人能远程唤醒。TK-ALIYUN 2026-05-31 栽过:loop 被 Ctrl-C 带走掉回裸 shell)。
+      # maestro 死、没人能远程唤醒。已有事故:loop 被 Ctrl-C 带走掉回裸 shell)。
       maestro) startup='trap : INT; while :; do claude --continue 2>/dev/null || claude; sleep 1; done';;
       claude)  startup="claude";;
       agent)   startup="${XREAL_AGENT_CMD:-claude}";;

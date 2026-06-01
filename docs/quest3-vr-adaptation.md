@@ -16,7 +16,7 @@
 
 本项目的产品定位(memory `product-vision`)是 **AI agent 集群指挥台**,不是单纯 SSH client。当前在 Beam Pro 上是"一次看一个终端、来回切"。搬到 Quest 3,自然形态变成:
 
-> **一面墙的 agent 终端**。TK / OPS 两台 host 上每个 Maestro session 各占一个 panel,环绕用户铺开。一眼扫全队状态(working / waiting / disconnected),gaze/手柄选中某一个 → focus 进去用键盘+语音驱动它,驱动完抬头看下一个。
+> **一面墙的 agent 终端**。jump-edge / private-worker 两台 host 上每个 Maestro session 各占一个 panel,环绕用户铺开。一眼扫全队状态(working / waiting / disconnected),gaze/手柄选中某一个 → focus 进去用键盘+语音驱动它,驱动完抬头看下一个。
 
 这就是"为什么 VR 值得做"的叙事,而且它**直接解掉本方案最大的技术矛盾**(见 §5):
 
@@ -69,12 +69,12 @@
 │   └─ 键盘 dispatchKeyEvent + 语音 ASR 都注入 focused      │     │
 │                                                          ▼     │
 │  SSH 多路复用层(sshj):每 host 1 条连接 + N 个 PTY channel    │
-│   └─ TK 直连 / OPS 经 TK ProxyJump(SshJump,一次跳板复用)    │
+│   └─ jump-edge 直连 / private-worker 经 jump-edge ProxyJump(SshJump,一次跳板复用)    │
 │                                                                │
 │  Voice(AudioRecord→豆包 ASR)— 无需前台 Service               │
 └────────────────────────────────────────────────────────────────┘
             │ Raw SSH(零服务端增量,内网经 ProxyJump)
-            ▼   TK-ALIYUN / OPS,各跑 Maestro + tmux
+            ▼   jump-edge / private-worker,各跑 Maestro + tmux
 ```
 
 ### 4.1 代码复用矩阵
@@ -128,7 +128,7 @@
 **不要** N 个终端开 N 条 SSH 连接。SSH 协议本就在一条 TCP 传输上多路复用 channel;一台 host 开一条连接、跑 N 个 PTY session channel:
 
 - 省 N-1 次握手 / reader 线程 / known_hosts 校验;
-- ProxyJump(`SshJump` 本地端口转发)只跳一次,N 个内网 PTY 复用同一条跳板隧道 —— OPS 经 TK 多跳的开销摊薄到一次。
+- ProxyJump(`SshJump` 本地端口转发)只跳一次,N 个内网 PTY 复用同一条跳板隧道 —— private-worker 经 jump-edge 多跳的开销摊薄到一次。
 
 ⚠️ **约束需重新设计**:memory `input-path-constraints` 锁定"SSH 写入必须后台单线程"(主线程写永久损坏 sshj 缓冲)。单连接单 channel 时一个 writer 线程够;**N channel 下要每 channel 串行化写**(单 writer 线程 + 路由到目标 channel 的队列,或每 channel 一个专用写线程)。这条不能含糊,改之前先想清线程模型。
 
@@ -179,7 +179,7 @@ Quest 是 **SPEC.md 的第三个实现**(Android / iOS / Quest)。但**多窗口
 | 阶段 | 内容 | 出口判据 |
 |---|---|---|
 | **P0 tracer** | 空 Spatial SDK app + **一个** WebView panel 跑 index.html(R1) | 真机上一个终端 panel:渲染清晰、点击/按键对位、SSH echo 闭环 |
-| **P1 单终端打通** | 复用 SshConnection/Bridge/Voice,单 panel 端到端(连 TK，打字+语音) | 等价现在 Beam Pro 的单终端体验,只是在 VR 里 |
+| **P1 单终端打通** | 复用 SshConnection/Bridge/Voice,单 panel 端到端(连 jump-edge，打字+语音) | 等价现在 Beam Pro 的单终端体验,只是在 VR 里 |
 | **P2 多开** | N panel + 焦点路由(§6.1)+ SSH 连接复用(§6.2)+ glanceable 状态墙(§5) | 同时开 ≥4 个终端,切焦点驱动,扫全队状态 |
 | **P3 空间体验** | 布局持久化(panel 摆哪记住)、8BitDo(R4)、配置注入(R5) | 脱离 dev rig 日常可用 |
 

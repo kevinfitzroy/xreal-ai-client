@@ -58,7 +58,7 @@
 
 ## A.2(2 天)sshj 0.39+ 在 Android 14 上的 BouncyCastle 实战
 
-> ✅ **已隐含通过(2026-05,Beam Pro 真机)**:sshj `SSHClient` + `Crypto.ensureFullBouncyCastle()`(X25519 KEX 需完整 BC)在真机上连通海外 host(TK-ALIYUN)+ 经跳板多跳到内网 host(OPS via ProxyJump),终端端到端跑通,`connect/authPublickey/PTY/resize` 均无异常。**没出现 `NoClassDefFoundError` / 算法不支持**,主路径成立,无需切 sshlib(`SshConnection` 仍保留可切换抽象)。下文为原始实验设计,留作记录。
+> ✅ **已隐含通过(2026-05,Beam Pro 真机)**:sshj `SSHClient` + `Crypto.ensureFullBouncyCastle()`(X25519 KEX 需完整 BC)在真机上连通海外 host(jump-edge)+ 经跳板多跳到内网 host(private-worker via ProxyJump),终端端到端跑通,`connect/authPublickey/PTY/resize` 均无异常。**没出现 `NoClassDefFoundError` / 算法不支持**,主路径成立,无需切 sshlib(`SshConnection` 仍保留可切换抽象)。下文为原始实验设计,留作记录。
 
 ### 假设要验证
 

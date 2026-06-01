@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **任务**:实现一个 Android App,把 SSH client + 终端 UI + 语音输入全部塞进同一个进程,跑在 XREAL AR 眼镜 + Beam Pro 上,让用户通过物理按键 + 语音操作远程服务器上的 Claude Code(及 Maestro 编排的 agent 集群)。
 
-**当前状态**:**已在真机 Beam Pro X4100(Android 14)上部署运行,核心闭环全打通**——项目列表 → 开 project → 真 SSH 终端 → 物理键盘/语音 → 返回列表。两台真实 host 在用:**TK-ALIYUN**(海外,user=xreal)、**OPS**(AWS 内网,user=ubuntu,经 TK 多跳 ProxyJump 到达),各跑 Maestro 编排。
+**当前状态**:**已在真机 Beam Pro X4100(Android 14)上部署运行,核心闭环全打通**——项目列表 → 开 project → 真 SSH 终端 → 物理键盘/语音 → 返回列表。两台生产 host 在用(脱敏名):**jump-edge**(海外)、**private-worker**(内网,经 jump-edge 多跳 ProxyJump 到达),各跑 Maestro 编排。
 
 最近一轮(2026-05)已落地:多跳 SSH(`via` + SshJump,手机不挂 VPN)、持久化日志 + 崩溃捕获(AppLog/XrealApp)、tmux 半页翻页(Shift+↑/↓)、虚拟键盘动态显隐、列表冷加载态、Agent 状态展示(working/waiting/disconnected/unknown,走 Claude Code hooks,见 §6)、**SSH-over-443 隧道**(可选 per-host:app 内嵌 xray-core 起本地 SOCKS,SSH 经 vmess/tls:443 绕 GFW 对 :22 的限速;**当前只支持 vmess**;见 §5.1 + SPEC §5.1)。
 
@@ -62,7 +62,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 └────────────────┬─────────────────────────────────────────┘
                  │ Raw SSH (port 22)，内网 host 经跳板机 ProxyJump
                  ▼
-       多台 host(TK-ALIYUN 直连 / OPS 经 TK 多跳)
+       多台 host(jump-edge 直连 / private-worker 经 jump-edge 多跳)
        └─ tmux: 每 host 一个 Maestro + N 个 project session
           claude / agent / ssh,Maestro 编排;hooks 写 .xreal/status.json
        (无 ttyd / 无 nginx / 无 Voice Gateway;唯一服务端增量见 §5)
@@ -215,7 +215,7 @@ GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正
 | **拉持久化崩溃/连接日志** | `adb pull /sdcard/Android/data/io.github.kevinfitzroy.xrealclient/files/logs/app.log` | `AppLog` 写的文件日志(生命周期/SSH 连接/display 增删/WebView render-gone/全局未捕获崩溃栈)。NebulaOS 直接 pull,不需 run-as。超 512KB 滚一份 `app.log.1` |
 | **重开后看上次为啥崩** | `adb logcat -s AppLogPrev` | app 一启动就把上一会话(上次进程)日志尾部重喷 logcat。闪退在眼镜上发生、当时没接电脑也能事后复盘 |
 
-### 10.4 服务端 / host(真 host = TK-ALIYUN / OPS;本机 Mac 当临时测试 host)
+### 10.4 服务端 / host(生产 host 脱敏名 = jump-edge / private-worker;本机 Mac 当临时测试 host)
 
 | 操作 | 命令 | 备注 |
 |---|---|---|

@@ -33,16 +33,16 @@
 
 **✅ iOS POC + 正式客户端 Phase 1 已验通(2026-05-31,`ios/`,模拟器,均截图 Read 确认)**:
 - **POC**:WKWebView **原样跑 Android 的 `index.html`(零改动)** + `window.Bridge` shim→`messageHandlers` Base64 桥 + 字体(file:// 无跨域)+ WebGL + Citadel SSH 真 PTY,全通。
-- **Phase 1 核心闭环**:`hosts.json → Agent Deck 列表(cat manifest)→ 开 project → ed25519 SSH → tmux PTY → 返回`,**port 自 Android**(双轨 channel:manifest 走独立短命 exec / project 走交互 PTY;`syncSize` 热切重推尺寸;`openSeq`+`sessionGen` race 守护;`tmux -u`+UTF-8)。新增 Swift `Models/HostStore/ManifestFetcher` + 进化 `SSHSession/TerminalViewController`。本地 Mac host(127.0.0.1,`~/.ssh/xreal_phase0` ed25519,已授权)验通。
+- **Phase 1 核心闭环**:`hosts.json → Agent Station 列表(cat manifest)→ 开 project → ed25519 SSH → tmux PTY → 返回`,**port 自 Android**(双轨 channel:manifest 走独立短命 exec / project 走交互 PTY;`syncSize` 热切重推尺寸;`openSeq`+`sessionGen` race 守护;`tmux -u`+UTF-8)。新增 Swift `Models/HostStore/ManifestFetcher` + 进化 `SSHSession/TerminalViewController`。本地 Mac host(127.0.0.1,`~/.ssh/agentstation_dev` ed25519,已授权)验通。
 - **Phase 1 UI**(用户要求,SPEC §6.1):横竖兼容(旋转 `fitAddon` 重排)+ 虚拟键盘**横屏 1 行 / 竖屏 2 行**(共享 `index.html` 加一个 `@media(orientation:portrait)`,两份 byte-identical;Android 锁横屏→永远 1 行→零影响)+ 蓝牙键盘 connect→`setHwKeyboard` 隐藏。
 - 工程 xcodegen;一批 `#if DEBUG`+launch-arg 验证脚手架(gated,生产零影响,类似 Android `DebugInputServer`)。
 - **Phase 2 状态徽章已验通**:列表 `cat <base>/.xreal/status.json`(同连接,port `ManifestFetcher.parseStatus` 数组 schema + `StatusPoller.staticListJson` 合并:不可达→disconnected/有上报→用/无→unknown)+ 返回列表重拉。截图验 working/waiting/needs-permission/unknown/disconnected 五态 + age + refresh。改动仅 3 个 `ios/App/Sources/*.swift`,未碰 index.html/android。
 - **Phase 3 健壮性收尾已验通**:① 前台重拉(`willEnterForeground`,LIST 态→refresh,Android `onStart` 对等);② **死 host 不 hang 列表**(`withTaskGroup` 并发 + 7s 硬超时 + 非结构化 Task 逃逸 —— 黑洞 host TCP 不响应 cooperative cancel,必须外部超时;实测活 host 0.3s 出来、黑洞 7s 翻 offline 不拖累活 host);③ PTY 掉线优雅(`onClosed` 黄字提示不 crash/冻,`tmux new -A` reopen 重连;`live` flag + `ssh===s` guard 消重复"连接失败"误报);④ per-host 增量 loading;⑤ 优雅降级 `webContentProcessDidTerminate` 自愈回列表(SPEC §9)。改 4 个 ios Swift。
 - **Phase 4 多跳 `via` ProxyJump 已验通**:**Citadel 0.12 有原生 `SSHClient.jump(to:)`**(在跳板上开 directTCPIP channel + 第二次完整握手)→ **不需要** port Android 的 `ServerSocket`+`LocalPortForwarder`(那是 sshj 无原生 ProxyJump 才手搓的);功能塌缩成「换种方式拿 SSHClient」,下游 `executeCommand`(cat)/`withPTY`(PTY)不变。新增 `SshConnect.swift`;`via` 解析接进 manifest-cat 和 PTY 两条路(死跳板仍被 7s 超时框住)。本地两跳 rig(跳板 :22 + 内网 sshd :2223)验通,**lsof 拓扑证明 app 只连 :22、跳板转发 :2223** = 真 ProxyJump。SPEC §11 多跳 cell 回填。**这是 iOS 纯模拟器能验的最后一块——iOS 客户端核心(列表+状态+SSH+健壮+多跳)收官。**
 
-**✅ ssh-rsa 跨端坑已解**:真实 host(`xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0`)2026-05-31 核实**全是 ed25519**,无需迁移;**约定客户端一律 ed25519、不用 RSA**(Citadel RSA 走 legacy ssh-rsa/SHA-1)。SPEC §5。
+**✅ ssh-rsa 跨端坑已解**:真实 host + dev-rig 2026-05-31 核实**全是 ed25519**,无需迁移;**约定客户端一律 ed25519、不用 RSA**(Citadel RSA 走 legacy ssh-rsa/SHA-1)。SPEC §5。
 
-**✅ 服务端 maestro 开机自启(2026-05-31,commit `0bd34bd`,已部署 TK)**:`xreal-project.sh` 加 `restore`(按 manifest 幂等重建整个 deck)+ `install-autostart`(@reboot cron,免 root)。**TK 已部署**:scp 新脚本 + 装 @reboot cron + `restore` 把 company-web/invest-digest 拉回(4 session 全活;swap/openvpn 重启本就自动回来)。⚠️ project 的 claude 走 manifest `startup="claude"` = **重启后开全新会话**(maestro 是 `--continue` 续);要 project 也续上下文,把它们 manifest `startup` 改 `claude --continue`。
+**✅ 服务端 maestro 开机自启(2026-05-31,commit `0bd34bd`)**:`xreal-project.sh` 加 `restore`(按 manifest 幂等重建整个 deck)+ `install-autostart`(@reboot cron,免 root)。已在一台生产跳板 host 部署并验证 restore 拉回多个 session。⚠️ project 的 claude 走 manifest `startup="claude"` = **重启后开全新会话**(maestro 是 `--continue` 续);要 project 也续上下文,把它们 manifest `startup` 改 `claude --continue`。
 
 **✅ iOS 已上真机(iPhone 15 Plus / iOS 18.5),功能闭环**(2026-05-31):
 - **Phase 5**(`bc5c746`)真机签名装机 + **配置注入**(SPEC §8 唯一待解已解):分享单「Open in」自含 `.xrhosts`(内联 key)→ 导入私有存储。真机实测 AirDrop→导入→SSH 连 Mac LAN host。
@@ -65,13 +65,13 @@
 
 ---
 
-项目**早已过 Phase 0**。核心端到端闭环 + Agent 状态展示已在 **Beam Pro X4100 真机**跑通,两台真实 host 在日常用:
+项目**早已过 Phase 0**。核心端到端闭环 + Agent 状态展示已在 **Beam Pro X4100 真机**跑通,两台生产 host 在日常用(下文用脱敏名):
 
-- **TK-ALIYUN**(海外 Aliyun,直连)+ **OPS**(AWS 内网,只 VPN 可达,`via = "TK-ALIYUN"` 经 TK 多跳)。各跑一个 Maestro。
-- **OpenVPN 从手机搬到 TK**:手机不再挂 VPN,OPS 经 TK 的 OpenVPN + ProxyJump 端到端认证可达(见下方多跳 SSH 条)。
+- **jump-edge**(海外 Aliyun,直连)+ **private-worker**(AWS 内网,只 VPN 可达,`via = "jump-edge"` 经 jump-edge 多跳)。各跑一个 Maestro。
+- **OpenVPN 从手机搬到 jump-edge**:手机不再挂 VPN,private-worker 经 jump-edge 的 OpenVPN + ProxyJump 端到端认证可达(见下方多跳 SSH 条)。
 
 **本轮(2026-05-31)落地**(均真机验证,详见 §1):
-- **多跳 SSH(ProxyJump)**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),OPS via TK 端到端认证。
+- **多跳 SSH(ProxyJump)**:`HostConfig.via` + `SshJump`(sshj 本地端口转发),private-worker via jump-edge 端到端认证。
 - **Agent 状态展示**:卡片显示 working / waiting / disconnected / unknown + 时长。**走 Claude Code hooks 事件驱动,非抓屏**:hook 写 `<base>/.xreal/status.json`,app 进列表/back/onStart 各 `cat` 一次(`ManifestFetcher` 顺手拉),`xreal-project.sh` 自动部署 hooks。增量渲染防闪烁。
 - **持久化日志 + 崩溃捕获**:`AppLog` 写外存(adb pull 不需 run-as)+ `XrealApp` 全局未捕获异常处理器。
 - **tmux 半页翻页**:Shift+↑/↓ → root 表进 copy-mode(不与 Claude Code 冲突)+ history-limit 50000(`-f conf` 注入,服务端零增量)。
@@ -87,9 +87,9 @@
 
 ## 0. (历史)最新进展(2026-05-28 晚 · 产品重塑 + UI 打磨,均真机验证)
 
-产品从"单 SSH 终端"重塑成 **AI agent 集群指挥台 "Agent Deck"**(详见 memory `product-vision`)。主入口 = WebView SPA 列表页 ⇄ 终端页。已在 **Beam Pro X4100 真机**全部验证通过:
+产品从"单 SSH 终端"重塑成 **Agent Station / Agent 工作站**:a mobile command station for AI agents。主入口 = agent 列表页 ⇄ 终端页。已在 **Beam Pro X4100 真机**全部验证通过:
 
-- **Agent Deck 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**(2026-05-31 更新)四态色现由 hooks 状态(status.json)驱动,已落地;最近命令 preview 仍待抓屏路径(见 §0.0)。**
+- **Agent Station 列表页**(`index.html`):host 分组、Claude/SSH/agent 三类 icon、工作中/等待反馈/未激活/断开 四态色(等待反馈琥珀脉冲最跳眼)、agent 最近命令 preview、顶部舰队概览。**(2026-05-31 更新)四态色现由 hooks 状态(status.json)驱动,已落地;最近命令 preview 仍待抓屏路径(见 §0.0)。**
 - **横屏锁定 + 响应式**(`auto-fill minmax(360px)` 双/三列,适配眼镜 16:10)。
 - **彻底禁用系统 IME**(`FLAG_ALT_FOCUSABLE_IM`)+ **自绘虚拟键盘 v2**(13 键 2 行,只在终端显示;列表卡片可点导航)。
 - **SPA 导航**:DPAD_CENTER 进项目,⌂返回/硬件BACK 回列表(键盘专用:已去掉卡片点击 + 终端 ‹返回 触摸按钮)。
@@ -100,7 +100,7 @@
 - **✅ detector 已对 Claude Code v2.1.153 实测校准**:真快照存 `app/src/test/resources/panes/`(idle/working/waiting/ssh),`ClaudeCodePaneCalibrationTest` 锁 4 状态分类。**13 个单测全过**。关键结论:WORKING 靠 `esc to interrupt`(spinner 词随机:Osmosing/Hashing/Mulling/Doing);WAITING 靠 `Do you want to proceed?`+`❯ 1.`;`✻` 既在 spinner 也在完成行。
 - **✅ 真机端到端跑通(0.3)**:Beam Pro 经 `adb reverse tcp:2222 tcp:22` → Mac sshd → sshj → tmux capture → detector → 列表 UI。实测 IDLE→WORKING 实时翻成「工作中」绿色,fleet 计数同步。
 - **0.3 路上修的两个真 bug(都已修,是 keeper)**:① sshj 在 Android 报 `no such algorithm: X25519 for provider BC` —— Android 自带精简 BC 遮蔽完整 bcprov;`Crypto.ensureFullBouncyCastle()`(MainActivity.onCreate 首行调)移除系统 BC 插完整版修复。**这同时干掉了 Stage A.2 的主要风险**。② 非交互 SSH exec 的 PATH 太窄找不到 tmux → HostClient 脚本前置 `export PATH=...:/usr/local/bin:...`。
-- **怎么重跑这个 demo**(loadHosts 现返回 `emptyList()`,poller 默认休眠):① Mac 起 tmux session + `claude`;② `adb reverse tcp:2222 tcp:22`;③ `adb push ~/.ssh/xreal_phase0 /data/local/tmp/`;④ 临时把 `SettingsStore.loadHosts()` 改成读 `/data/local/tmp/xreal_phase0` + 返回 mac-dev host(见 git `bfa83f0..` 之后那次 0.3 commit 的 diff 里有现成代码)。**测完改回 emptyList()**。
+- **怎么重跑这个 demo**(loadHosts 现返回 `emptyList()`,poller 默认休眠):① Mac 起 tmux session + `claude`;② `adb reverse tcp:2222 tcp:22`;③ `adb push ~/.ssh/agentstation_dev /data/local/tmp/`;④ 临时把 `SettingsStore.loadHosts()` 改成读 `/data/local/tmp/agentstation_dev` + 返回 mac-dev host(见 git `bfa83f0..` 之后那次 0.3 commit 的 diff 里有现成代码)。**测完改回 emptyList()**。
 
 **✅ per-project 真 SSH 终端落地 + 真机端到端(T.1)**:
 - `onOpenProject` 查 `hosts` 配置 → 后台连 `SshConnection`(`tmux new -A -s <session>` attach 该 project)→ `switchTo` 热切活动 channel;查不到(mock)→ 回退 `LocalEchoChannel`。`switchTo` 用 reader generation + 关旧 channel 解阻塞;`openSeq` 防快速 open→back→open 错绑(advisor 抓的 race)。
@@ -146,7 +146,7 @@ Phase 0(emulator 跑通骨架)+ Stage B(真 SSH / 真 AudioRecord / 真豆包 AS
 android/app/src/main/
 ├── AndroidManifest.xml         INTERNET / RECORD_AUDIO / FOREGROUND_SERVICE_MICROPHONE
 ├── assets/
-│   ├── index.html              WebView SPA:Agent Deck 列表页 ⇄ 终端页 + xterm.js + voice overlay + 自绘虚拟键盘
+│   ├── index.html              WebView SPA:Agent Station 列表页 ⇄ 终端页 + xterm.js + voice overlay + 自绘虚拟键盘
 │   ├── xterm.{js,css}          v5.5.0
 │   ├── addon-{fit,webgl,search}.js
 ├── res/values/
@@ -219,7 +219,7 @@ Mac M1 Pro / macOS 26.3.1 / 16 GB RAM,但 `vm_stat` 显示 **unused 仅 328 MB**
 `./scripts/setup-mac-host.sh`(幂等:起 tmux+claude、adb reverse/forward、push key+hosts.json、重启 app)→ 列表出现真 host → 开 project → 真 SSH 终端。电脑打字直通:`python3 scripts/term-relay.py`。详见 CLAUDE.md §10.6。
 
 ### host 接入 = 代客安装(Valet),无设置 UI
-真 host(TK-ALIYUN / OPS)经 Valet agent `adb push` key+config 到 staging,app 启动 `SettingsStore.importStagingIfPresent` 导入私有存储。**刻意不做 host 录入 UI**(老的 `ConfigActivity` 已被取代)。引导见 `docs/agent-setup-guide.md`。project 级清单由各 host 的 Maestro 写 manifest(`<base>/.xreal/projects.json`),app `cat` 拉取。
+真 host(脱敏名 jump-edge / private-worker)经 Valet agent `adb push` key+config 到 staging,app 启动 `SettingsStore.importStagingIfPresent` 导入私有存储。**刻意不做 host 录入 UI**(老的 `ConfigActivity` 已被取代)。引导见 `docs/agent-setup-guide.md`。project 级清单由各 host 的 Maestro 写 manifest(`<base>/.xreal/projects.json`),app `cat` 拉取。
 
 ### 状态展示部署
 hooks 由 `docs/xreal-project.sh` 自动部署(写 `<base>/.xreal/status.json`)。新 host 上的 Maestro 起 project 时会带上,app 进列表即读。

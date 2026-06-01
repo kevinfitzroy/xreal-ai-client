@@ -1,16 +1,16 @@
 <div align="center">
 
-<img src="docs/images/icon.png" width="112" alt="xreal-ai-client">
+<img src="docs/images/icon.png" width="112" alt="Agent Station">
 
-# xreal-ai-client
+# Agent Station
 
-**一套戴在脸上的远程开发终端** —— 用 AR 眼镜 + 口袋安卓主机 + 语音,在通勤路上 / 咖啡馆 / 公园里指挥一支跑在云端的 Claude Code「agent 舰队」。不用笔记本,不用鼠标,不用触摸。
+**Agent 工作站** —— a mobile command station for AI agents。它不是 chat box,而是一个面向严肃工作的 AI agent 群控客户端:用 iPhone 或 AR 眼镜 + 口袋主机 + 语音,在通勤路上 / 咖啡馆 / 公园里指挥一支跑在云端的 Claude Code「agent 舰队」。不用笔记本,不用鼠标。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-94e0b2.svg)](LICENSE) ![Platform](https://img.shields.io/badge/platform-Android%2014-3ddc84.svg) ![Stack](https://img.shields.io/badge/stack-Kotlin%20%2B%20xterm.js-7f52ff.svg) ![Status](https://img.shields.io/badge/status-live%20on%20Beam%20Pro-1f6feb.svg) ![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-d97757.svg)
 
 </div>
 
-一个 Android App 把 SSH client + 现代 terminal UI(WebView + xterm.js)+ 语音输入塞进同一个进程,跑在 **XREAL One Pro AR 眼镜 + Beam Pro** 上,连回你自己的服务器操作 Claude Code。
+Agent Station 把 SSH client + 现代 terminal UI + 语音输入塞进同一个客户端,连回你自己的服务器操作 Claude Code。Android 可跑在 **XREAL One Pro AR 眼镜 + Beam Pro** 上;iOS 也已经打磨成可独立使用的 Agent 工作站。
 
 <div align="center">
 
@@ -72,7 +72,7 @@
 
 ### 🟢 Agent 状态一览:一眼看出哪个在等你
 
-列表(Agent Deck)里每张卡片直接显示该 agent 的**实时状态 + 时长**,不用挨个点进去看:
+Agent Station 列表里每张卡片直接显示该 agent 的**实时状态 + 时长**,不用挨个点进去看:
 
 | 状态 | 含义 | 样式 |
 |---|---|---|
@@ -98,7 +98,7 @@
 
 3. **零服务端增量,优雅降级。** 服务端只跑你本来就有的 SSH + tmux + Claude Code —— 不装任何自定义 daemon、网关、ttyd。聪明都在 client 端。任何一环挂了,你随时退回 Termius / Termux 继续干活,这个 app 不是必需品。
 
-产品定位不是"又一个 SSH client",而是一个 **AI agent 集群指挥台**:层级是 `Host → 多个 Project`,主入口是项目列表 —— 同时管 ~10 个远程 agent,一眼看出哪个在干活、哪个卡住等你反馈。
+产品定位不是"又一个 SSH client",也不是 chat box,而是一个 **Agent 工作站**:层级是 `Host → 多个 Project`,主入口是项目列表 —— 同时管 ~10 个远程 agent,一眼看出哪个在干活、哪个卡住等你反馈。
 
 ---
 
@@ -154,7 +154,7 @@ App 锁横屏、响应式布局,从第一天就按"眼镜里的宽屏 dashboard"
 2. 它问你 host 信息、生成专用 key、经 `adb` 装好 app,并把 [`docs/orchestrator-CLAUDE.md`](docs/orchestrator-CLAUDE.md) 部署成服务器上的 Maestro(配 [`docs/xreal-project.sh`](docs/xreal-project.sh) 建项目助手)。
 3. 之后戴上眼镜,对 Maestro 说"帮我搞个做 X 的项目",它建目录、起 agent、更新列表;你 BACK 回列表,新项目就在那儿。
 
-> **给帮你装的 agent**:整个 onboarding **建议全程走 `adb` 通道**,不要手动 GUI 安装、也不要在眼镜里输任何配置 —— 构建 APK(`cd android && ./gradlew assembleDebug`)→ `adb install -r app/build/outputs/apk/debug/app-debug.apk` → 再做**代客安装**(`adb push` 专用 key + host 配置到 staging,启动 app 触发导入)。host / key 的初始化也走 adb,不另设 UI。完整 runbook 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md)。
+> **给帮你装的 agent**:不要让用户在手机/眼镜里手输配置。完整 runbook 见 [`docs/agent-setup-guide.md`](docs/agent-setup-guide.md):iPhone 真机生成脱敏命名的自含 `.xrhosts`(内联 key + 可选 ASR/proxy)→ AirDrop /「用 Agent Station 打开」;Android / Beam Pro 走 `adb push` 专用 key + `hosts.json` + 可选 `asr.json` 到 staging。host / key / Maestro 初始化都由这个 agent 代办,不另设 UI。
 
 **安全**:每台 host 一把**专用、一次性**的 SSH key,在你笔记本上生成,经 USB(`adb`)直送 app 私有存储(`600`)。中转区里那把临时 key,由 Valet 在确认导入后 `adb shell rm` 清掉。**全程不碰你的主 key。**
 

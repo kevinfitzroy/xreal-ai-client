@@ -48,9 +48,9 @@
                  │ Raw SSH (port 22)
         ┌────────┴─────────────────────────────────────┐
         ▼ 直连                                          ▼ 多跳(ProxyJump)
-  TK-ALIYUN(海外)                            TK-ALIYUN  ──本地端口转发──▶  OPS(AWS 内网)
-  user=xreal                                  (挂 OpenVPN→AWS Client VPN)   user=ubuntu,经 TK 到达
-  └─ tmux: <session> 跑 claude                端到端认证打到 OPS,手机不挂 VPN
+  jump-edge(海外)                            jump-edge  ──本地端口转发──▶  private-worker(AWS 内网)
+  user=devuser                                  (挂 OpenVPN→AWS Client VPN)   user=appuser,经 jump-edge 到达
+  └─ tmux: <session> 跑 claude                端到端认证打到 private-worker,手机不挂 VPN
      └─ Maestro orchestrator + .xreal/{projects.json,status.json}
      (无 ttyd / 无 nginx / 无 Voice Gateway —— 服务端只跑 tmux + Claude Code)
 
@@ -60,7 +60,7 @@
       → app(ManifestFetcher)一次性 cat → 列表卡片 working/waiting/disconnected/unknown
 ```
 
-**多跳 SSH(ProxyJump)**:OPS 在 AWS 内网,只 VPN 可达。`HostConfig.via = "TK-ALIYUN"` → `SshJump`(sshj 本地端口转发)先连 TK,把 `127.0.0.1:<随机口>` 转发到 OPS:22,真正的 SSHClient 连本地口 ——**SSH 认证端到端打到 OPS,TK 只转发 TCP、不持有 OPS 凭证**。OpenVPN/AWS Client VPN 挂在 TK 上,**手机不再挂 VPN**。
+**多跳 SSH(ProxyJump)**:private-worker 在 AWS 内网,只 VPN 可达。`HostConfig.via = "jump-edge"` → `SshJump`(sshj 本地端口转发)先连 jump-edge,把 `127.0.0.1:<随机口>` 转发到 private-worker:22,真正的 SSHClient 连本地口 ——**SSH 认证端到端打到 private-worker,jump-edge 只转发 TCP、不持有 private-worker 凭证**。OpenVPN/AWS Client VPN 挂在 jump-edge 上,**手机不再挂 VPN**。
 
 ---
 
@@ -190,7 +190,7 @@ class SshConnection(
 
 文件:`app/src/main/kotlin/.../SshJump.kt`
 
-OPS 在 AWS 内网,只 VPN 可达。`SshJump.open(spec, targetHost, targetPort)` 用 sshj 的 `LocalPortForwarder`:先连跳板 TK,把 `127.0.0.1:<系统分配口>` 转发到 `OPS:22`,返回 `localPort`。调用方(`SshConnection` / `HostClient`)把真正的 SSHClient 连到这个本地口 ——**认证端到端打到 OPS,跳板只转发 TCP**。`HostConfig.via = "TK-ALIYUN"` 触发这条路径;`StatusPoller`/`ManifestFetcher` 解析 `via` 拼出 `JumpSpec`。VPN(OpenVPN→AWS Client VPN)挂在 TK 上,手机不挂。
+private-worker 在 AWS 内网,只 VPN 可达。`SshJump.open(spec, targetHost, targetPort)` 用 sshj 的 `LocalPortForwarder`:先连跳板 jump-edge,把 `127.0.0.1:<系统分配口>` 转发到 `private-worker:22`,返回 `localPort`。调用方(`SshConnection` / `HostClient`)把真正的 SSHClient 连到这个本地口 ——**认证端到端打到 private-worker,跳板只转发 TCP**。`HostConfig.via = "jump-edge"` 触发这条路径;`StatusPoller`/`ManifestFetcher` 解析 `via` 拼出 `JumpSpec`。VPN(OpenVPN→AWS Client VPN)挂在 jump-edge 上,手机不挂。
 
 `build.gradle.kts` 依赖:
 
@@ -391,7 +391,7 @@ SessionEnd        ──┘    → 聚合 .xreal/status.json          → Sessio
 | 6 | Voice 注入路径 | **直写 SSH outputStream** | Voice Daemon 不需要知道 xterm.js 存在 |
 | 7 | 服务端 session 驻留 | **agent 类 tmux,纯 SSH 可 abduco** | 升级成 agent 指挥台后,状态/翻页需要 tmux;纯 SSH 仍可 abduco,见 [`session-persistence-options.md`](session-persistence-options.md) |
 | 8 | Agent 状态来源 | **Claude Code hooks(非抓屏)** | 事件驱动,准、省,零 5s 轮询;抓屏方案搁置(见 §3.6) |
-| 9 | OPS(内网 host)接入 | **多跳 ProxyJump(经 TK)** | VPN 挂 TK,手机不挂;认证端到端到 OPS(见 §3.2.1) |
+| 9 | private-worker(内网 host)接入 | **多跳 ProxyJump(经 jump-edge)** | VPN 挂 jump-edge,手机不挂;认证端到端到 private-worker(见 §3.2.1) |
 
 ---
 

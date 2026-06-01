@@ -1,8 +1,8 @@
-# SPEC.md — XREAL AI Client 客户端契约(平台中立)
+# SPEC.md — Agent Station 客户端契约(平台中立)
 
 > **Contract version: 1**
 >
-> 这是 XREAL AI Client **所有客户端实现的单一真相源**。当前有**三个**目标客户端:
+> 这是 Agent Station(**Agent 工作站**,a mobile command station for AI agents) **所有客户端实现的单一真相源**。当前有**三个**目标客户端:
 > **Android**(已上真机,Kotlin)、**iOS**(模拟器+真机已验,Swift)、**HarmonyOS**(脚手架+代码骨架,ArkTS;见 [`harmony/`](harmony/))。
 > 三端都实现**这一层**;平台代码坐在契约之下。
 >
@@ -28,7 +28,7 @@
 
 ## 1. 系统角色与边界(一句话架构)
 
-客户端 = **Agent Deck**:一个 **host(一级)→ project(二级)** 的列表,每个 project = 一个工作目录 + 一个持久 tmux/abduco session。用户戴 **AR 眼镜**,用**物理小键盘(~6 键)+ 中英语音**操作,没有舒适鼠标/键盘。
+客户端 = **Agent Station / Agent 工作站**:一个 **host(一级)→ project(二级)** 的 AI agent 群控客户端,每个 project = 一个工作目录 + 一个持久 tmux/abduco session。用户可在 iPhone 独立使用,也可戴 **AR 眼镜**配合**物理小键盘(~6 键)+ 中英语音**操作,没有舒适鼠标/键盘时仍能做严肃内容。
 
 ```
 客户端(Android / iOS)
@@ -67,7 +67,7 @@
       "session": "blog-rewrite",      // tmux session 名,唯一,只允许 [A-Za-z0-9_.-](客户端会拼进 shell 命令)
       "name": "博客重写",              // 显示名(可中文)
       "type": "claude",               // maestro | claude | agent | ssh
-      "dir": "/home/evan/work/blog",  // 工作目录绝对路径(给 Maestro 自己备忘;客户端不直接用)
+      "dir": "/home/dev/work/blog",   // 工作目录绝对路径(给 Maestro 自己备忘;客户端不直接用)
       "group": "work",                // 可选:分组标签
       "startup": "claude --resume",   // 可选:重启备忘(客户端不执行)
       "hotwords": ["kubectl", "Grafana"]  // 可选:project 级语音热词(§7)
@@ -158,7 +158,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - UTF-8:client 用 `tmux -u`。
   - session 名只信任 `[A-Za-z0-9_.-]`(要拼进 `tmux capture-pane -t '<session>'` 等 shell 命令)。
   - attach 用 `new -A -s <session>`(存在则 attach,不存在则建)。
-- **多跳(ProxyJump)**:host 配置带 `via`(= 另一 host 的 `name`)→ SSH 经该跳板本地端口转发到达。典型:OPS(AWS 内网,只 VPN 可达)`via: "TK-ALIYUN"`,由挂 OpenVPN 的 TK 转发。手机本身**不挂 VPN**。
+- **多跳(ProxyJump)**:host 配置带 `via`(= 另一 host 的 `name`)→ SSH 经该跳板本地端口转发到达。典型:`private-worker`(内网,只跳板/VPN 可达)`via: "jump-edge"`,由跳板机转发。手机本身**不挂 VPN**。
 - **known_hosts**:**TOFU**(首次信任并记录,之后校验)。
 
 ### 5.1 SSH-over-443 隧道(可选,per-host opt-in)
@@ -178,7 +178,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   - **多跳 host**(有 `via`)→ proxy 跟着 `via` 指向的**跳板** host 走(拨公网的是跳板);到达跳板后的内层转发已在隧道内,**不再**叠加 proxy。即:一个 host 的 `proxy` 字段在它**作为跳板被别人 `via`** 时生效于那条外层拨号;host 自己有 `via` 时,其 `proxy` 字段被忽略(由跳板的 proxy 决定)。
   - 第一版实现聚焦**直连 host 带 proxy**;proxy×via 复合按上述规则但可后置。
 - **⭐ UI 契约:host 头必须显示生效的 proxy 标识**(跨端,两端都要做)。用户在 AR 眼镜下要能**一眼确认这台 host 是走隧道还是直连**,否则代理生没生效完全不可见。规则:
-  - host 解析出生效 proxy(直连=自己的 `proxy`;多跳=按上面归属规则取**跳板**的 proxy)→ host 头显示一个 **🔒 + proxy 名** 的徽章(如 `🔒 tk-aliyun-443`);无 proxy → 不显示(直连 host 视觉无变化)。
+  - host 解析出生效 proxy(直连=自己的 `proxy`;多跳=按上面归属规则取**跳板**的 proxy)→ host 头显示一个 **🔒 + proxy 名** 的徽章(如 `🔒 jump-edge-443`);无 proxy → 不显示(直连 host 视觉无变化)。
   - 标识取的是"实际拨公网那一跳的 proxy 名",所以经 `via` 的内网 host 也会显示其跳板的 proxy 名(因为它的流量确实经那条隧道出去)。
   - 这是**显示契约**(显示什么、何时显示),具体渲染(徽章位置/配色)是平台实现(§11)。
 - **⭐ 行为契约(平台中立,iOS 实现者照这条做,内核/语言自选)**——满足以下可观测行为即合规,**不规定用哪个库**:
@@ -189,7 +189,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
   5. **可选 + 降级**:不带 proxy = 直连(零变化);内核不可用 = 带 proxy 的 host 连接失败但不影响直连 host(§9)。
   6. **不挂系统 VPN / 不用 tun**:只起本地端口转发,仅代理 app 自己的 SSH,无需 VPN 权限。
   > Android 用 xray-core dokodemo-door 实现这套;iOS 可用 sing-box(`direct` inbound + `override_address/override_port`,语义完全等价)或 xray-core,**只要满足上面 1–6 即合规**。平台落点见 §11。
-- **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**现状(2026-05-31 核实):真实 host 已全部 ed25519** —— `xreal_TK-ALIYUN`/`xreal_OPS`/dev-rig `xreal_phase0` 都是 ED25519,**无需迁移**。POC 当时撞 ssh-rsa 只因用了 RSA throwaway。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
+- **公钥算法 = 一律 `ed25519`(硬约定)**:Valet 给客户端签发的 key **必须是 `ed25519`**。背景:iOS 的 Citadel 0.12 用 **RSA** key 时签名走 legacy `ssh-rsa`(SHA-1),现代 OpenSSH 默认 `PubkeyAcceptedAlgorithms` 不收 → 认证失败;ed25519 无此问题,所有现代 host 都收。**坚持 ed25519、不要用 RSA key**,这条就不是问题。(Android/sshj 对 RSA 是否协商 rsa-sha2 未核实,但既然统一 ed25519 就无关。)
 - **翻页语义**:见 §6(它是输入语义的一部分)。
 
 ---
@@ -255,28 +255,29 @@ terminal 核心显示区纵向分成 **5 unit**:
 
 **无设置 UI 是刻意设计**——用户戴眼镜没法舒服填表。配置经**带外通道**推进设备私有存储,app 启动时导入。
 
-**hosts.json schema(导入用 staging 形态):**
+**hosts.json / `.xrhosts` schema(导入用 staging 形态):**
 
 两种顶层形态,客户端都接受(向后兼容):
 - **顶层数组**(legacy / 无代理):直接是 host 列表,等价于下面 `hosts` 字段。
 - **顶层对象** `{ "hosts": [...] }`:host 列表。SSH-over-443 是 **host 级配置**,写在各 host 自己的 `proxy` 对象里。
+- **iOS `.xrhosts` 单 host 追加形态**:`{ "host": {...} }`。`host` 是对象,表示追加/覆盖同名 host;`hosts` 是数组,表示替换整表。两者都可附带顶层 `asr`。
 
 ```jsonc
 {
   "hosts": [
     {
-      "name": "TK-ALIYUN",          // host 唯一名(也用于私钥落地文件名)
-      "addr": "tk-aliyun",          // 可选:显示别名。缺省 = host。⚠️ 真实 IP 绝不进 addr(UI 会显示 addr)
-      "host": "47.x.x.x",           // 真实连接地址(IP/域名)。UI 不显示这个字段
+      "name": "edge-1",             // host 唯一名(也用于私钥落地文件名)
+      "addr": "edge-1",             // 可选:显示别名。缺省 = host。⚠️ 真实 IP 绝不进 addr(UI 会显示 addr)
+      "host": "203.0.113.10",       // 真实连接地址(IP/域名)。示例用 TEST-NET;真实值只进本地配置
       "port": 22,                   // 可选,默认 22
-      "user": "xreal",
-      "key": "tk.pem",              // staging:指向同目录私钥纯文件名(导入后变私有 keys/<name>.pem,权限 600)
-      "basePath": "/home/xreal/work",// manifest/status 在 <basePath>/.xreal/ 下(§2/§3)。空 = 不 live-fetch
-      "via": "TK-ALIYUN",           // 可选:多跳跳板 host 名(§5)
+      "user": "devuser",
+      "key": "edge-1.pem",          // Android staging:同目录私钥纯文件名; iOS .xrhosts:内联 PEM 文本
+      "basePath": "/home/dev/work", // manifest/status 在 <basePath>/.xreal/ 下(§2/§3)。空 = 不 live-fetch
+      "via": "jump-1",              // 可选:多跳跳板 host 名(§5)
       "proxy": {                     // 可选:host 级 SSH-over-443 tunnel(§5.1)。无则直连
-        "name": "tk-aliyun-443",     // UI 显示名,host 头渲染为 🔒 tk-aliyun-443
+        "name": "edge-1-443",        // UI 显示名,host 头渲染为 🔒 edge-1-443
         "localPort": 39001,          // 本机 127.0.0.1 监听端口。整份 hosts 配置内必须唯一
-        "url": "vmess://..."         // 该 host 自己的标准 vmess:// 分享链接(base64 JSON;v2rayN 格式)
+        "url": "vmess://<redacted>"  // 标准 vmess:// 分享链接(base64 JSON;v2rayN 格式)
       },
       "projects": [                 // seed 列表(真相由 manifest 覆盖)
         { "session": "maestro", "name": "Maestro", "type": "maestro" }
@@ -286,8 +287,28 @@ terminal 核心显示区纵向分成 **5 unit**:
 }
 ```
 
+**`.xrhosts` 自含包(iOS 真机 AirDrop / Open in)补充规则:**
+- 顶层 `host` 对象 = 追加/覆盖一个 host;顶层 `hosts` 数组 = 替换整表;顶层 `asr` 对象 = 写全局 ASR 凭证。`asr` 可和 `host` / `hosts` 同包。
+- `.xrhosts` 里的 host `key` 是**内联 OpenSSH private key PEM 文本**;导入后客户端把它写成私有 `<safeHostName>.pem`(0600),再把私有 `hosts.json` 里的 `key` 改成纯文件名。
+- Android staging 的 host `key` 是**同目录私钥文件名**;不要把 PEM 内联进 Android `hosts.json`。
+- Android 当前实现仍兼容旧形态:`{ "proxies": [{name,url}], "hosts": [{..., "proxy": "<name>"}] }`;目标契约是 host 内联 `proxy{name,localPort,url}`。后续迁移前,给 Android 生成可用配置时按当前实现,给 iOS `.xrhosts` 按内联 proxy。
+- `proxy` 归属**实际拨公网那一跳**:直连海外 host 用自己的 `proxy`;内网 host 有 `via` 时不写自己的 proxy,显示/使用跳板 host 的 effective proxy。
+
+**ASR block(可选,全局一份):**
+```jsonc
+{
+  "asr": {
+    "provider": "volc",
+    "appid": "<VOLC_APP_ID>",
+    "token": "<VOLC_ACCESS_TOKEN>",
+    "resourceId": "volc.seedasr.sauc.duration"
+  }
+}
+```
+
 **安全契约(平台无关,强制):**
 - **真实 IP 只进 `host`,绝不进 `addr`/UI**。`addr` 是给人看的别名。
+- **真实私钥、ASR token、vmess 链接绝不进文档 / git / commit message**。示例只用占位符或 TEST-NET 地址。
 - 私钥落**私有存储**,权限收紧(仅 app 自身可读)。`key` 必须是纯文件名(防路径遍历),私钥须含 `PRIVATE KEY`、合理大小(≤8KB)。
 - 导入**原子写**(tmp→rename),防半成品。
 
@@ -295,9 +316,9 @@ terminal 核心显示区纵向分成 **5 unit**:
 | 平台 | staging 落点 | 机制 |
 |---|---|---|
 | Android | `/data/local/tmp/xreal_import/{hosts.json, asr.json, <keys>}` | `adb push` → app 启动 import 到私有存储 → best-effort 清 staging(权威清理由 Valet `adb shell rm`) |
-| iOS | **开发期(模拟器)**:`xcrun simctl get_app_container booted <bundle> data` 定位容器 → copy 进 `Documents/`(仅模拟器)。**真机(本版)= 分享单「Open in」**:Valet 产出**单个自含 `.xrhosts`**(JSON,与 Android staging 唯一差异 = **内联 key**),AirDrop →「用 XrealPOC 打开」→ `importConfig` 解析、每个 host 内联 PEM 写私有 `Documents/<name>.pem`(0600)、`key`→纯文件名、原子写私有 `hosts.json` → 列表刷新。**三类导入,按文件顶层内容自动判别**:**①`host` 对象**→追加(并入,按 name 去重);**②`hosts` 数组**→替换整表;**③`asr` 对象**(`{provider,appid,token,resourceId}`,无 hosts)→只写 `asr.json`。可组合。注册自定义扩展 `.xrhosts` + 自有 UTI `io.github.kevinfitzroy.xrealclient.hosts`(`LSHandlerRank=Owner`,**不抢 `public.json`**)。**用户不手输 host/key**,只 AirDrop 一个 Valet 生成的文件。私有存储**结果形状不变**。**⚠️ app 内「齿轮→Host 配置页文档选择器」手动导入 = P2**(曾实现于 `8765af1`、后撤回;与「无设置 UI / AI agent 代劳」哲学略拧,AirDrop 已够) |
+| iOS | **开发期(模拟器)**:`xcrun simctl get_app_container booted <bundle> data` 定位容器 → copy 进 `Documents/`(仅模拟器)。**真机(本版)= 分享单「Open in」**:Valet 产出**单个自含 `.xrhosts`**(JSON,与 Android staging 唯一差异 = **内联 key**),AirDrop →「用 Agent Station 打开」→ `importConfig` 解析、每个 host 内联 PEM 写私有 `Documents/<name>.pem`(0600)、`key`→纯文件名、原子写私有 `hosts.json` → 列表刷新。**三类导入,按文件顶层内容自动判别**:**①`host` 对象**→追加(并入,按 name 去重);**②`hosts` 数组**→替换整表;**③`asr` 对象**(`{provider,appid,token,resourceId}`,无 hosts)→只写 `asr.json`。可组合。注册自定义扩展 `.xrhosts` + 自有 UTI `io.github.kevinfitzroy.xrealclient.hosts`(`LSHandlerRank=Owner`,**不抢 `public.json`**)。**用户不手输 host/key**,只 AirDrop 一个 Valet 生成的文件。私有存储**结果形状不变**。**⚠️ app 内「齿轮→Host 配置页文档选择器」手动导入 = P2**(曾实现于 `8765af1`、后撤回;与「无设置 UI / AI agent 代劳」哲学略拧,AirDrop 已够) |
 
-> iOS 没有 `adb push 到任意 app 私有目录`这种能力(沙盒)。代客安装在 iOS 上**换实现 = 分享单「Open in」**,但**契约形状(hosts.json/asr.json schema + 安全规则)不变**。**真机注入 = 分享单「Open in」+ 自含 `.xrhosts`,2026-05-31 真机实测通过**(AirDrop →「用 XrealPOC 打开」出现 → 导入 → SSH 连 Mac LAN host → 真终端;UTI 匹配生效)。曾是 iOS 客户端首要待解项,**已解**。导入逻辑三类判别(append/replace/asr-only)亦经模拟器 `-importConfigPath` lever 验。**app 内 Host 配置页文档选择器(第二入口)搁置 P2**(曾实现又撤回)。平台实现变更,**不 bump Contract version**。
+> iOS 没有 `adb push 到任意 app 私有目录`这种能力(沙盒)。代客安装在 iOS 上**换实现 = 分享单「Open in」**,但**契约形状(hosts.json/asr.json schema + 安全规则)不变**。**真机注入 = 分享单「Open in」+ 自含 `.xrhosts`,2026-05-31 真机实测通过**(AirDrop →「用 Agent Station 打开」出现 → 导入 → SSH 连 Mac LAN host → 真终端;UTI 匹配生效)。曾是 iOS 客户端首要待解项,**已解**。导入逻辑三类判别(append/replace/asr-only)亦经模拟器 `-importConfigPath` lever 验。**app 内 Host 配置页文档选择器(第二入口)搁置 P2**(曾实现又撤回)。平台实现变更,**不 bump Contract version**。
 
 ---
 
@@ -389,7 +410,7 @@ host→client 唯一 push 通道 = client 正在读的 PTY 流。skill 往 stdou
 - **OSC 形态**:`OSC <Ps> ; <json-payload> ST`,`Ps` = 约定的私有码(实现时定一个固定值,如 `1337` 或自选;两端 + skill 必须一致),`ST` = `ESC \`(`\x1b\x5c`)。
 - **载荷(payload)= 紧凑 JSON**:
   ```jsonc
-  { "v": 1, "kind": "image", "path": "/home/xreal/work/proj/out.png" }
+  { "v": 1, "kind": "image", "path": "/home/dev/work/proj/out.png" }
   ```
   - `kind` 枚举:`image`(png/jpg/webp/gif)、`html`。**其它值 client 必须忽略**(白名单)。
   - `path` = host 上**绝对路径**(skill 负责绝对化)。client 不做路径拼接,原样喂给拉取那一步。

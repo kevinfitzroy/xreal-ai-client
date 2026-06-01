@@ -129,8 +129,8 @@ AR 眼镜 + 小键盘 + 语音 的新交互模式有一个**隐含约束**:
 
 App 已在 Beam Pro X4100 真机部署跑通,不再是单 host 设想,而是 **Host → Project 两级的 AI agent 指挥台**:
 
-- 两台真实 host:**TK-ALIYUN**(海外,user=xreal,直连)、**OPS**(AWS 内网,user=ubuntu,**经 TK 多跳到达**);各跑 Maestro orchestrator 维护项目清单。
-- **多跳 SSH(ProxyJump)**:OPS 只 VPN 可达。`HostConfig.via = "TK-ALIYUN"` → app 先连 TK,经它本地端口转发到 OPS,**认证端到端打到 OPS**(TK 只转发 TCP)。VPN(OpenVPN→AWS Client VPN)现在挂在 **TK 服务器上,手机不再挂 VPN** —— 比早期"手机装 OpenVPN"的方案干净得多(memory `openvpn-on-beam-pro` 是更早的过渡态)。
+- 两台生产 host(脱敏名):**jump-edge**(海外直连)、**private-worker**(内网,**经 jump-edge 多跳到达**);各跑 Maestro orchestrator 维护项目清单。
+- **多跳 SSH(ProxyJump)**:private-worker 只 VPN 可达。`HostConfig.via = "jump-edge"` → app 先连 jump-edge,经它本地端口转发到 private-worker,**认证端到端打到 private-worker**(jump-edge 只转发 TCP)。VPN(OpenVPN→AWS Client VPN)现在挂在 **jump-edge 服务器上,手机不再挂 VPN** —— 比早期"手机装 OpenVPN"的方案干净得多(memory `openvpn-on-beam-pro` 是更早的过渡态)。
 - **Agent 状态展示走 Claude Code hooks**(事件驱动,非抓屏):agent 事件 → 服务端写 `.xreal/status.json` → app 一次性 cat 显示 working/waiting/disconnected。详见 [`architecture.md`](architecture.md) §3.6。
 
 这些都不破坏"服务端零增量":`.xreal/` 里的脚本是用户自己 project 目录下的一次性部署,没有新增长 lived 服务。
