@@ -5,7 +5,8 @@ enum AppVersion {
         let info = Bundle.main.infoDictionary
         let version = (info?["CFBundleShortVersionString"] as? String)?.nilIfEmpty ?? "0.0.0"
         let build = (info?["CFBundleVersion"] as? String)?.nilIfEmpty ?? "0"
-        return "v\(version) (\(build))"
+        let revision = (info?["AgentStationGitRevision"] as? String)?.nilIfEmpty ?? "unknown"
+        return "v\(version) · build \(revision)-\(build)"
     }
 }
 

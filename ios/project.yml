@@ -34,6 +34,17 @@ targets:
       - package: Citadel
       - package: SwiftTerm
     postBuildScripts:
+      - name: Stamp Git revision
+        script: |
+          set -e
+          INFO_PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+          GIT_ROOT="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+          GIT_REV="unknown"
+          if [ -n "$GIT_ROOT" ]; then
+            GIT_REV="$(git -C "$GIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+          fi
+          /usr/libexec/PlistBuddy -c "Set :AgentStationGitRevision $GIT_REV" "$INFO_PLIST" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :AgentStationGitRevision string $GIT_REV" "$INFO_PLIST"
       - name: Embed optional Xraybridge
         script: |
           set -e
