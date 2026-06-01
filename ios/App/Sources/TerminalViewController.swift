@@ -33,6 +33,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var forcedKeyboardOverlap: CGFloat?
     private var cachedKeyBarOverlap: CGFloat = 0
     private var cachedKeyBarWidth: CGFloat = 0
+    private var lastDelWordHapticAt: CFTimeInterval = 0
+    private var lastPageTapAt: CFTimeInterval = 0
+    private var activeProjectType: ProjectType?
     private var suppressTermAccessory = false
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
@@ -45,6 +48,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private enum ViewState { case list, terminal }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private var view_ = ViewState.list
+    private static let minPageTapInterval: CFTimeInterval = 0.22
 
     // Active PTY session(终端态活动;**列表态保活中也非 nil**,见 iOS.7)。
     private var ssh: SSHSession?
@@ -58,6 +62,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
+    private static let pageUpBytes: [UInt8] = [0x1b, 0x5b, 0x35, 0x7e]
+    private static let pageDownBytes: [UInt8] = [0x1b, 0x5b, 0x36, 0x7e]
+    private static let shiftUpBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]
+    private static let shiftDownBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]
 
     private var hosts: [HostConfig] = []
     // Live status (SPEC §3). reachable == nil = not yet probed.
@@ -509,6 +517,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let old = ssh; ssh = nil
         old?.close()
         warmHost = nil; warmSession = nil
+        activeProjectType = nil
     }
     /// 回到最近终端:已连接时瞬间恢复;连接中时回到原连接页,等 onConnected 继续绑定。
     private func resumeWarm(animated: Bool = false) {
@@ -726,11 +735,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
     }
 
-    /// terminal 触摸分区:上 2/5 → PageUp;中 2/5 → PageDown;底部热区由 `handleTermVoicePress` 接管。
+    /// terminal 触摸分区:上 2/5 → 翻页上;中 2/5 → 翻页下;底部热区由 `handleTermVoicePress` 接管。
     @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
         guard view_ == .terminal else { return }
         let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
         guard zone == .pageUp || zone == .pageDown else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastPageTapAt >= Self.minPageTapInterval else { return }
+        lastPageTapAt = now
         keyHaptic.prepare(); keyHaptic.impactOccurred()
         let up = zone == .pageUp
         termPage(up: up)
@@ -739,8 +751,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     func termPage(up: Bool) {
         guard view_ == .terminal, voice.currentState == .idle else { return }
-        // Claude/其他全屏 TUI 使用 alternate screen,本地 scrollback 不可用;发 PageUp/Down 让应用自己滚。
-        ssh?.send(Data(up ? [0x1b, 0x5b, 0x35, 0x7e] : [0x1b, 0x5b, 0x36, 0x7e]))
+        if activeProjectType == .ssh {
+            ssh?.send(Data(up ? Self.shiftUpBytes : Self.shiftDownBytes))
+        } else {
+            // AI/TUI 类会话使用 alternate screen,本地 scrollback 不可用;发 PageUp/Down 让应用自己滚。
+            ssh?.send(Data(up ? Self.pageUpBytes : Self.pageDownBytes))
+        }
     }
 
     @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {
@@ -786,17 +802,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         pageCueView.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
         pageCueView.layer.removeAllAnimations()
         pageCueView.isHidden = false
-        pageCueView.alpha = 0
+        pageCueView.alpha = 1
         view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
-        UIView.animate(withDuration: 0.12, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
-            self.pageCueView.alpha = 1
+        UIView.animate(withDuration: 0.32, delay: 0.50, options: [.curveEaseIn, .allowUserInteraction]) {
+            self.pageCueView.alpha = 0
         } completion: { _ in
-            UIView.animate(withDuration: 0.36, delay: 0.38, options: [.curveEaseIn, .allowUserInteraction]) {
-                self.pageCueView.alpha = 0
-            } completion: { _ in
-                self.pageCueView.isHidden = true
-            }
+            self.pageCueView.isHidden = true
         }
     }
 
@@ -956,7 +968,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if term.isFirstResponder { term.reloadInputViews() }
     }
     private func handleKeyBarAction(_ a: TerminalKeyAction) {
-        keyHaptic.prepare(); keyHaptic.impactOccurred()
+        if a == .delWord {
+            let now = CACurrentMediaTime()
+            if now - lastDelWordHapticAt > 0.25 {
+                lastDelWordHapticAt = now
+                keyHaptic.prepare(); keyHaptic.impactOccurred()
+            }
+        } else {
+            keyHaptic.prepare(); keyHaptic.impactOccurred()
+        }
         switch a {
         case .up:       ssh?.send(Data(arrowBytes(0x41)))
         case .down:     ssh?.send(Data(arrowBytes(0x42)))
@@ -1014,6 +1034,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
     private func applyVoiceContext(_ project: ProjectConfig?) {
+        activeProjectType = project?.type
         if let project {
             voice.hotwords = Hotwords.merge(project.hotwords)
             voice.voiceMarkerEnabled = project.type.isAiAgent

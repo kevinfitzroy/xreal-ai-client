@@ -26,6 +26,8 @@ final class TerminalKeyBar: UIInputView {
 
     private var buttons: [TerminalKeyAction: UIButton] = [:]
     private var currentRows = 0
+    private var repeatTimer: Timer?
+    private var repeatingAction: TerminalKeyAction?
 
     override var intrinsicContentSize: CGSize {
         let width = bounds.width > 0 ? bounds.width : frame.width
@@ -55,6 +57,10 @@ final class TerminalKeyBar: UIInputView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    deinit {
+        stopRepeatingAction()
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -170,8 +176,42 @@ final class TerminalKeyBar: UIInputView {
             c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
             btn.configuration = c
         }
-        b.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
+        if action == .delWord {
+            b.addTarget(self, action: #selector(repeatableButtonDown(_:)), for: .touchDown)
+            b.addTarget(self, action: #selector(repeatableButtonUp(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+        } else {
+            b.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
+        }
         return b
+    }
+
+    @objc private func repeatableButtonDown(_ sender: UIButton) {
+        guard buttons[.delWord] === sender else { return }
+        startRepeatingAction(.delWord)
+    }
+
+    @objc private func repeatableButtonUp(_ sender: UIButton) {
+        guard buttons[.delWord] === sender else { return }
+        stopRepeatingAction()
+    }
+
+    private func startRepeatingAction(_ action: TerminalKeyAction) {
+        stopRepeatingAction()
+        repeatingAction = action
+        onAction?(action)
+        let timer = Timer(timeInterval: 0.09, repeats: true) { [weak self] _ in
+            guard let self, let action = self.repeatingAction else { return }
+            self.onAction?(action)
+        }
+        repeatTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        timer.fireDate = Date().addingTimeInterval(0.36)
+    }
+
+    private func stopRepeatingAction() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeatingAction = nil
     }
 
     /// index.html `.kc` 风格:大符号(kl)+ 小副标题(ks)。Configuration 的 title/subtitle 两级。

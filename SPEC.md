@@ -209,7 +209,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | 设备 | 语音 | 返回 | 翻页上/下 | 备路径 |
 |---|---|---|---|---|
 | Beam Pro X4100 + 8BitDo Micro | **F1**(keycode 131) | **F2**(132) | **Shift+↑ / Shift+↓** | Ctrl+Alt+1/2 |
-| iOS | F1 | F2 | Shift+↑ / Shift+↓(native 拦截→PageUp/PageDown 给远端 TUI) | — |
+| iOS | F1 | F2 | Shift+↑ / Shift+↓(native 拦截;按 project type 分流) | — |
 
 > 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
 
@@ -221,7 +221,7 @@ terminal 核心显示区纵向分成 **5 unit**:
 - **middle 2 unit**:触摸 = 翻页下(等价 Shift+↓ 的语义)。触发时用同样的半透明 overlay 覆盖整个 middle 2 unit,叠加加大加粗的向下箭头,短暂驻留后淡出。
 - **bottom 1 unit**:仅其**底部 2/3** 是语音 hold-to-talk 热区(即整体高度约 `13/15` 以下):按住=开始录音,松开=结束。bottom 1 unit 顶部 1/3 留空,避免误触。
 
-与物理键 Shift+↑/↓ **同语义**,具体实现按平台选择。Android 当前由 tmux 的 `S-Up`/`S-Down` 绑定接住做半页滚;iOS 原生 SwiftTerm 拦截后发 PageUp/PageDown 给 Claude/TUI 自己滚动,避免在 tmux copy-mode 下暴露 repaint 背景块。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`);Android 锁横屏 + 物理键为主,按需补。
+与物理键 Shift+↑/↓ **同语义**,具体实现按平台选择。Android 当前由 tmux 的 `S-Up`/`S-Down` 绑定接住做半页滚;iOS 原生 SwiftTerm 拦截后按 project type 分流:AI/TUI 类(`claude`/`agent`/`maestro`)发 PageUp/PageDown 给远端 TUI 自己滚,避免在 tmux copy-mode 下暴露 repaint 背景块;裸 `ssh` shell 发 S-Up/S-Down 给 tmux binding,用 tmux scrollback 滚,避免 readline/history 接管 PageUp/PageDown。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`),并对触摸翻页做短节流以避免 cue 高频闪烁;Android 锁横屏 + 物理键为主,按需补。
 
 **语音 overlay 点击语义:** overlay 的布局和点击分区同样只覆盖 terminal 核心显示区,不能覆盖 vkey。overlay 必须避开 bottom 语音热区,至少不能遮盖 bottom 1 unit 的底部 2/3。overlay 出现后,terminal 翻页热区自然失效,terminal 核心区触摸只剩三块:
 

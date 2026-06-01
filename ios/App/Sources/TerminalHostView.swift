@@ -7,7 +7,7 @@ import CoreText
 protocol TerminalHostKeyHandler: AnyObject {
     func termVoiceKey(down: Bool)   // F1 hold-to-talk(down=按下/抬起)
     func termBackKey()              // F2 → 返回列表
-    func termPage(up: Bool)         // Shift+↑/↓ → PageUp/PageDown 给远端 TUI
+    func termPage(up: Bool)         // Shift+↑/↓ → 按 project type 分流(PageUp/PageDown 或 tmux)
     func termSend(bytes: [UInt8])   // 少数被中文输入法污染的 ASCII 键,走 raw bytes
     func termVoiceActive() -> Bool  // 语音是否在"应抢 Enter/Esc"的态(overlay 可见)
     func termVoiceEnter() -> Bool   // @return true=语音接管(注入预览文本);false=透传给终端(发 CR)
