@@ -720,15 +720,21 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
     }
 
-    /// terminal 触摸分区:上 2/5 → Shift+Up;中 2/5 → Shift+Down;底部热区由 `handleTermVoicePress` 接管。
+    /// terminal 触摸分区:上 2/5 → PageUp;中 2/5 → PageDown;底部热区由 `handleTermVoicePress` 接管。
     @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
         guard view_ == .terminal else { return }
         let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
         guard zone == .pageUp || zone == .pageDown else { return }
         keyHaptic.prepare(); keyHaptic.impactOccurred()
         let up = zone == .pageUp
-        ssh?.send(Data(up ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41] : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))
+        termPage(up: up)
         showPageCue(up: up)
+    }
+
+    func termPage(up: Bool) {
+        guard view_ == .terminal, voice.currentState == .idle else { return }
+        // Claude/其他全屏 TUI 使用 alternate screen,本地 scrollback 不可用;发 PageUp/Down 让应用自己滚。
+        ssh?.send(Data(up ? [0x1b, 0x5b, 0x35, 0x7e] : [0x1b, 0x5b, 0x36, 0x7e]))
     }
 
     @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {

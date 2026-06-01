@@ -141,8 +141,9 @@ final class SSHSession {
 
     /// attach-or-create the project's tmux session under UTF-8, with a non-interactive PATH wide
     /// enough to find tmux. Mirrors Android MainActivity.tmuxAttachCommand **including** the
-    /// half-page paging conf (SPEC §6):Shift+↑/↓ → root 表(-n,Claude Code 收不到 → 不冲突)进 copy-mode
-    /// 半页滚。SwiftTerm 把 Shift+Arrow 正确编码成 `ESC[1;2A/B` 送达 tmux。scrollback 升到 50000。
+    /// half-page paging fallback conf (SPEC §6):iOS native 主路径在 TerminalHostView 拦 Shift+↑/↓
+    /// 发 PageUp/PageDown 给 Claude/TUI 自己滚动,避免进入 tmux copy-mode;这里保留 tmux 绑定作兜底。
+    /// scrollback 升到 50000。
     /// conf 用 base64 投递,避开 `;`/`"`/`#{}` 被外层 shell 解释。
     /// `session` MUST already be validated `[A-Za-z0-9_.-]` (ProjectConfig.isSessionNameSafe).
     static func tmuxAttachCommand(_ session: String) -> String {

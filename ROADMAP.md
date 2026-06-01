@@ -37,7 +37,7 @@
 |---|---|---|---|
 | iOS.1 | **终端改原生 SwiftTerm** | ✅(2026-06-01) | 替代 WKWebView+xterm,解键盘死结。键盘全原生正确(字母/Tab/Shift+Tab/方向/Ctrl/DECCKM);F1/F2 + 语音 Enter/Esc 经 swizzle 拦;软键盘抑制 inputView 0 高;tmux 翻页 conf 注入。字体按 Android 方案打包 Sarasa/Meslo,CoreText 注册;SwiftTerm 单字体优先 Sarasa |
 | iOS.2 | **触屏 vkey(无硬件键盘)** | ✅ | 无 8BitDo 时终端挂原生 `TerminalKeyBar`(inputAccessoryView):返回/方向/Enter/Esc/删词/Ctrl-B/模式/Ctrl-C/🎤;横屏 1 行竖屏 2 行;键盘避让(终端缩到 vkey 上);按键震动 + 高亮 |
-| iOS.3 | **tmux 触摸翻页** | ✅ | 见 P2.8(点终端上/下半 = Shift+↑/↓) |
+| iOS.3 | **终端触摸翻页** | ✅ | 5-unit 热区翻页已从 tmux copy-mode 改为 PageUp/PageDown 发给远端 TUI;物理 Shift+↑/↓ 同样 native 拦截,避免 Claude/TUI repaint 历史在 copy-mode 下出现白色块状残影 |
 | iOS.4 | **列表改原生(苹果设计语言)** | 🔄 进行中(已编译,待真机验) | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
 | iOS.6 | **边缘滑动手势** | 🔄 进行中(已实现并装机,待手势真机确认) | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |

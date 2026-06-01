@@ -7,6 +7,7 @@ import CoreText
 protocol TerminalHostKeyHandler: AnyObject {
     func termVoiceKey(down: Bool)   // F1 hold-to-talk(down=按下/抬起)
     func termBackKey()              // F2 → 返回列表
+    func termPage(up: Bool)         // Shift+↑/↓ → PageUp/PageDown 给远端 TUI
     func termVoiceActive() -> Bool  // 语音是否在"应抢 Enter/Esc"的态(overlay 可见)
     func termVoiceEnter() -> Bool   // @return true=语音接管(注入预览文本);false=透传给终端(发 CR)
     func termVoiceEsc() -> Bool     // @return true=语音接管(取消会话);false=透传(发 ESC)
@@ -112,6 +113,12 @@ enum TerminalKeyInterceptor {
         switch key.keyCode {
         case .keyboardF1: kh.termVoiceKey(down: down); return true
         case .keyboardF2: if down { kh.termBackKey() }; return true
+        case .keyboardUpArrow where key.modifierFlags.contains(.shift):
+            if down { kh.termPage(up: true) }
+            return true
+        case .keyboardDownArrow where key.modifierFlags.contains(.shift):
+            if down { kh.termPage(up: false) }
+            return true
         case .keyboardReturnOrEnter, .keypadEnter:
             // 语音预览态:Enter 确认注入(消费);否则透传给 SwiftTerm 发 CR。两步:注入后 state→idle,
             // 下一个 Enter 时 termVoiceEnter 返回 false → 透传 → 执行命令。

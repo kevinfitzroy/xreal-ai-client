@@ -202,14 +202,14 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 |---|---|
 | **语音** | **hold-to-talk**:按住=录音,松开=结束并注入(§4)。**不是 toggle**。 |
 | **返回列表 / 退层** | 退出当前最上层:**预览层(§13)→ 终端 → 列表**。有预览层时先关预览层,无则从终端回列表(层栈语义) |
-| **翻页 上 / 下** | 进 tmux copy-mode **半页**滚动(避免与 Claude Code 自身翻页冲突);**预览层打开时改为 pan/zoom(§13),不透传 SSH** |
+| **翻页 上 / 下** | 滚动当前终端内容。平台可优先交给远端 TUI 的 PageUp/PageDown;需要远端历史时可用 tmux copy-mode。**预览层打开时改为 pan/zoom(§13),不透传 SSH** |
 | **确认/回车** | 标准 Enter(语音 overlay 确认也走它) |
 
 **物理映射(per-device,登记在此,新设备追加):**
 | 设备 | 语音 | 返回 | 翻页上/下 | 备路径 |
 |---|---|---|---|---|
 | Beam Pro X4100 + 8BitDo Micro | **F1**(keycode 131) | **F2**(132) | **Shift+↑ / Shift+↓** | Ctrl+Alt+1/2 |
-| iOS(规划) | GameController framework 映射,待 POC 定 | 同 | 同 | — |
+| iOS | F1 | F2 | Shift+↑ / Shift+↓(native 拦截→PageUp/PageDown 给远端 TUI) | — |
 
 > 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
 
@@ -217,11 +217,11 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 terminal 核心显示区纵向分成 **5 unit**:
 
-- **top 2 unit**:触摸 = 翻页上(进 tmux copy-mode 半页上,等价 Shift+↑),发送同语义字节 `ESC[1;2A`。触发时用柔和半透明 overlay 覆盖整个 top 2 unit,叠加加大加粗的向上箭头,短暂驻留后淡出。
-- **middle 2 unit**:触摸 = 翻页下(等价 Shift+↓),发送 `ESC[1;2B`。触发时用同样的半透明 overlay 覆盖整个 middle 2 unit,叠加加大加粗的向下箭头,短暂驻留后淡出。
+- **top 2 unit**:触摸 = 翻页上(等价 Shift+↑ 的语义)。触发时用柔和半透明 overlay 覆盖整个 top 2 unit,叠加加大加粗的向上箭头,短暂驻留后淡出。
+- **middle 2 unit**:触摸 = 翻页下(等价 Shift+↓ 的语义)。触发时用同样的半透明 overlay 覆盖整个 middle 2 unit,叠加加大加粗的向下箭头,短暂驻留后淡出。
 - **bottom 1 unit**:仅其**底部 2/3** 是语音 hold-to-talk 热区(即整体高度约 `13/15` 以下):按住=开始录音,松开=结束。bottom 1 unit 顶部 1/3 留空,避免误触。
 
-与物理键 Shift+↑/↓ **同语义同字节**,由 tmux 的 `S-Up`/`S-Down` 绑定(各端 attach 时注入)接住做半页滚。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`);Android 锁横屏 + 物理键为主,按需补。
+与物理键 Shift+↑/↓ **同语义**,具体实现按平台选择。Android 当前由 tmux 的 `S-Up`/`S-Down` 绑定接住做半页滚;iOS 原生 SwiftTerm 拦截后发 PageUp/PageDown 给 Claude/TUI 自己滚动,避免在 tmux copy-mode 下暴露 repaint 背景块。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`);Android 锁横屏 + 物理键为主,按需补。
 
 **语音 overlay 点击语义:** overlay 的布局和点击分区同样只覆盖 terminal 核心显示区,不能覆盖 vkey。overlay 必须避开 bottom 语音热区,至少不能遮盖 bottom 1 unit 的底部 2/3。overlay 出现后,terminal 翻页热区自然失效,terminal 核心区触摸只剩三块:
 
