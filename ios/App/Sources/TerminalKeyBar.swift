@@ -102,12 +102,33 @@ final class TerminalKeyBar: UIInputView {
 
     private func makeVoiceButton() -> UIButton {
         let b = styledButton(symbol: "🎤", sub: "语音")
-        b.addAction(UIAction { [weak self] _ in self?.onAction?(.voiceDown) }, for: .touchDown)
-        let up = UIAction { [weak self] _ in self?.onAction?(.voiceUp) }
-        b.addAction(up, for: .touchUpInside)
-        b.addAction(up, for: .touchUpOutside)
-        b.addAction(up, for: .touchCancel)
+        // hold-to-talk 用 long-press(minimumPressDuration 0):一次连续触摸 = 一个 .began(voiceDown)+
+        // 一个 .ended(voiceUp),**不会重复**。touchDown/touchUpInside 在 inputAccessoryView + 音频会话激活下
+        // 观测到 voiceDown 疯狂重复触发(录音被不断 cancel+重启 → 录不到)。
+        let lp = UILongPressGestureRecognizer(target: self, action: #selector(voiceLongPress(_:)))
+        lp.minimumPressDuration = 0
+        b.addGestureRecognizer(lp)
         return b
+    }
+
+    @objc private func voiceLongPress(_ g: UILongPressGestureRecognizer) {
+        switch g.state {
+        case .began:
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()   // 按下震动反馈
+            setVoiceActive(true)                                         // 视觉:按钮变红(录音中)
+            onAction?(.voiceDown)
+        case .ended, .cancelled, .failed:
+            setVoiceActive(false)
+            onAction?(.voiceUp)
+        default: break
+        }
+    }
+
+    private func setVoiceActive(_ active: Bool) {
+        var cfg = voiceButton.configuration
+        cfg?.background.backgroundColor = active ? UIColor.systemRed.withAlphaComponent(0.9)
+                                                 : UIColor(white: 1, alpha: 0.12)
+        voiceButton.configuration = cfg
     }
 
     /// index.html `.kc` 风格:大符号(kl)+ 小副标题(ks)。Configuration 的 title/subtitle 两级。

@@ -152,6 +152,15 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         view.addSubview(t)
         self.term = t
 
+        // 禁掉 SwiftTerm 的文本选择/编辑菜单手势:长按选择、双击选词、三击选行、拖动选择/鼠标。
+        // 它们与触摸翻页冲突(双击弹"复制/全选"小窗),且本产品不需要选词复制(语音优先)。
+        // 保留 UIScrollView 自带滚动 pan(scrollback)+ 我的单击翻页。
+        for gr in t.gestureRecognizers ?? [] {
+            if gr is UILongPressGestureRecognizer { gr.isEnabled = false }
+            else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
+            else if gr is UIPanGestureRecognizer, gr !== t.panGestureRecognizer { gr.isEnabled = false }
+        }
+
         // tmux 触摸翻页(SPEC §6):点终端**上半**= Shift+Up(半页上)、**下半**= Shift+Down(半页下)。
         // cancelsTouchesInView=false → 不挡 SwiftTerm 自身手势(选择/滚动)。
         let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
@@ -164,9 +173,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         self.keyBar = kb
         updateTermAccessory()
 
-        // 语音浮层最上层,默认隐藏。
+        // 语音浮层最上层,默认隐藏。frame 由 layoutTerm 跟随 term(缩到 keybar 之上)→ overlay 卡片在可见区内,不被 vkey 挡。
         voiceOverlay.frame = view.bounds
-        voiceOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        voiceOverlay.autoresizingMask = []
         view.addSubview(voiceOverlay)
 
         setupVoice()
@@ -215,8 +224,10 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     private func layoutTerm() {
         guard let term else { return }
-        term.frame = CGRect(x: 0, y: 0, width: view.bounds.width,
-                            height: max(0, view.bounds.height - keyboardOverlap))
+        let f = CGRect(x: 0, y: 0, width: view.bounds.width,
+                       height: max(0, view.bounds.height - keyboardOverlap))
+        term.frame = f
+        voiceOverlay.frame = f   // overlay 跟随 term → 卡片落在 keybar 之上的可见区
     }
 
     /// tmux 触摸翻页:终端上半 → Shift+Up(`ESC[1;2A`,进 copy-mode 半页上);下半 → Shift+Down(`ESC[1;2B`)。
@@ -479,10 +490,14 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         case "vkeyEsc":
             if !voice.onEsc() { ssh?.send(Data([27])) }     // ESC (cancels a voice session if active)
         case "voiceDown":
+            // iOS 终端是原生 SwiftTerm,webview 只显示列表 → 这条只可能来自列表页的 webview 语音键(灰键)。
+            // 守 view_==.terminal → 列表态忽略(列表页语音键不激活)。原生终端语音走 F1/keybar 🎤,不经这里。
+            guard view_ == .terminal else { return }
             let lang = (a.first as? String) ?? "zh"
             ensureMicThenRecord()
             voice.voiceDown(lang: lang)
         case "voiceUp":
+            guard view_ == .terminal else { return }
             let lang = (a.first as? String) ?? "zh"
             voice.voiceUp(lang: lang)
         default:
@@ -620,8 +635,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))             // ESC [ Z(back-tab)
         case .ctrlC:    ssh?.send(Data([0x03]))
         case .delWord:  ssh?.send(Data([0x17]))                         // Ctrl-W 删词
-        case .voiceDown: ensureMicThenRecord(); voice.voiceDown(lang: "zh")
-        case .voiceUp:   voice.voiceUp(lang: "zh")
+        case .voiceDown: voiceKeyAction(pressed: true)    // 复用 F1 路径(voiceKeyHeld 去重 + 权限)
+        case .voiceUp:   voiceKeyAction(pressed: false)
         }
     }
 
