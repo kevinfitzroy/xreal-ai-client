@@ -139,13 +139,25 @@ final class SSHSession {
         }
     }
 
-    /// attach-or-create the project's tmux session under UTF-8, with a non-interactive
-    /// PATH wide enough to find tmux. Mirrors Android MainActivity.tmuxAttachCommand
-    /// (minus the half-page paging conf, which is a later phase per SPEC §6).
+    /// attach-or-create the project's tmux session under UTF-8, with a non-interactive PATH wide
+    /// enough to find tmux. Mirrors Android MainActivity.tmuxAttachCommand **including** the
+    /// half-page paging conf (SPEC §6):Shift+↑/↓ → root 表(-n,Claude Code 收不到 → 不冲突)进 copy-mode
+    /// 半页滚。SwiftTerm 把 Shift+Arrow 正确编码成 `ESC[1;2A/B` 送达 tmux。scrollback 升到 50000。
+    /// conf 用 base64 投递,避开 `;`/`"`/`#{}` 被外层 shell 解释。
     /// `session` MUST already be validated `[A-Za-z0-9_.-]` (ProjectConfig.isSessionNameSafe).
     static func tmuxAttachCommand(_ session: String) -> String {
-        "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; " +
-        "export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; " +
-        "exec tmux -u new -A -s '\(session)'\n"
+        let conf = [
+            "source-file -q ~/.tmux.conf",                                  // -f 跳过默认加载 → 先带回用户配置
+            "set -g history-limit 50000",
+            "bind -n S-Up \"copy-mode ; send-keys -X halfpage-up\"",
+            "bind -n S-Down 'if -F \"#{pane_in_mode}\" \"send-keys -X halfpage-down\"'",
+        ].joined(separator: "\n") + "\n"
+        let b64 = Data(conf.utf8).base64EncodedString()
+        let c = "/tmp/.xreal-tmux.conf"
+        return "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; " +
+            "export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; " +
+            "echo \(b64) | base64 -d > \(c); " +
+            "tmux source-file \(c) 2>/dev/null; " +           // 已运行 server:bindings 立即对现有 session 生效
+            "exec tmux -u -f \(c) new -A -s '\(session)'\n"   // cold-start:server 出生即带 conf(50000 + bindings)
     }
 }

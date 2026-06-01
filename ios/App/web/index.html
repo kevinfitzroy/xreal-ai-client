@@ -333,7 +333,15 @@
     try{ term.loadAddon(new Unicode11Addon.Unicode11Addon()); term.unicode.activeVersion='11'; }catch(e){ console.warn('[xreal] unicode11 不可用',e); }
     term.open(document.getElementById('term'));
     try{ webglAddon=new WebglAddon.WebglAddon(); term.loadAddon(webglAddon); }catch(e){ console.warn('[xreal] WebGL 不可用,回退 DOM',e); }
-    term.onData(d=>{ if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d)))); });
+    term.onData(d=>{
+      // 语音预览态:物理 Enter→确认注入预览文本(vkeyEnter)、Esc→取消会话(vkeyEsc),不原样发 CR/ESC 到 SSH。
+      // 硬件键盘连着时 vkey 隐藏、屏上无 Enter 键,这是确认语音的唯一通道。(Option B:硬件键进 xterm DOM → 经此。)
+      if(document.getElementById('voice-overlay').style.display==='block'){
+        if(d==='\r'   && window.Bridge && window.Bridge.vkeyEnter){ window.Bridge.vkeyEnter(); return; }
+        if(d==='\x1b' && window.Bridge && window.Bridge.vkeyEsc){ window.Bridge.vkeyEsc(); return; }
+      }
+      if(window.Bridge&&window.Bridge.onInput) window.Bridge.onInput(btoa(unescape(encodeURIComponent(d))));
+    });
     term.onResize(({cols,rows})=>{ if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(cols,rows); });
     try{ fitAddon.fit(); }catch(e){}
   }
@@ -370,17 +378,26 @@
   }
 
   /* ========== 全局键盘:列表态自己处理方向/Enter;终端态交给 xterm ========== */
+  // 列表导航单一入口。DOM keydown(Android:硬件键到得了 WebView)与 iOS 原生 pressesBegan
+  // 转发(iOS:硬件键到不了 WKWebView DOM,由 TerminalViewController.handlePresses 调本函数)共用。
+  // dir ∈ down/up/right/left/enter。返回是否消费。
+  window.navKey=function(dir){
+    if(currentView!=='list') return false;
+    switch(dir){
+      case 'down':  move('down');  return true;
+      case 'up':    move('up');    return true;
+      case 'right': move('right'); return true;
+      case 'left':  move('left');  return true;
+      case 'enter': openFocused(); return true;
+    }
+    return false;
+  };
   document.addEventListener('keydown', e=>{
     if(currentView!=='list') return;  // 终端态:不拦截,xterm/Kotlin 处理
-    switch(e.key){
-      case 'ArrowDown':  move('down');  e.preventDefault(); break;
-      case 'ArrowUp':    move('up');    e.preventDefault(); break;
-      case 'ArrowRight': move('right'); e.preventDefault(); break;
-      case 'ArrowLeft':  move('left');  e.preventDefault(); break;
-      case 'j': setFocus(focusIdx+1); e.preventDefault(); break;   // vim 线性兜底(带绕回)
-      case 'k': setFocus(focusIdx-1); e.preventDefault(); break;
-      case 'Enter': openFocused(); e.preventDefault(); break;
-    }
+    const map={ArrowDown:'down',ArrowUp:'up',ArrowRight:'right',ArrowLeft:'left',Enter:'enter'};
+    if(map[e.key]){ window.navKey(map[e.key]); e.preventDefault(); return; }
+    if(e.key==='j'){ setFocus(focusIdx+1); e.preventDefault(); }   // vim 线性兜底(带绕回)
+    else if(e.key==='k'){ setFocus(focusIdx-1); e.preventDefault(); }
   });
   // 键盘专用应用:卡片不可点(导航全靠方向键 + Enter)。摒弃触摸,简化交互模型
 

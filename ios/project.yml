@@ -9,6 +9,11 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     from: "0.12.0"
+  # 原生终端模拟器(xterm.js 的 iOS 等价)。WKWebView 收不到硬件键 + 软键盘抑制的死结 → 改用它,
+  # 键盘全原生正确处理(硬件键/修饰/DECCKM)。它是 La Terminal 的开源内核,底层同样 swift-nio-ssh。
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: "1.2.0"
 
 targets:
   XrealPOC:
@@ -27,6 +32,7 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Citadel
+      - package: SwiftTerm
     # DEVELOPMENT_TEAM 放进 gitignored Signing.xcconfig —— 不让个人 Apple ID team 进公开 repo。
     # 真机构建需本地有 ios/Signing.xcconfig(内含 `DEVELOPMENT_TEAM = <你的 teamID>`);模拟器构建忽略签名,不需要。
     configFiles:

@@ -2,13 +2,17 @@ import UIKit
 import WebKit
 import GameController
 import AVFoundation
+import SwiftTerm
 
-/// Phase 1 core-loop controller. Mirrors Android's MainActivity:
+/// Core-loop controller. Mirrors Android's MainActivity:
 ///   hosts.json → Agent Deck list → openProject → SSH(ed25519) PTY terminal → back.
 ///
-/// Full-screen WKWebView hosting the *unmodified-shared* `index.html` (Agent Deck SPA).
-/// `window.Bridge` is injected as a WKUserScript forwarding to `messageHandlers.bridge`.
-final class TerminalViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate {
+/// **架构(2026-06 改)**:列表态 = WKWebView 跑共享 `index.html`(Agent Deck SPA);终端态 = **原生
+/// SwiftTerm `TerminalView`**(替代 WKWebView 里的 xterm.js)。原因:iOS WKWebView 收不到硬件键 DOM
+/// 事件 + 软键盘抑制与 DOM 投递互斥 → 键盘死结。SwiftTerm 是原生 VT100 引擎,键盘全原生正确处理。
+/// 两个 view 叠放,按 view_ 显隐切换;F1/F2 + 语音 overlay 原生。
+final class TerminalViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate,
+                                     TerminalViewDelegate, TerminalHostKeyHandler {
 
     // 全屏沉浸(AR 眼镜场景):隐藏状态栏(时间/电量/信号)+ home indicator = Android immersive。
     override var prefersStatusBarHidden: Bool { true }
@@ -16,6 +20,11 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     private var webView: WKWebView!
     private var pageReady = false
+
+    // 原生终端(SwiftTerm):终端态渲染 + 键盘;列表态隐藏。替代 WKWebView 里的 xterm。
+    private var term: TerminalHostView!
+    // 语音预览浮层(原生),替代 index.html 的 showOverlay/hideOverlay。
+    private let voiceOverlay = VoiceOverlayView()
 
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
@@ -52,6 +61,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     // 实例创建后不重建(inject 闭包按 open 热切,等价 Android @Volatile channel)。
     private var voice: VoiceController!
     private var micRequested = false
+    // 物理键 F1(语音 hold-to-talk)按住态:GameController 的 keyChangedHandler 在状态变化时各发一次
+    // (理论上不像 Android ACTION_DOWN 会自动重复),仍加此 guard 防重复 voiceDown / 漏 up。
+    private var voiceKeyHeld = false
 
     // MARK: - Bridge shim (injected at document start)
     // index.html calls window.Bridge.{onInput,onResize,openProject,goHome,vkeyEnter,...};
@@ -118,6 +130,28 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         webView.backgroundColor = .black
         view.addSubview(webView)
 
+        // 原生终端(SwiftTerm),覆盖在 webView 之上,默认隐藏,终端态显示。
+        TerminalKeyInterceptor.installOnce()   // swizzle pressesBegan 拦 F1/F2 + 语音 Enter/Esc
+        let t = TerminalHostView(frame: view.bounds, font: UIFont(name: "Menlo", size: 13))
+        t.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        t.terminalDelegate = self
+        t.keyHandler = self
+        t.nativeBackgroundColor = .black
+        t.nativeForegroundColor = UIColor(white: 0.9, alpha: 1)
+        // AR 眼镜:纯硬件键盘,不弹软键盘也不要 SwiftTerm 自带的触屏终端工具条。
+        // inputView 设 0 高度空 view = iOS 用它代替系统键盘(看不见),但仍是键盘 first responder → 硬件键照常进。
+        // inputAccessoryView=nil 去掉默认 TerminalAccessory 工具条(setupAccessoryView 仅 init 调一次,设后稳)。
+        t.inputView = UIView(frame: .zero)
+        t.inputAccessoryView = nil
+        t.isHidden = true
+        view.addSubview(t)
+        self.term = t
+
+        // 语音浮层最上层,默认隐藏。
+        voiceOverlay.frame = view.bounds
+        voiceOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(voiceOverlay)
+
         setupVoice()
 
         hosts = HostStore.loadHosts()
@@ -131,6 +165,11 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
         registerKeyboardObservers()
         registerForegroundObserver()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if view_ == .list { becomeFirstResponder() }   // 列表态 VC 收硬件键 → 列表导航(navKey)
     }
 
     // MARK: - App foreground → refetch status (item 1; Android's onStart guarded by LIST)
@@ -255,6 +294,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         ssh?.close(); ssh = nil
         sessionGen += 1; openSeq += 1
         view_ = .list
+        term?.isHidden = true; term?.resignFirstResponder(); voiceOverlay.hide()
         guard let webDir = Bundle.main.url(forResource: "web", withExtension: nil) else { return }
         webView.loadFileURL(webDir.appendingPathComponent("index.html"), allowingReadAccessTo: webDir)
         // didFinish will re-seed the list + refreshManifests as on a fresh load.
@@ -399,7 +439,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] openProject host=\(host) session=\(session)")
         let seq = { openSeq += 1; return openSeq }()
         view_ = .terminal
-        eval("window.showTerminal(\(jsString(name)), \(jsString(type)))")
+        showTerminalView()   // 显示 SwiftTerm + 抢焦 + 清屏
 
         guard let h = hosts.first(where: { $0.name == host }),
               let p = (h.projects.first(where: { $0.session == session })) else {
@@ -422,7 +462,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         s.onOutput = { [weak self] data in
             DispatchQueue.main.async {
                 guard let self, self.sessionGen == gen else { return }   // late chunk from closed session
-                self.eval("window.writeToTerm('\(data.base64EncodedString())')")
+                self.term.feed(byteArray: ArraySlice(data))
             }
         }
         // PTY loop ended (item 3). onClosed fires for user-back, a server-side drop
@@ -453,18 +493,14 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
                     }
                     self.ssh = s
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session)")
-                    // Re-push the current xterm size: showTerminal's fit fired before the
-                    // PTY existed, so the PTY would stay 80×24 and tmux wouldn't fill.
-                    self.eval("window.syncSize && window.syncSize()")
+                    // 连接前 sizeChanged 可能已触发(那时 ssh 还没绑定)→ 这里把当前终端尺寸补推给 PTY,
+                    // 否则 PTY 停在 connect 时传的 80×24、tmux 画不满。
+                    let t = self.term.getTerminal()
+                    self.ssh?.resize(cols: t.cols, rows: t.rows)
                     #if DEBUG
-                    // self-verify the keystroke path (JS Bridge.onInput → eventStream .data
-                    // → outbound.write → PTY → echo → render). Routes through the SAME bridge
-                    // a real keypress uses, not a raw ssh.send.
                     if ProcessInfo.processInfo.arguments.contains("-autoTypeAfterOpen") {
-                        let cmd = "echo XREAL_OK\n"
-                        let b64 = Data(cmd.utf8).base64EncodedString()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            self.eval("window.Bridge.onInput('\(b64)')")
+                            self.ssh?.send(Data("echo XREAL_OK\n".utf8))
                         }
                     }
                     #endif
@@ -482,6 +518,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     private func backToList() {
         NSLog("[VC] backToList")
+        voiceKeyHeld = false   // 若按住 F1 时按 F2 离开,清掉按住态,否则下次 F1 不触发
         openSeq += 1     // in-flight connections are now obsolete
         sessionGen += 1  // late output chunks are now obsolete
         voice.shutdown() // cancel any in-flight voice session + hide overlay before leaving
@@ -490,8 +527,26 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         let old = ssh
         ssh = nil
         old?.close()     // finishes stream + closes client → PTY loop exits, tmux persists
-        eval("window.showList()")
+        showListView()
         refreshManifests()   // a project Maestro just created shows up now
+    }
+
+    // MARK: - 终端/列表 view 切换(SwiftTerm 显隐 + first responder 归属)
+    /// 进终端态:清屏 + 显示 SwiftTerm + 它抢 first responder(硬件键进它,由它编码)。
+    private func showTerminalView() {
+        term.feed(text: "\u{1b}c")      // RIS 全复位,清掉上次 session 残留
+        term.isHidden = false
+        view.bringSubviewToFront(term)
+        view.bringSubviewToFront(voiceOverlay)
+        term.becomeFirstResponder()
+    }
+    /// 回列表态:隐藏 SwiftTerm + 让 VC 收硬件键(列表导航走 handlePresses → navKey)。
+    private func showListView() {
+        voiceOverlay.hide()
+        term.resignFirstResponder()
+        term.isHidden = true
+        becomeFirstResponder()          // 列表态 VC 当 first responder → 方向键/Enter 进 handlePresses
+        eval("window.showList()")
     }
 
     // MARK: - Valet "Open in" import → reload list (SPEC §8 real-device channel)
@@ -522,7 +577,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             voice.shutdown(); applyVoiceContext(nil)   // cancel in-flight voice + hide overlay
             let old = ssh; ssh = nil; old?.close()
         }
-        if view_ != .list { view_ = .list; eval("window.showList()") }
+        if view_ != .list { view_ = .list; showListView() }
         toast(importToast(result))
         pushHostList(loading: true)
         refreshManifests()
@@ -557,12 +612,118 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] _ in
             NSLog("[VC] GCKeyboard connected → hide vkey")
             self?.eval("window.setHwKeyboard && window.setHwKeyboard(true)")
+            self?.attachKeyHandler()   // 接 F1/F2 物理键路由
         }
         kbDisconnectObs = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidDisconnect, object: nil, queue: .main) { [weak self] _ in
             NSLog("[VC] GCKeyboard disconnected → show vkey")
             self?.eval("window.setHwKeyboard && window.setHwKeyboard(false)")
+            self?.voiceKeyHeld = false   // 键盘拔了,清掉可能卡住的按住态
         }
+        attachKeyHandler()   // 键盘可能在 viewDidLoad 前就已连上(connect 通知已错过)→ 直接挂到 coalesced
+    }
+
+    // MARK: - 物理键路由(8BitDo / 蓝牙键盘)
+    /// SPEC §6/§11 语义:F1 = 语音 hold-to-talk、F2 = 返回列表、方向键导航、Enter 确认/执行、Esc 取消。
+    /// **核心事实(真机实测)**:iOS 上硬件键盘**完全不进 WKWebView DOM** —— 终端态 `term.focus()` 也没用,
+    /// 每个键(含字符/Enter/Esc/方向)都经 UIKit 响应链冒泡到 VC 的 `pressesBegan`,xterm.onData / DOM keydown
+    /// 对硬件键永不触发(疑因 AR 眼镜的 IME 抑制 swizzle,根因不影响修复)。**故整条键盘输入都在原生处理**:
+    ///   - 列表态:方向键/Enter → `window.navKey`(SPA 导航);
+    ///   - 终端态:键 → 字节发 ssh(`terminalKey`,对齐 Android `dispatchKeyEvent`,Enter/Esc voice-aware)。
+    /// 8BitDo 在 iOS 实测发标准 HID:语音键=F1(58)、返回键=F2(59),与 Android 一致(经 Generic.kl)。
+    /// GameController(`keyChangedHandler`)在有 WKWebView 抢焦时**收不到** key 回调 → 仅作冗余兜底,主路由是
+    /// `pressesBegan`;GameController 的 connect/disconnect 仍负责**检测键盘插拔**显隐 vkey(一直正常)。
+    /// 终端态 `terminalKey` 做**完整键盘翻译**(可打印字符 + 控制键 + Ctrl 组合)→ 接全 BT 键盘自由打字。
+    /// (曾有每键 keyCode 发现日志,映射定了已删 —— 终端打字含密码,不该 keylog 进 syslog。)
+    private func attachKeyHandler() {
+        guard let kb = GCKeyboard.coalesced else { return }
+        kb.handlerQueue = .main   // handler 内要碰 UIKit/voice/webView → 必须主线程
+        kb.keyboardInput?.keyChangedHandler = { [weak self] _, _, keyCode, pressed in
+            if keyCode == .F1 { self?.voiceKeyAction(pressed: pressed) }
+            else if keyCode == .F2 { self?.backKeyAction(pressed: pressed) }
+        }
+        NSLog("[VC] GCKeyboard key handler attached")
+    }
+
+    // MARK: - UIPress(主路由):硬件键在响应链冒泡到 VC
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if handlePresses(presses, pressed: true) { return }
+        super.pressesBegan(presses, with: event)
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if handlePresses(presses, pressed: false) { return }
+        super.pressesEnded(presses, with: event)
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        _ = handlePresses(presses, pressed: false)   // cancel 当松手处理(别让语音卡在录音)
+        super.pressesCancelled(presses, with: event)
+    }
+
+    // 列表态 VC 当 first responder 收硬件键(方向键/Enter → 列表导航)。终端态由 SwiftTerm(TerminalHostView)收键。
+    override var canBecomeFirstResponder: Bool { true }
+
+    /// 硬件键 → 处理。**仅列表态**:方向键/Enter 驱动 SPA 列表导航;F1/F2 转 action(列表态 no-op)。
+    /// 终端态键盘由 SwiftTerm 直接处理(全键盘正确编码),**不经这里**。@return true 若 consume。
+    private func handlePresses(_ presses: Set<UIPress>, pressed: Bool) -> Bool {
+        var handled = false
+        for p in presses {
+            guard let key = p.key else { continue }
+            switch key.keyCode {
+            case .keyboardF1: voiceKeyAction(pressed: pressed); handled = true
+            case .keyboardF2: backKeyAction(pressed: pressed); handled = true
+            default:
+                guard pressed, view_ == .list, let nav = Self.listNavKey(key.keyCode) else { break }
+                eval("window.navKey && window.navKey('\(nav)')"); handled = true
+            }
+        }
+        return handled
+    }
+
+    /// 硬件方向键 / Enter → SPA 列表导航方向串(仅列表视图用)。
+    private static func listNavKey(_ code: UIKeyboardHIDUsage) -> String? {
+        switch code {
+        case .keyboardDownArrow:  return "down"
+        case .keyboardUpArrow:    return "up"
+        case .keyboardRightArrow: return "right"
+        case .keyboardLeftArrow:  return "left"
+        case .keyboardReturnOrEnter, .keypadEnter: return "enter"
+        default: return nil
+        }
+    }
+
+    // MARK: - SwiftTerm delegate(终端 → app):用户输入发 ssh、尺寸变化重设 PTY
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { ssh?.send(Data(data)) }
+    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { ssh?.resize(cols: newCols, rows: newRows) }
+    func scrolled(source: TerminalView, position: Double) {}
+    func setTerminalTitle(source: TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func clipboardCopy(source: TerminalView, content: Data) {}
+    func bell(source: TerminalView) {}
+    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
+
+    // MARK: - TerminalHostKeyHandler(SwiftTerm 子类拦下的 app 专用键)
+    func termVoiceKey(down: Bool) { voiceKeyAction(pressed: down) }   // F1 hold-to-talk
+    func termBackKey() { backToList() }                              // F2 → 列表
+    func termVoiceActive() -> Bool { voice.currentState != .idle }   // overlay 可见 → 抢 Enter/Esc
+    func termVoiceEnter() -> Bool { voice.onEnter() }                // 预览态注入(true=接管);否则透传 CR
+    func termVoiceEsc() -> Bool { voice.onEsc() }                    // 取消会话(true=接管);否则透传 ESC
+
+    // MARK: - 物理键 action(两条路由共用,幂等)
+    /// F1 = 语音 hold-to-talk。按住时 pressesBegan 可能因 key-repeat 重复 → voiceKeyHeld 去重;松开/取消才结束。
+    private func voiceKeyAction(pressed: Bool) {
+        guard view_ == .terminal else { return }   // 列表页不介入(列表页 F2→host 配置页随配置页搁 P2)
+        if pressed {
+            if !voiceKeyHeld { voiceKeyHeld = true; ensureMicThenRecord(); voice.voiceDown(lang: "zh") }
+        } else if voiceKeyHeld {
+            voiceKeyHeld = false; voice.voiceUp(lang: "zh")
+        }
+    }
+    /// F2 = 返回列表(松手触发,对齐 Android ACTION_UP)。view_ 守卫天然给两条路由去重:第一次触发后
+    /// view 变 list,第二条路由再来也被这里挡掉。
+    private func backKeyAction(pressed: Bool) {
+        if !pressed, view_ == .terminal { backToList() }
     }
 
     private func pushHwKeyboardState() {
@@ -571,15 +732,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         eval("window.setHwKeyboard && window.setHwKeyboard(\(present))")
     }
 
-    // MARK: - Orientation → terminal reflow (SPEC §6.1)
-    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
-        super.viewWillTransition(to: size, with: coordinator)
-        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
-            // After rotation the WKWebView resized → xterm's resize listener fits and
-            // emits onResize; syncSize also re-pushes to the live PTY. Belt-and-braces.
-            self?.eval("window.syncSize && window.syncSize()")
-        }
-    }
+    // 旋转:SwiftTerm 随 autoresizingMask 重排 → sizeChanged delegate → ssh.resize(自动);列表 webView 走 CSS。
+    // 故不再需要手动 syncSize override。
 
     // MARK: - Voice input (Android VoiceDaemon)
     /// Build the VoiceController once. ASR impl = VolcAsr if asr.json creds present, else MockAsr
@@ -596,11 +750,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         }
         voice = VoiceController(
             asr: asr,
-            showOverlay: { [weak self] status, text in
-                guard let self else { return }
-                self.eval("window.showOverlay(\(self.jsString(status)), \(self.jsString(text)))")
-            },
-            hideOverlay: { [weak self] in self?.eval("window.hideOverlay()") }
+            showOverlay: { [weak self] status, text in self?.voiceOverlay.show(status: status, text: text) },
+            hideOverlay: { [weak self] in self?.voiceOverlay.hide() }
         )
         // inject = write into the live PTY (single-writer SSHSession.send; SPEC §4). nil when no PTY.
         voice.inject = { [weak self] data in self?.ssh?.send(data) }
@@ -635,8 +786,9 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     }
 
     // MARK: - helpers
+    /// app 自己的状态文案("连接 host…"/"连接失败"/"已断开")写进原生终端。
     private func writeToTerm(_ s: String) {
-        eval("window.writeToTerm('\(Data(s.utf8).base64EncodedString())')")
+        term.feed(text: s)
     }
 
     private func eval(_ js: String) {
