@@ -213,6 +213,8 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 > 为什么 Beam Pro 用 F1/F2 而非原设计 F13/F14:Beam Pro 的 `Generic.kl` 注释掉了 F13–F24,keycode 到不了 app(Stage A.1 实测)。详见 [`CLAUDE.md`](CLAUDE.md) §5。
 
+**触摸翻页(触屏设备,与翻页上/下同语义):** 终端显示区分**上下两半** —— 触摸**上半** = 翻页上(进 tmux copy-mode 半页上,等价 Shift+↑)、触摸**下半** = 翻页下(等价 Shift+↓)。与物理键 Shift+↑/↓ **同语义同字节**(`ESC[1;2A` / `ESC[1;2B`),由 tmux 的 `S-Up`/`S-Down` 绑定(各端 attach 时注入)接住做半页滚。给无物理翻页键的纯触屏场景一个一致的翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现(`TerminalViewController.handleTermPageTap`);Android 锁横屏 + 物理键为主,按需补。
+
 ### 6.1 屏幕方向 + 虚拟键盘(UI 契约,**per-platform 不同**)
 
 | 平台 | 屏幕方向 | 虚拟键盘行数 |

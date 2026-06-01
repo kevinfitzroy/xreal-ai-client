@@ -69,6 +69,7 @@
 | P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 | P2.6 | 项目级**热词管理 skill** | ⬜ 未开始 | 热词读取链路已就绪(`Hotwords.BASE` 继承 + manifest `projects[].hotwords` per-project 合并喂 ASR)。**这个 skill 负责"写"那张表**:project agent 定期回顾、从语音识别明显错误里总结新热词,用户授权后刷新进该 project 的热词表。**待定:存储位置** —— manifest `projects[].hotwords` 字段(Maestro 转写)vs `<projectDir>/.xreal/hotwords.json`(project agent 自管)。实做时再定 |
 | P2.7 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
+| P2.8 | **触摸翻页(终端上/下半屏)** | ✅ iOS 已实现(2026-06-01) | 触屏设备的翻页入口:点终端**上半**=翻页上(Shift+↑,进 copy-mode 半页上)、**下半**=翻页下。与物理键 Shift+↑/↓ **同语义同字节**(`ESC[1;2A/B`),tmux `S-Up/S-Down` 绑定接住。给纯触屏(无物理翻页键)一致翻页。契约 = **SPEC §6**。iOS:`TerminalViewController.handleTermPageTap`(`UITapGestureRecognizer`,不挡 SwiftTerm 选择手势)。Android 锁横屏 + 物理键为主,按需补。预览层(§13)打开时不触发。 |
 
 ### 富媒体预览设计(P2.7 —— 2026-06-01 立项,设计已收敛,未开工)
 

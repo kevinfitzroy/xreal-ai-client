@@ -27,6 +27,10 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private let voiceOverlay = VoiceOverlayView()
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
+    // 键盘(触屏 vkey)避让:终端高度缩到键盘顶之上,否则 vkey 盖住终端底部输入行。
+    private var keyboardOverlap: CGFloat = 0
+    private var kbFrameObs: NSObjectProtocol?
+    private var kbHideObs: NSObjectProtocol?
 
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
@@ -135,7 +139,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         // 原生终端(SwiftTerm),覆盖在 webView 之上,默认隐藏,终端态显示。
         TerminalKeyInterceptor.installOnce()   // swizzle pressesBegan 拦 F1/F2 + 语音 Enter/Esc
         let t = TerminalHostView(frame: view.bounds, font: UIFont(name: "Menlo", size: 13))
-        t.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        t.autoresizingMask = []   // 高度由 layoutTerm 按触屏 vkey(inputAccessoryView)避让管理
         t.terminalDelegate = self
         t.keyHandler = self
         t.nativeBackgroundColor = .black
@@ -147,6 +151,12 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         t.isHidden = true
         view.addSubview(t)
         self.term = t
+
+        // tmux 触摸翻页(SPEC §6):点终端**上半**= Shift+Up(半页上)、**下半**= Shift+Down(半页下)。
+        // cancelsTouchesInView=false → 不挡 SwiftTerm 自身手势(选择/滚动)。
+        let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
+        pageTap.cancelsTouchesInView = false
+        t.addGestureRecognizer(pageTap)
 
         // 触屏虚拟键盘:无硬件键盘时挂为 inputAccessoryView(文本靠语音,只放特殊键)。
         let kb = TerminalKeyBar(width: view.bounds.width)
@@ -172,11 +182,50 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
         registerKeyboardObservers()
         registerForegroundObserver()
+        registerKeyboardAvoidance()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if view_ == .list { becomeFirstResponder() }   // 列表态 VC 收硬件键 → 列表导航(navKey)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        layoutTerm()
+    }
+
+    // MARK: - 键盘(触屏 vkey)避让:终端缩到键盘顶之上
+    /// 触屏 vkey 作 inputAccessoryView 出现时,iOS 发 keyboardWillChangeFrame;按键盘顶把终端高度缩上去
+    /// → SwiftTerm sizeChanged → ssh.resize → PTY 行数变小 → 提示行落到可见区,不被 vkey 盖住。
+    /// 有硬件键盘时无 vkey(inputView 0 高、accessory nil)→ overlap≈0 → 终端撑满。
+    private func registerKeyboardAvoidance() {
+        let nc = NotificationCenter.default
+        kbFrameObs = nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self,
+                  let v = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+            let kbInView = self.view.convert(v, from: nil)
+            self.keyboardOverlap = max(0, self.view.bounds.maxY - kbInView.minY)
+            self.layoutTerm()
+        }
+        kbHideObs = nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keyboardOverlap = 0; self?.layoutTerm()
+        }
+    }
+
+    private func layoutTerm() {
+        guard let term else { return }
+        term.frame = CGRect(x: 0, y: 0, width: view.bounds.width,
+                            height: max(0, view.bounds.height - keyboardOverlap))
+    }
+
+    /// tmux 触摸翻页:终端上半 → Shift+Up(`ESC[1;2A`,进 copy-mode 半页上);下半 → Shift+Down(`ESC[1;2B`)。
+    /// tmux 的 `bind -n S-Up/S-Down`(SSHSession.tmuxAttachCommand 注入)接住,半页滚。
+    @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
+        guard view_ == .terminal else { return }
+        let topHalf = g.location(in: term).y < term.bounds.height / 2
+        ssh?.send(Data(topHalf ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]    // ESC [ 1 ; 2 A
+                                : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))  // ESC [ 1 ; 2 B
     }
 
     // MARK: - App foreground → refetch status (item 1; Android's onStart guarded by LIST)
@@ -856,5 +905,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         if let o = kbConnectObs { NotificationCenter.default.removeObserver(o) }
         if let o = kbDisconnectObs { NotificationCenter.default.removeObserver(o) }
         if let o = foregroundObs { NotificationCenter.default.removeObserver(o) }
+        if let o = kbFrameObs { NotificationCenter.default.removeObserver(o) }
+        if let o = kbHideObs { NotificationCenter.default.removeObserver(o) }
     }
 }
