@@ -5,6 +5,7 @@ final class LogPanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     private let table = UITableView(frame: .zero, style: .plain)
     private let titleLabel = UILabel()
+    private let versionLabel = UILabel()
     private let filter = UISegmentedControl(items: ["All", "Debug", "Info", "Warn", "Error"])
     private let closeButton = UIButton(type: .system)
     private let clearButton = UIButton(type: .system)
@@ -20,6 +21,12 @@ final class LogPanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         titleLabel.font = .preferredFont(forTextStyle: .largeTitle)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textColor = .white
+
+        versionLabel.text = AppVersion.display
+        versionLabel.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        versionLabel.textColor = UIColor(white: 1, alpha: 0.42)
+        versionLabel.setContentHuggingPriority(.required, for: .horizontal)
+        versionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
         closeButton.tintColor = .white
@@ -44,7 +51,7 @@ final class LogPanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 54
 
-        let topBar = UIStackView(arrangedSubviews: [titleLabel, UIView(), clearButton, closeButton])
+        let topBar = UIStackView(arrangedSubviews: [titleLabel, UIView(), versionLabel, clearButton, closeButton])
         topBar.axis = .horizontal
         topBar.alignment = .center
         topBar.spacing = 10
