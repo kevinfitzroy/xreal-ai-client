@@ -68,6 +68,17 @@ enum SshConnect {
     /// auth fail) propagates; partial state (a live jump client when the target handshake
     /// fails) is cleaned up before rethrowing so we never leak a half-open jump connection.
     static func connect(target h: HostConfig, via: HostConfig?) async throws -> Connected {
+        do {
+            return try await connectOnce(target: h, via: via)
+        } catch {
+            guard let retry = proxyRestartTarget(target: h, via: via) else { throw error }
+            XrayDebugLog.append("ssh failed \(h.name), restart tunnel \(retry.host.name): \(String(describing: error).prefix(160))")
+            try XrayProxy.restart(hostName: retry.host.name, proxy: retry.proxy, targetHost: "127.0.0.1", targetPort: retry.host.ssh.port)
+            return try await connectOnce(target: h, via: via)
+        }
+    }
+
+    private static func connectOnce(target h: HostConfig, via: HostConfig?) async throws -> Connected {
         let targetSettings = try settings(for: h, proxy: via == nil ? h.proxy : nil)
         guard let jh = via else {
             let c = try await SSHClient.connect(to: targetSettings)
@@ -82,6 +93,12 @@ enum SshConnect {
             try? await jumpClient.close()   // target handshake failed — don't leak the jump
             throw error
         }
+    }
+
+    private static func proxyRestartTarget(target h: HostConfig, via: HostConfig?) -> (host: HostConfig, proxy: ProxyConfig)? {
+        if let via, let proxy = via.proxy { return (via, proxy) }
+        if via == nil, let proxy = h.proxy { return (h, proxy) }
+        return nil
     }
 }
 
@@ -210,18 +227,45 @@ enum XrayProxy {
     private static var ports: [String: Int] = [:]
 
     static func tunnel(hostName: String, proxy: ProxyConfig, targetHost: String, targetPort: Int) throws {
+        try ensureTunnel(hostName: hostName, proxy: proxy, targetHost: targetHost, targetPort: targetPort, forceRestart: false)
+    }
+
+    static func restart(hostName: String, proxy: ProxyConfig, targetHost: String, targetPort: Int) throws {
+        try ensureTunnel(hostName: hostName, proxy: proxy, targetHost: targetHost, targetPort: targetPort, forceRestart: true)
+    }
+
+    private static func ensureTunnel(
+        hostName: String,
+        proxy: ProxyConfig,
+        targetHost: String,
+        targetPort: Int,
+        forceRestart: Bool
+    ) throws {
         let key = "\(hostName)→\(targetHost):\(targetPort)"
         lock.lock()
-        defer { lock.unlock() }
         if let running = ports[key] {
-            if running == proxy.localPort {
+            if running == proxy.localPort && !forceRestart && localPortIsOpen(running) {
                 XrayDebugLog.append("reuse \(hostName) localPort=\(proxy.localPort)")
+                lock.unlock()
                 return
             }
-            throw XrayError.badConfig("host \(hostName) tunnel 已在 \(running) 运行,当前配置 localPort=\(proxy.localPort)")
-        }
-        if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
-            throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
+            ports.removeValue(forKey: key)
+            lock.unlock()
+            XrayDebugLog.append("\(forceRestart ? "restart" : "stale") \(hostName) oldPort=\(running) newPort=\(proxy.localPort)")
+            try? XrayBridge.load()?.stop(key: key)
+            Thread.sleep(forTimeInterval: 0.2)
+        } else if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
+            if localPortIsOpen(other.value) {
+                lock.unlock()
+                throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
+            }
+            ports.removeValue(forKey: other.key)
+            lock.unlock()
+            XrayDebugLog.append("remove stale port \(proxy.localPort) owner=\(other.key)")
+            try? XrayBridge.load()?.stop(key: other.key)
+            Thread.sleep(forTimeInterval: 0.2)
+        } else {
+            lock.unlock()
         }
 
         guard let bridge = XrayBridge.load() else {
@@ -234,7 +278,14 @@ enum XrayProxy {
         XrayDebugLog.append("start \(hostName) proxy=\(proxy.name) localPort=\(proxy.localPort) vmess=\(link.address):\(link.port) resolved=\(serverIp ?? "-")")
         try bridge.start(key: key, config: config)
 
+        lock.lock()
+        if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
+            lock.unlock()
+            try? bridge.stop(key: key)
+            throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
+        }
         ports[key] = proxy.localPort
+        lock.unlock()
         // xray-core StartInstance can return a beat before the inbound is fully usable.
         // Without this, the very first SSH probe after app launch can get ECONNRESET while
         // the next user-opened terminal succeeds.
@@ -263,6 +314,22 @@ enum XrayProxy {
         let len = result.pointee.ai_addrlen
         guard getnameinfo(addr, len, &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
         return String(cString: buf)
+    }
+
+    private static func localPortIsOpen(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        guard inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) == 1 else { return false }
+        return withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
     }
 }
 

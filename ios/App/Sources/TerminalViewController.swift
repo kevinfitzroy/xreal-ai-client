@@ -4,7 +4,7 @@ import AVFoundation
 import SwiftTerm
 
 /// Core-loop controller. Mirrors Android's MainActivity:
-///   hosts.json → Agent Deck list → openProject → SSH(ed25519) PTY terminal → back.
+///   hosts.json → Agent Station list → openProject → SSH(ed25519) PTY terminal → back.
 ///
 /// **架构(2026-06 iOS 全面原生化)**:列表态 = **原生 `DeckListView`(UITableView)**,标准 iPhone 体验
 /// (点 cell 进 project、下拉刷新、滑动、状态栏可见);终端态 = **原生 SwiftTerm `TerminalView`**(沉浸式全屏)。
@@ -54,6 +54,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var ssh: SSHSession?
     private var openSeq = 0      // fast open→back→open mustn't bind a stale PTY
     private var sessionGen = 0   // late output chunk from a closed session must not paint a new one
+    private var autoReconnectWork: DispatchWorkItem?
+    private var autoReconnectAttempts = 0
     // iOS.7 最近终端保活:backToList 不关 ssh,保留 SwiftTerm 绘制 + 后台继续喂输出;超时才真关。
     // 开同一 project / 列表右缘滑 = 滑回(已连接则瞬间,连接中则回到连接页);开不同 project = 关旧连新。
     // warm* = 当前/保活终端身份。
@@ -61,6 +63,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var warmSession: String?
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
+    private static let maxProxyReconnectAttempts = 2
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
     private static let shiftUpBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]
     private static let shiftDownBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]
@@ -84,7 +87,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        navigationItem.title = "项目"
+        navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
 
         // 原生列表:全屏(内容自动避让安全区/状态栏);终端态被 term 盖住。
@@ -400,8 +403,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     // MARK: - Open project → PTY
-    private func onOpenProject(host: String, session: String, name: String, type: String) {
+    private func onOpenProject(host: String, session: String, name: String, type: String, resetAutoReconnect: Bool = true) {
         NSLog("[VC] openProject host=\(host) session=\(session)")
+        if resetAutoReconnect {
+            autoReconnectAttempts = 0
+            cancelAutoReconnect()
+        }
         // iOS.7:命中保活终端 → 瞬间滑回原终端(不重连);否则关掉上一个保活终端再连新的。
         if host == warmHost, session == warmSession, ssh != nil { resumeWarm(); return }
         closeWarm()
@@ -418,6 +425,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         warmHost = host; warmSession = session   // 记下当前终端身份(保活用)
         applyVoiceContext(p)
         let jump = h.via.flatMap { vn in hosts.first(where: { $0.name == vn }) }
+        let usesProxy = jump?.proxy != nil || (jump == nil && h.proxy != nil)
         let viaNote = jump.map { " ⤳ \($0.name)" } ?? ""
         writeToTerm("连接 \(h.name)\(viaNote) … (\(p.session))\r\n")   // alias, never the real IP
 
@@ -437,6 +445,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.warmHost = nil; self.warmSession = nil   // 保活终端也断了 → 清理
                 self.cancelKeepWarm()
                 if self.view_ == .terminal {
+                    if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
                     self.writeToTerm("\r\n\u{1b}[33m[连接已断开 — 按返回键回到列表,重开此 project 可重连]\u{1b}[0m\r\n")
                 }
             }
@@ -450,6 +459,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                         s.close(); return
                     }
                     self.ssh = s   // 绑上;若用户连接途中已 back(view_ == .list)= 保活,session 照样绑上
+                    self.autoReconnectAttempts = 0
+                    self.cancelAutoReconnect()
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session) view=\(self.view_ == .terminal ? "term" : "warm")")
                     if self.view_ == .terminal {
                         let t = self.term.getTerminal()
@@ -471,6 +482,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                         self.cancelKeepWarm()
                     }
                     if self.view_ == .terminal {
+                        if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
                         self.writeToTerm("\r\nSSH 连接失败: \(err)\r\n")
                     }
                 }
@@ -514,8 +526,27 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.keepWarmSeconds, execute: work)
     }
     private func cancelKeepWarm() { keepWarmWork?.cancel(); keepWarmWork = nil }
+    private func cancelAutoReconnect() { autoReconnectWork?.cancel(); autoReconnectWork = nil }
+    @discardableResult
+    private func scheduleProxyReconnect(host: String, session: String, name: String, type: String, usesProxy: Bool) -> Bool {
+        guard usesProxy, autoReconnectAttempts < Self.maxProxyReconnectAttempts else { return false }
+        autoReconnectAttempts += 1
+        let attempt = autoReconnectAttempts
+        let delay = 0.8 * Double(attempt)
+        writeToTerm("\r\n\u{1b}[33m[xray tunnel 断开,正在自动重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…]\u{1b}[0m\r\n")
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.view_ == .terminal else { return }
+            self.autoReconnectWork = nil
+            self.onOpenProject(host: host, session: session, name: name, type: type, resetAutoReconnect: false)
+        }
+        autoReconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        return true
+    }
+
     /// 真正关掉保活终端的 SSH(client 断;tmux session 服务端持久)。bump 计数失活在途连接/迟到输出。
     private func closeWarm() {
+        cancelAutoReconnect()
         cancelKeepWarm()
         openSeq += 1; sessionGen += 1
         let old = ssh; ssh = nil
