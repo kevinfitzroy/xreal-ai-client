@@ -30,7 +30,7 @@ class SshConnection(
     private val knownHostsFile: File? = null,
     /** 非空 → 经该跳板 ProxyJump 连 [host](端到端认证到 host,跳板只转发)。见 [SshJump]。 */
     private val jump: JumpSpec? = null,
-    /** 非空 + 直连(无 [jump])→ SSH socket 经该 proxy 的本地 SOCKS 隧道拨号(SSH-over-443,SPEC §5.1)。
+    /** 非空 + 直连(无 [jump])→ SSH 直连该 proxy 的本地 dokodemo-door 隧道口(SSH-over-443,SPEC §5.1)。
      *  有 [jump] 时此字段不用(proxy 跟跳板走,在 [SshJump] 内生效;本连接只连 127.0.0.1)。 */
     private val proxy: ProxyConfig? = null,
 ) : PtyChannel {

@@ -17,7 +17,7 @@ data class JumpSpec(
     val user: String,
     val privateKeyPath: String,
     val knownHostsFile: File?,
-    /** 非空 → 连跳板这条外层拨号经该 proxy 的本地 SOCKS 隧道(SSH-over-443,SPEC §5.1;归属跳板)。 */
+    /** 非空 → 连跳板这条外层拨号经该 proxy 的本地 dokodemo-door 隧道口(SSH-over-443,SPEC §5.1;归属跳板)。 */
     val proxy: ProxyConfig? = null,
 )
 

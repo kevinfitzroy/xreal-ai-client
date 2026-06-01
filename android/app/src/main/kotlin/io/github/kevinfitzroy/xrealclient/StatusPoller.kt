@@ -60,11 +60,11 @@ class StatusPoller(
             setReadable(false, false); setReadable(true, true)
         }.absolutePath
 
-    private fun clientFor(h: HostConfig, jump: JumpSpec?): HostClient = clients.getOrPut(h.name) {
+    private fun clientFor(h: HostConfig, jump: JumpSpec?, directProxy: ProxyConfig?): HostClient = clients.getOrPut(h.name) {
         HostClient(
             host = h.ssh.host, port = h.ssh.port, user = h.ssh.user,
             privateKeyPath = keyPathFor(h), knownHostsFile = knownHostsFile, jump = jump,
-            proxy = if (jump == null) h.proxy else null,   // SSH-over-443:直连用本 host proxy,jump 时跟跳板
+            proxy = directProxy,   // SSH-over-443:effectiveProxy 归属(直连用自己;jump 时 null,proxy 在 JumpSpec)
         )
     }
 
@@ -72,15 +72,16 @@ class StatusPoller(
         val byName = hosts.associateBy { it.name }
         val arr = JSONArray()
         for (h in hosts) {
+            val eff = h.effectiveProxy(hosts)   // 生效 proxy = 实际拨公网那一跳(SPEC §5.1 单一归属)
             val jump = h.via?.let { byName[it] }?.let { jh ->
-                JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, jh.proxy)
+                JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, eff)
             }
-            val panes = clientFor(h, jump).captureAll(h.projects.map { it.sessionName })
+            val panes = clientFor(h, jump, if (h.via == null) eff else null).captureAll(h.projects.map { it.sessionName })
             val snaps = h.projects.map { p ->
                 p to AgentStatusDetector.detect(panes[p.sessionName] ?: HostClient.NO_SESSION_SENTINEL, p.type)
             }
             android.util.Log.i("StatusPoller", "${h.name}: " + snaps.joinToString { "${it.first.sessionName}=${it.second.status}" })
-            arr.put(hostJson(h, snaps))
+            arr.put(hostJson(h, snaps, eff?.name ?: ""))
         }
         return arr.toString()
     }
@@ -110,20 +111,17 @@ class StatusPoller(
             return o
         }
 
-        /** UI 上显示的 SSH-over-443 代理标签(SPEC §5.1)。[all] 给了就按归属规则解析:直连 host 用自己的
-         *  proxy;经 via 跳板时 proxy 归属跳板 → 显示跳板的 proxy 名(那才是实际拨公网的隧道)。无代理 → 空。 */
-        private fun hostProxyLabel(h: HostConfig, all: List<HostConfig>? = null): String {
-            if (h.via == null) return h.proxy?.name ?: ""
-            val jumper = all?.firstOrNull { it.name == h.via }
-            return jumper?.proxy?.name ?: h.proxy?.name ?: ""
-        }
+        /** UI 上显示的 SSH-over-443 代理标签(SPEC §5.1)= 生效 proxy 名(实际拨公网那一跳:直连用自己、
+         *  经 via 用跳板的)。归属规则的单一真相在 [effectiveProxy]。无代理 → 空。 */
+        private fun hostProxyLabel(h: HostConfig, all: List<HostConfig>): String =
+            h.effectiveProxy(all)?.name ?: ""
 
-        private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>, loading: Boolean = false): JSONObject {
+        private fun hostJson(h: HostConfig, snaps: List<Pair<ProjectConfig, ProjectSnapshot>>, proxyLabel: String, loading: Boolean = false): JSONObject {
             val projects = JSONArray()
             for ((p, s) in snaps) projects.put(projectJson(p, s, loading))
             val up = snaps.any { it.second.status != ProjectStatus.DISCONNECTED }
             return JSONObject().put("name", h.name).put("addr", h.addr).put("up", up)
-                .put("proxy", hostProxyLabel(h)).put("projects", projects)
+                .put("proxy", proxyLabel).put("projects", projects)
         }
 
         /**

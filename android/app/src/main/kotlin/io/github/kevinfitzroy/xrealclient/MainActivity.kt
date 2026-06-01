@@ -325,10 +325,12 @@ class MainActivity : Activity() {
         thread(name = "ssh-connect", isDaemon = true) {
             AppLog.i(TAG, "ssh-connect start host=${h.name} session=${p.sessionName} via=${h.via ?: "-"} seq=$seq")
             try {
-                // 多跳:via 指向的跳板 host(如 OPS via TK)→ 经它 ProxyJump,端到端认证到本 host。
+                // SSH-over-443:生效 proxy = 实际拨公网那一跳(SPEC §5.1)。直连 host 用自己的、经 via 用跳板的。
+                val eff = h.effectiveProxy(hosts)
+                // 多跳:via 指向的跳板 host(如 OPS via TK)→ 经它 ProxyJump,端到端认证到本 host;proxy 归跳板。
                 val jump = h.via?.let { viaName ->
                     hosts.firstOrNull { it.name == viaName }?.let { jh ->
-                        JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, materializeKey(jh).absolutePath, java.io.File(filesDir, "known_hosts"))
+                        JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, materializeKey(jh).absolutePath, java.io.File(filesDir, "known_hosts"), eff)
                     } ?: run { AppLog.w(TAG, "via host '$viaName' 未配置 → 退回直连"); null }
                 }
                 val ssh = SshConnection(
@@ -337,6 +339,7 @@ class MainActivity : Activity() {
                     startupCommand = tmuxAttachCommand(p.sessionName),
                     knownHostsFile = java.io.File(filesDir, "known_hosts"),
                     jump = jump,
+                    proxy = if (h.via == null) eff else null,   // 终端连接也必须走隧道(SPEC §5.1 行为契约 1)
                 )
                 ssh.connect(80, 24)   // 初始尺寸;showTerminal 的 fit 会触发 onResize 校正
                 AppLog.i(TAG, "ssh connected host=${h.name} session=${p.sessionName} (seq=$seq obsolete=${seq != openSeq})")

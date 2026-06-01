@@ -25,7 +25,7 @@ class HostClient(
     private val knownHostsFile: File? = null,
     /** 非空 → 经该跳板 ProxyJump(端到端认证到 host)。见 [SshJump]。 */
     private val jump: JumpSpec? = null,
-    /** 非空 + 直连 → 经该 proxy 的本地 SOCKS 隧道(SSH-over-443,SPEC §5.1)。jump 时 proxy 跟跳板走。 */
+    /** 非空 + 直连 → 直连该 proxy 的本地 dokodemo-door 隧道口(SSH-over-443,SPEC §5.1)。jump 时 proxy 跟跳板走。 */
     private val proxy: ProxyConfig? = null,
 ) : Closeable {
 

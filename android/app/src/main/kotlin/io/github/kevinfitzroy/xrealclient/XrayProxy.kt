@@ -1,7 +1,6 @@
 package io.github.kevinfitzroy.xrealclient
 
 import java.net.InetAddress
-import java.net.ServerSocket
 
 /**
  * SSH-over-443 隧道运行时(SPEC.md §5.1):内嵌 xray-core 起一个**仅本地** dokodemo-door inbound,
@@ -51,7 +50,7 @@ object XrayProxy {
         // vmess 域名解析成 IP 传给 xray 拨号;SNI 仍用域名(TLS 证书校验)。已是 IP 则 getByName 原样返回。
         // 注:必在后台线程调用(本方法的三个调用点 SshConnection/HostClient/SshJump 都在后台)。
         val serverIp = runCatching { InetAddress.getByName(link.address).hostAddress }.getOrNull()
-        val port = freeLocalPort()
+        val port = proxy.localPort   // 配置固定端口(SPEC §5.1;唯一性由 SettingsStore.localPortConflict fail-closed 保证)
         val config = XrayConfig.buildXrayConfig(link, port, targetHost, targetPort, serverIp)
 
         // gomobile:Go `func Start(key, cfg)` → Java static `Xraybridge.start(String,String)`(首字母小写)。
@@ -69,10 +68,6 @@ object XrayProxy {
         ports.keys.toList().forEach { key -> runCatching { stop?.invoke(null, key) } }
         ports.clear()
     }
-
-    /** 系统分配一个空闲本地端口(开了立刻关,xray 随后 bind;窗口极小可接受)。 */
-    private fun freeLocalPort(): Int =
-        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
 
     /** gomobile 方法名通常首字母小写;兜底也试原名。 */
     private fun findMethod(cls: Class<*>, name: String, vararg params: Class<*>) =

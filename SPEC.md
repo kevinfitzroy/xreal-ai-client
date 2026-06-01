@@ -291,7 +291,7 @@ terminal 核心显示区纵向分成 **5 unit**:
 - 顶层 `host` 对象 = 追加/覆盖一个 host;顶层 `hosts` 数组 = 替换整表;顶层 `asr` 对象 = 写全局 ASR 凭证。`asr` 可和 `host` / `hosts` 同包。
 - `.xrhosts` 里的 host `key` 是**内联 OpenSSH private key PEM 文本**;导入后客户端把它写成私有 `<safeHostName>.pem`(0600),再把私有 `hosts.json` 里的 `key` 改成纯文件名。
 - Android staging 的 host `key` 是**同目录私钥文件名**;不要把 PEM 内联进 Android `hosts.json`。
-- Android 当前实现仍兼容旧形态:`{ "proxies": [{name,url}], "hosts": [{..., "proxy": "<name>"}] }`;目标契约是 host 内联 `proxy{name,localPort,url}`。后续迁移前,给 Android 生成可用配置时按当前实现,给 iOS `.xrhosts` 按内联 proxy。
+- Android **已迁到** host 内联 `proxy{name,localPort,url}`(与 iOS 一致,issue #3);legacy 顶层 `proxies` 表 + host 字符串引用仍向后兼容(无 `localPort` 时客户端按序合成固定口)。**给两端生成配置都用 host 内联 proxy**。
 - `proxy` 归属**实际拨公网那一跳**:直连海外 host 用自己的 `proxy`;内网 host 有 `via` 时不写自己的 proxy,显示/使用跳板 host 的 effective proxy。
 
 **ASR block(可选,全局一份):**
@@ -348,7 +348,7 @@ terminal 核心显示区纵向分成 **5 unit**:
 | WebGL | xterm webgl addon | 旧 WKWebView POC 已验证 WebGL;当前原生 SwiftTerm 不走 WebGL |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
-| SSH-over-443 代理(§5.1) | ✅ 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`)+ sshj **直连**该本地口 + Android resolver 预解析域名(真机验通)。⚠️ Android 旧配置仍支持顶层 `proxies` 表,后续需迁到 host 级 `proxy.localPort` | 🔄 已接 iOS 代码路径:HostStore 解析 host 内联 `proxy{name,localPort,url}` 并拒绝端口冲突;`SshConnect` 按 proxy/via 归属统一处理终端 + manifest/status 轮询;生成同款 xray dokodemo-door JSON,DNS 预解析,SNI 保留,Citadel 直连 host 固定本地口。runtime 通过可选 `Xraybridge.framework` 动态加载;未集成 framework 时带 proxy 的 host fail closed,直连 host 不受影响 |
+| SSH-over-443 代理(§5.1) | ✅ 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`,**监听口 = host 内联 `proxy.localPort` 固定口**)+ sshj **直连**该本地口 + Android resolver 预解析域名(真机验通)。host 内联 `proxy{name,localPort,url}` + 统一 `effectiveProxy` 归属 resolver(terminal/manifest/status **四注入点共用**)+ localPort 冲突 **fail-closed**(拒绝整份配置,不退回直连);legacy 顶层 `proxies` 表仍兼容 | 🔄 已接 iOS 代码路径:HostStore 解析 host 内联 `proxy{name,localPort,url}` 并拒绝端口冲突;`SshConnect` 按 proxy/via 归属统一处理终端 + manifest/status 轮询;生成同款 xray dokodemo-door JSON,DNS 预解析,SNI 保留,Citadel 直连 host 固定本地口。runtime 通过可选 `Xraybridge.framework` 动态加载;未集成 framework 时带 proxy 的 host fail closed,直连 host 不受影响 |
 | proxy 标识徽章(§5.1 UI 契约) | ✅ host 列表 JSON 加 `proxy` 字段(`StatusPoller.hostProxyLabel` 按归属规则解析)→ `index.html` 的 `.host .hproxy` 渲染 🔒+名 | ✅ 原生列表 host header 显示 `🔒 proxy名`,按同样归属规则解析:直连用自己的、多跳用跳板的 |
 | 语音常驻 | Foreground Service | **background audio mode**(iOS 受限,需重设计;无前台 Service 等价物) |
 | 物理键路由 | `Activity.dispatchKeyEvent` | `GameController` framework + `pressesBegan`(UIKey) |

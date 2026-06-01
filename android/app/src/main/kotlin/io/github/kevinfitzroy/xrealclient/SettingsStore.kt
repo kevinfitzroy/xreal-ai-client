@@ -122,12 +122,8 @@ class SettingsStore(ctx: Context) {
 
     private fun parseHosts(f: java.io.File): List<HostConfig> = try {
         val (arr, proxies) = splitTopLevel(f.readText())   // 顶层数组(legacy)或 {proxies,hosts}(SPEC §8)
-        (0 until arr.length()).map { i ->
+        val hosts = (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
-            val proxyName = o.optString("proxy").ifBlank { null }
-            val proxy = proxyName?.let {
-                proxies[it] ?: run { android.util.Log.w("SettingsStore", "host '${o.optString("name")}' 引用未定义 proxy '$it' → 直连"); null }
-            }
             HostConfig(
                 name = o.getString("name"),
                 addr = o.optString("addr", o.getString("host")),
@@ -152,16 +148,41 @@ class SettingsStore(ctx: Context) {
                 },
                 basePath = o.optString("basePath", ""),
                 via = o.optString("via").ifBlank { null },   // 多跳跳板 host 名(无则直连)
-                proxy = proxy,                                // SSH-over-443(SPEC §5.1;无则直连)
+                proxy = parseHostProxy(o, proxies),          // SSH-over-443(SPEC §5.1;无 proxy 字段=直连)
             )
         }
+        // fail closed(SPEC §5.1):localPort 冲突 = 拒绝整份配置,**绝不退回直连**(直连的 :22 正是被 GFW 卡的)。
+        localPortConflict(hosts)?.let {
+            throw IllegalStateException("proxy localPort 冲突,拒绝整份 hosts 配置(不退回直连):$it")
+        }
+        hosts
     } catch (e: Exception) {
         android.util.Log.w("SettingsStore", "parseHosts 解析 ${f.path} 失败: ${e.message}")
         emptyList()
     }
 
-    /** hosts.json 顶层两形态(SPEC §8):顶层数组 = legacy(无 proxy);顶层对象 `{proxies,hosts}` = 新。
-     *  返回 (hosts 数组, proxy 名→ProxyConfig)。 */
+    /**
+     * host 的 SSH-over-443 proxy(SPEC §8/§5.1)。两形态:
+     *   - **目标契约**:host 内联对象 `proxy{name,localPort,url}`。
+     *   - **legacy 兼容**:host 字符串 `"proxy":"<名>"` 引用顶层 `proxies` 表([splitTopLevel] 已合成 localPort)。
+     * **无 proxy 字段 = 直连**(返回 null);proxy **指定了却非法/未定义** = 抛(由 [parseHosts] fail closed,绝不静默直连)。
+     */
+    private fun parseHostProxy(o: org.json.JSONObject, proxies: Map<String, ProxyConfig>): ProxyConfig? {
+        val hostName = o.optString("name")
+        o.optJSONObject("proxy")?.let { po ->   // 内联对象
+            val name = po.optString("name"); val url = po.optString("url"); val lp = po.optInt("localPort", 0)
+            require(name.isNotBlank() && url.isNotBlank() && lp in 1..65535) {
+                "host '$hostName' 内联 proxy 非法(需 name/url/localPort∈1..65535)"
+            }
+            return ProxyConfig(name, lp, url)
+        }
+        val ref = o.optString("proxy").ifBlank { return null }   // 无 proxy 字段 → 直连
+        return proxies[ref] ?: throw IllegalStateException("host '$hostName' 引用未定义 proxy '$ref'")
+    }
+
+    /** hosts.json 顶层两形态(SPEC §8):顶层数组 = legacy(无 proxy);顶层对象 `{proxies,hosts}`。
+     *  返回 (hosts 数组, proxy 名→ProxyConfig)。legacy 顶层 `proxies` 表无 localPort → 按序合成固定口
+     *  ([LEGACY_PROXY_PORT_BASE]+序号),让 legacy 也走 host 内联同一套固定端口模型。 */
     private fun splitTopLevel(text: String): Pair<org.json.JSONArray, Map<String, ProxyConfig>> {
         val t = text.trim()
         if (t.startsWith("[")) return org.json.JSONArray(t) to emptyMap()
@@ -172,7 +193,8 @@ class SettingsStore(ctx: Context) {
             for (i in 0 until pa.length()) {
                 val p = pa.getJSONObject(i)
                 val name = p.optString("name"); val url = p.optString("url")
-                if (name.isNotBlank() && url.isNotBlank()) proxies[name] = ProxyConfig(name, url)
+                val lp = p.optInt("localPort", LEGACY_PROXY_PORT_BASE + i)   // legacy 无 localPort → 合成
+                if (name.isNotBlank() && url.isNotBlank()) proxies[name] = ProxyConfig(name, lp, url)
                 else android.util.Log.w("SettingsStore", "proxies[$i] 缺 name/url,跳过")
             }
         }
@@ -286,6 +308,8 @@ class SettingsStore(ctx: Context) {
         const val PRIVATE_ASR = "asr.json"
         /** legacy 过渡期 host 配置(dev rig 用;adb push,reboot 清零,重跑 scripts/setup-mac-host.sh)。 */
         const val HOSTS_JSON = "/data/local/tmp/xreal_hosts.json"
+        /** legacy 顶层 `proxies` 表无 localPort 时按序合成固定口的基址(目标契约是 host 内联 proxy.localPort)。 */
+        private const val LEGACY_PROXY_PORT_BASE = 39000
 
         private const val K_SSH_HOST = "ssh_host"
         private const val K_SSH_PORT = "ssh_port"

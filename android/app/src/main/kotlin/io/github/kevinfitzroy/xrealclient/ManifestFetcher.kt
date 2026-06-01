@@ -31,9 +31,9 @@ class ManifestFetcher(
             writeText(h.ssh.privateKeyPem); setReadable(false, false); setReadable(true, true)
         }.absolutePath
 
-    private fun clientFor(h: HostConfig, jump: JumpSpec?): HostClient = clients.getOrPut(h.name) {
-        // SSH-over-443:直连用本 host proxy,jump 时 proxy 跟跳板(在 JumpSpec 里)。
-        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyPathFor(h), knownHostsFile, jump, if (jump == null) h.proxy else null)
+    private fun clientFor(h: HostConfig, jump: JumpSpec?, directProxy: ProxyConfig?): HostClient = clients.getOrPut(h.name) {
+        // SSH-over-443:effectiveProxy 归属(直连用自己;jump 时 null,proxy 在 JumpSpec 里)。
+        HostClient(h.ssh.host, h.ssh.port, h.ssh.user, keyPathFor(h), knownHostsFile, jump, directProxy)
     }
 
     /** 阻塞(在后台线程调):逐 host **串行**拉 manifest,返回更新 projects 后的 HostConfig。无 basePath / 拉取失败的 host 原样返回。
@@ -45,10 +45,11 @@ class ManifestFetcher(
       val reachable = HashSet<String>()
       val outHosts = hosts.map { h ->
         if (h.basePath.isBlank()) return@map h
+        val eff = h.effectiveProxy(hosts)   // 生效 proxy = 实际拨公网那一跳(SPEC §5.1 单一归属)
         val jump = h.via?.let { byName[it] }?.let { jh ->
-            JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, jh.proxy)
+            JumpSpec(jh.ssh.host, jh.ssh.port, jh.ssh.user, keyPathFor(jh), knownHostsFile, eff)
         }
-        val client = clientFor(h, jump)
+        val client = clientFor(h, jump, if (h.via == null) eff else null)
         val base = h.basePath.trimEnd('/')
         val t0 = System.currentTimeMillis()
         val raw = client.catFile("$base/.xreal/projects.json")

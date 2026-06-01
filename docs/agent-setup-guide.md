@@ -22,7 +22,7 @@
    - Android / Beam Pro:生成 `hosts.json` + key 文件 + 可选 `asr.json`,经 `adb push` 到 staging。
 2. **再判断 host 类型**:
    - 国内 / 局域网 / 能稳定直连 `:22`:不配 proxy。
-   - 海外公网 host(从国内连):必须准备 `vmess://` + 443 隧道。iOS `.xrhosts` 用 host 内联 `proxy{name,localPort,url}`;Android 当前实现仍用顶层 `proxies` + host 字符串引用,这是兼容形态。
+   - 海外公网 host(从国内连):必须准备 `vmess://` + 443 隧道。**两端统一**用 host 内联 `proxy{name,localPort,url}`(Android/iOS 一致);legacy 顶层 `proxies` 表仍兼容但不推荐。
    - 内网 host:先配置跳板 host,内网 host 写 `"via": "<跳板 host name>"`;proxy 归属跳板,不要给内网 target host 再叠一层 proxy。
 3. **再初始化 Maestro**:拷 `docs/orchestrator-CLAUDE.md` 和 `docs/xreal-project.sh`,用 `xreal-project.sh new maestro maestro Maestro` 起会自愈的 Maestro,然后装 autostart。
 4. **最后验证 + 清理**:手机列表出现 host + Maestro;导入 staging / 临时 `.xrhosts` / 明文 ASR token 都要清掉。
@@ -152,7 +152,7 @@ ssh -i "$KEY" <user>@<host> "command -v xray || ls /usr/local/bin/xray 2>/dev/nu
 
 > ⚠️ 凭证安全:vmess `id`(UUID)是连接凭据,**绝不**写进会进 git 的文件;举例用占位。
 
-**c)** 这台 host 的 `vmess://` 链接留到**第 5 步**。iOS `.xrhosts` 配进 host 内联 `proxy{name,localPort,url}`;Android 当前 staging 仍用顶层 `proxies` 表 + host 的 `"proxy"` 字符串引用。多跳内网 host(有 `via`)**不用**自己配 proxy——它蹭跳板的(归属规则见 SPEC §5.1)。
+**c)** 这台 host 的 `vmess://` 链接留到**第 5 步**。**两端统一**配进 host 内联 `proxy{name,localPort,url}`(Android/iOS 一致)。多跳内网 host(有 `via`)**不用**自己配 proxy——它蹭跳板的(归属规则见 SPEC §5.1)。
 
 ## 第 5 步 — 生成配置文件
 
@@ -274,7 +274,7 @@ PY
 
 staging 目录 = `/data/local/tmp/xreal_import/`。里面放 `hosts.json` + 私钥文件(**`key` 字段必须是纯文件名**,app 会拒绝带 `/` 或 `..` 的路径)。
 
-> Android 当前 proxy 解析仍是 legacy:顶层 `proxies` 表 + host 的 `"proxy": "<proxy name>"`。后续会迁到和 iOS 一样的 host 内联 `proxy{name,localPort,url}`。现在要让 Android 可用,按下面的兼容形态生成。
+> Android **已和 iOS 一致**:host 内联 `proxy{name,localPort,url}`(issue #3 已落地)。`localPort` = 本机固定监听口,**整份配置内必须唯一**(冲突会被客户端拒绝、不退回直连)。legacy 顶层 `proxies` 表仍兼容,但新配置请按下面的内联形态生成。
 
 ```bash
 STAGING=/data/local/tmp/xreal_import
@@ -301,17 +301,19 @@ if env("VIA"):
     host["via"] = env("VIA")
 
 if env("VMESS_URL") and not env("VIA"):
-    proxy_name = env("PROXY_NAME", f"{host['name']}-443")
-    host["proxy"] = proxy_name
-    root = {"proxies": [{"name": proxy_name, "url": env("VMESS_URL")}], "hosts": [host]}
-else:
-    root = [host]
+    # host 内联 proxy(SPEC §8 目标契约)。localPort 整份配置内唯一(默认 39001,多 host 各给不同口)。
+    host["proxy"] = {
+        "name": env("PROXY_NAME", f"{host['name']}-443"),
+        "localPort": int(env("PROXY_LOCAL_PORT", "39001")),
+        "url": env("VMESS_URL"),
+    }
 
+root = {"hosts": [host]}
 print(json.dumps(root, ensure_ascii=False, indent=2))
 PY
 ```
 
-多跳内网 host:host 加 `"via":"<跳板名>"` 但**不**加 proxy(蹭跳板的,§5.1 归属规则)。跳板 host 应先作为一台普通 host 配好。
+多跳内网 host:host 加 `"via":"<跳板名>"` 但**不**加 proxy(蹭跳板的,§5.1 归属规则)。跳板 host 应先作为一台普通 host 配好。多台海外 host 各配 proxy 时,`localPort` 务必各不相同(如 39001 / 39002),否则客户端拒绝整份配置。
 
 > **内网 host(经跳板)**:host 对象可加顶层 `"via": "<跳板 host 的 name>"`,值指向**同一 bundle 里另一台已配置的 host**。app 会经跳板 ProxyJump、端到端认证到本 host(SSH 凭证不经跳板)。直连 host 不加这个字段。
 
