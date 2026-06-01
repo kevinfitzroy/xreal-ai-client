@@ -25,6 +25,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private var term: TerminalHostView!
     // 语音预览浮层(原生),替代 index.html 的 showOverlay/hideOverlay。
     private let voiceOverlay = VoiceOverlayView()
+    // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
+    private var keyBar: TerminalKeyBar!
 
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
@@ -140,12 +142,17 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         t.nativeForegroundColor = UIColor(white: 0.9, alpha: 1)
         // AR 眼镜:纯硬件键盘,不弹软键盘也不要 SwiftTerm 自带的触屏终端工具条。
         // inputView 设 0 高度空 view = iOS 用它代替系统键盘(看不见),但仍是键盘 first responder → 硬件键照常进。
-        // inputAccessoryView=nil 去掉默认 TerminalAccessory 工具条(setupAccessoryView 仅 init 调一次,设后稳)。
+        // inputAccessoryView 由 updateTermAccessory 按是否有硬件键盘挂触屏 vkey / 设 nil。
         t.inputView = UIView(frame: .zero)
-        t.inputAccessoryView = nil
         t.isHidden = true
         view.addSubview(t)
         self.term = t
+
+        // 触屏虚拟键盘:无硬件键盘时挂为 inputAccessoryView(文本靠语音,只放特殊键)。
+        let kb = TerminalKeyBar(width: view.bounds.width)
+        kb.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
+        self.keyBar = kb
+        updateTermAccessory()
 
         // 语音浮层最上层,默认隐藏。
         voiceOverlay.frame = view.bounds
@@ -538,7 +545,41 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         term.isHidden = false
         view.bringSubviewToFront(term)
         view.bringSubviewToFront(voiceOverlay)
+        updateTermAccessory()           // 按当前是否有硬件键盘挂/卸触屏 vkey
         term.becomeFirstResponder()
+    }
+
+    /// 无硬件键盘 → 挂触屏 vkey 为 inputAccessoryView;有硬件键盘 → nil(纯硬件键)。
+    /// term 在 becomeFirstResponder 时读 inputAccessoryView;运行中变更(插拔键盘)需 reloadInputViews。
+    private func updateTermAccessory() {
+        guard let term, let keyBar else { return }
+        term.inputAccessoryView = (GCKeyboard.coalesced == nil) ? keyBar : nil
+        if view_ == .terminal, term.isFirstResponder { term.reloadInputViews() }
+    }
+
+    /// 触屏 vkey 动作 → 字节发 ssh / app 动作。Enter/Esc voice-aware;方向键 DECCKM 适配。
+    private func handleKeyBarAction(_ a: TerminalKeyAction) {
+        switch a {
+        case .back:     backToList()
+        case .up:       ssh?.send(Data(arrowBytes(0x41)))
+        case .down:     ssh?.send(Data(arrowBytes(0x42)))
+        case .right:    ssh?.send(Data(arrowBytes(0x43)))
+        case .left:     ssh?.send(Data(arrowBytes(0x44)))
+        case .enter:    if !voice.onEnter() { ssh?.send(Data([13])) }    // 预览态注入;否则 CR
+        case .esc:      if !voice.onEsc()  { ssh?.send(Data([27])) }     // 取消会话;否则 ESC
+        case .tab:      ssh?.send(Data([0x09]))
+        case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))             // ESC [ Z(back-tab)
+        case .ctrlC:    ssh?.send(Data([0x03]))
+        case .delWord:  ssh?.send(Data([0x17]))                         // Ctrl-W 删词
+        case .voiceDown: ensureMicThenRecord(); voice.voiceDown(lang: "zh")
+        case .voiceUp:   voice.voiceUp(lang: "zh")
+        }
+    }
+
+    /// 方向键字节,DECCKM 适配:application cursor 模式发 `ESC O X`,否则 `ESC [ X`。
+    private func arrowBytes(_ final: UInt8) -> [UInt8] {
+        let app = term.getTerminal().applicationCursor
+        return [0x1b, app ? 0x4f : 0x5b, final]
     }
     /// 回列表态:隐藏 SwiftTerm + 让 VC 收硬件键(列表导航走 handlePresses → navKey)。
     private func showListView() {
@@ -611,14 +652,16 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         kbConnectObs = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] _ in
             NSLog("[VC] GCKeyboard connected → hide vkey")
-            self?.eval("window.setHwKeyboard && window.setHwKeyboard(true)")
-            self?.attachKeyHandler()   // 接 F1/F2 物理键路由
+            self?.eval("window.setHwKeyboard && window.setHwKeyboard(true)")   // 列表 webView vkey
+            self?.attachKeyHandler()      // 接 F1/F2 物理键路由
+            self?.updateTermAccessory()   // 终端:卸掉触屏 vkey
         }
         kbDisconnectObs = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidDisconnect, object: nil, queue: .main) { [weak self] _ in
             NSLog("[VC] GCKeyboard disconnected → show vkey")
             self?.eval("window.setHwKeyboard && window.setHwKeyboard(false)")
-            self?.voiceKeyHeld = false   // 键盘拔了,清掉可能卡住的按住态
+            self?.voiceKeyHeld = false    // 键盘拔了,清掉可能卡住的按住态
+            self?.updateTermAccessory()   // 终端:挂回触屏 vkey
         }
         attachKeyHandler()   // 键盘可能在 viewDidLoad 前就已连上(connect 通知已错过)→ 直接挂到 coalesced
     }
