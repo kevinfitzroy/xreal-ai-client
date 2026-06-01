@@ -26,6 +26,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private let voiceOverlay = VoiceOverlayView()
     private let pageCueView = UIImageView()
     private let terminalBottomCover = UIView()
+    private let channelStrip = UILabel()
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
     // 按键震动(VC 主窗口上下文触发;keybar 在键盘窗口里触发观测不到震动)。
@@ -38,6 +39,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var lastDelWordHapticAt: CFTimeInterval = 0
     private var lastPageTapAt: CFTimeInterval = 0
     private var activeProjectType: ProjectType?
+    private var activeHostConfig: HostConfig?
+    private var activeViaConfig: HostConfig?
+    private var activeSessionName: String?
+    private var tmuxModeLikely = false
     private var suppressTermAccessory = false
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
@@ -51,13 +56,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private enum ViewState { case list, terminal, logs }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
+    private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
     private var view_ = ViewState.list
     private static let minPageTapInterval: CFTimeInterval = 0.22
+    private static let noEchoGraceSeconds: TimeInterval = 3.8
 
     // Active PTY session(终端态活动;**列表态保活中也非 nil**,见 iOS.7)。
     private var ssh: SSHSession?
     private var openSeq = 0      // fast open→back→open mustn't bind a stale PTY
     private var sessionGen = 0   // late output chunk from a closed session must not paint a new one
+    private var outputSeq = 0
+    private var echoWatchWork: DispatchWorkItem?
+    private var channelStripState = ChannelStripState.hidden
     private var autoReconnectWork: DispatchWorkItem?
     private var autoReconnectAttempts = 0
     // iOS.7 最近终端保活:backToList 不关 ssh,保留 SwiftTerm 绘制 + 后台继续喂输出;超时才真关。
@@ -70,9 +80,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private static let maxProxyReconnectAttempts = 2
     private static let terminalBackgroundColor = UIColor(red: 0x28 / 255.0, green: 0x29 / 255.0, blue: 0x2b / 255.0, alpha: 1)
     private static let terminalForegroundColor = UIColor(red: 0xd6 / 255.0, green: 0xd8 / 255.0, blue: 0xdc / 255.0, alpha: 1)
+    private static let channelStripHeight: CGFloat = 18
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
     private static let shiftUpBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]
     private static let shiftDownBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]
+    private static let copyModeVoiceWarning = "当前仍在 tmux 翻页/复制模式，语音文字不会进入终端。请先按 Esc 退出后再语音输入。"
 
     private var hosts: [HostConfig] = []
     // Live status (SPEC §3). reachable == nil = not yet probed.
@@ -166,6 +178,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             case .aboveCard:
                 if self.voice.onEsc() {
                     self.keyHaptic.prepare(); self.keyHaptic.impactOccurred()
+                } else {
+                    self.tmuxModeLikely = false
+                    self.sendToActivePTY(Data([27]))
+                    self.keyHaptic.prepare(); self.keyHaptic.impactOccurred()
                 }
             }
         }
@@ -179,6 +195,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
         terminalBottomCover.isHidden = true
         view.addSubview(terminalBottomCover)
+        channelStrip.isHidden = true
+        channelStrip.textAlignment = .center
+        channelStrip.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
+        channelStrip.textColor = .white
+        channelStrip.numberOfLines = 1
+        channelStrip.layer.borderWidth = 1 / UIScreen.main.scale
+        channelStrip.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        channelStrip.isUserInteractionEnabled = false
+        view.addSubview(channelStrip)
 
         setupVoice()
 
@@ -513,6 +538,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let seq = { openSeq += 1; return openSeq }()
         view_ = .terminal
         showTerminalView(clear: true)   // 新连接:清屏
+        setChannelStrip(.hidden)
 
         guard let h = hosts.first(where: { $0.name == host }),
               let p = (h.projects.first(where: { $0.session == session })) else {
@@ -524,6 +550,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         warmHost = host; warmSession = session   // 记下当前终端身份(保活用)
         applyVoiceContext(p)
         let jump = h.via.flatMap { vn in hosts.first(where: { $0.name == vn }) }
+        activeHostConfig = h
+        activeViaConfig = jump
+        activeSessionName = p.session
+        tmuxModeLikely = false
         let usesProxy = jump?.proxy != nil || (jump == nil && h.proxy != nil)
         let viaNote = jump.map { " ⤳ \($0.name)" } ?? ""
         writeToTerm("连接 \(h.name)\(viaNote) … (\(p.session))\r\n")   // alias, never the real IP
@@ -533,6 +563,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         s.onOutput = { [weak self] data in
             DispatchQueue.main.async {
                 guard let self, self.sessionGen == gen else { return }   // late chunk from closed session
+                self.outputSeq += 1
+                if self.channelStripState == .checking || self.channelStripState == .suspect || self.channelStripState == .reconnecting {
+                    self.setChannelStrip(.hidden)
+                }
                 self.term.feed(byteArray: ArraySlice(data))
             }
         }
@@ -543,9 +577,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 AgentLog.warn("terminal", "PTY dropped host=\(h.name) session=\(p.session)")
                 self.ssh = nil
                 self.warmHost = nil; self.warmSession = nil   // 保活终端也断了 → 清理
+                self.activeHostConfig = nil
+                self.activeViaConfig = nil
+                self.activeSessionName = nil
+                self.tmuxModeLikely = false
                 self.cancelKeepWarm()
                 if self.view_ == .terminal {
                     if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
+                    self.setChannelStrip(.disconnected, "SSH 通道已断开，返回列表重开此 project")
                     self.writeToTerm("\r\n\u{1b}[33m[连接已断开 — 按返回键回到列表,重开此 project 可重连]\u{1b}[0m\r\n")
                 }
             }
@@ -559,6 +598,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                         s.close(); return
                     }
                     self.ssh = s   // 绑上;若用户连接途中已 back(view_ == .list)= 保活,session 照样绑上
+                    self.outputSeq = 0
+                    self.cancelEchoWatch()
+                    self.setChannelStrip(.hidden)
                     self.autoReconnectAttempts = 0
                     self.cancelAutoReconnect()
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session) view=\(self.view_ == .terminal ? "term" : "warm")")
@@ -569,7 +611,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                     }
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-autoTypeAfterOpen") {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.ssh?.send(Data("echo XREAL_OK\n".utf8)) }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.sendToActivePTY(Data("echo XREAL_OK\n".utf8)) }
                     }
                     #endif
                 }
@@ -585,6 +627,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                     }
                     if self.view_ == .terminal {
                         if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
+                        self.setChannelStrip(.disconnected, "SSH 连接失败")
                         self.writeToTerm("\r\nSSH 连接失败: \(err)\r\n")
                     }
                 }
@@ -631,6 +674,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     private func cancelKeepWarm() { keepWarmWork?.cancel(); keepWarmWork = nil }
     private func cancelAutoReconnect() { autoReconnectWork?.cancel(); autoReconnectWork = nil }
+    private func cancelEchoWatch() { echoWatchWork?.cancel(); echoWatchWork = nil }
     @discardableResult
     private func scheduleProxyReconnect(host: String, session: String, name: String, type: String, usesProxy: Bool) -> Bool {
         guard usesProxy, autoReconnectAttempts < Self.maxProxyReconnectAttempts else { return false }
@@ -638,6 +682,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let attempt = autoReconnectAttempts
         let delay = 0.8 * Double(attempt)
         AgentLog.warn("network", "proxy-backed PTY dropped, auto reconnect \(attempt)/\(Self.maxProxyReconnectAttempts) host=\(host) session=\(session)")
+        setChannelStrip(.reconnecting, "SSH 通道中断，正在重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…")
         writeToTerm("\r\n\u{1b}[33m[xray tunnel 断开,正在自动重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…]\u{1b}[0m\r\n")
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.view_ == .terminal else { return }
@@ -649,15 +694,94 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         return true
     }
 
+    private func sendToActivePTY(_ data: Data, expectOutput: Bool = true) {
+        guard let ssh else {
+            setChannelStrip(.disconnected, "SSH 通道已断开，返回列表重开此 project")
+            return
+        }
+        ssh.send(data)
+        if expectOutput { scheduleEchoWatch() }
+    }
+
+    private func scheduleEchoWatch() {
+        cancelEchoWatch()
+        let gen = sessionGen
+        let out = outputSeq
+        let h = activeHostConfig
+        let via = activeViaConfig
+        let session = activeSessionName
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.view_ == .terminal,
+                  self.sessionGen == gen,
+                  self.outputSeq == out,
+                  self.ssh != nil else { return }
+            self.setChannelStrip(.checking, "SSH 通道无回显，正在检查…")
+            AgentLog.warn("terminal", "PTY no output after user input, probing channel")
+            guard let h, let session else {
+                self.setChannelStrip(.suspect, "SSH 通道无回显，可能已卡住")
+                return
+            }
+            Task {
+                let ok = await TmuxModeProbe.paneInMode(host: h, via: via, session: session) != nil
+                await MainActor.run {
+                    guard self.view_ == .terminal,
+                          self.sessionGen == gen,
+                          self.outputSeq == out,
+                          self.ssh != nil else { return }
+                    if ok {
+                        self.setChannelStrip(.suspect, "交互 SSH 无回显，可能已卡住；可返回列表重开")
+                    } else {
+                        self.setChannelStrip(.disconnected, "SSH 探测失败，通道可能已断开")
+                    }
+                }
+            }
+        }
+        echoWatchWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.noEchoGraceSeconds, execute: work)
+    }
+
+    private func setChannelStrip(_ state: ChannelStripState, _ message: String = "") {
+        channelStripState = state
+        guard view_ == .terminal, state != .hidden else {
+            channelStrip.isHidden = true
+            return
+        }
+        channelStrip.text = message
+        switch state {
+        case .hidden:
+            channelStrip.isHidden = true
+            return
+        case .checking:
+            channelStrip.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.82)
+        case .suspect:
+            channelStrip.backgroundColor = UIColor(red: 0.86, green: 0.48, blue: 0.10, alpha: 0.90)
+        case .reconnecting:
+            channelStrip.backgroundColor = UIColor(red: 0.64, green: 0.36, blue: 0.92, alpha: 0.90)
+        case .disconnected:
+            channelStrip.backgroundColor = UIColor.systemRed.withAlphaComponent(0.92)
+        }
+        channelStrip.isHidden = false
+        layoutChannelStrip()
+        view.bringSubviewToFront(channelStrip)
+        view.bringSubviewToFront(voiceOverlay)
+    }
+
     /// 真正关掉保活终端的 SSH(client 断;tmux session 服务端持久)。bump 计数失活在途连接/迟到输出。
     private func closeWarm() {
         cancelAutoReconnect()
         cancelKeepWarm()
+        cancelEchoWatch()
         openSeq += 1; sessionGen += 1
         let old = ssh; ssh = nil
         old?.close()
         warmHost = nil; warmSession = nil
         activeProjectType = nil
+        activeHostConfig = nil
+        activeViaConfig = nil
+        activeSessionName = nil
+        tmuxModeLikely = false
+        setChannelStrip(.hidden)
     }
     /// 回到最近终端:已连接时瞬间恢复;连接中时回到原连接页,等 onConnected 继续绑定。
     private func resumeWarm(animated: Bool = false) {
@@ -666,7 +790,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         AgentLog.debug("terminal", "resume warm host=\(warmHost ?? "") session=\(warmSession ?? "")")
         cancelKeepWarm()
         if let h = hosts.first(where: { $0.name == warmHost }),
-           let p = h.projects.first(where: { $0.session == warmSession }) { applyVoiceContext(p) }
+           let p = h.projects.first(where: { $0.session == warmSession }) {
+            applyVoiceContext(p)
+            activeHostConfig = h
+            activeViaConfig = h.via.flatMap { vn in hosts.first(where: { $0.name == vn }) }
+            activeSessionName = p.session
+        }
         view_ = .terminal
         animated ? showTerminalViewSlidingIn() : showTerminalView(clear: false)   // **不清屏**:保留原内容
         let t = term.getTerminal()
@@ -682,6 +811,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         slideTerminal(toX: 0)
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(channelStrip)
         view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         view.bringSubviewToFront(terminalBottomCover)
@@ -706,6 +836,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         _ = term.resignFirstResponder()
         clearForcedKeyboardOverlap()
         term.isHidden = true
+        setChannelStrip(.hidden)
         terminalBottomCover.isHidden = true
         _ = becomeFirstResponder()      // 列表态 VC 收硬件键 → 列表导航
         if reloadList { pushList() }
@@ -825,6 +956,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         term.frame = f
         voiceOverlay.frame = f
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
+        layoutChannelStrip()
         if !terminalBottomCover.isHidden {
             terminalBottomCover.frame = CGRect(
                 x: x,
@@ -841,6 +973,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         slideTerminal(toX: view.bounds.width)
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(channelStrip)
         view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
@@ -865,6 +998,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         primeTermAccessoryForTerminal()
         if !edgeDragging { slideTerminal(toX: view.bounds.width) }
         view.bringSubviewToFront(term)
+        view.bringSubviewToFront(channelStrip)
         view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
@@ -912,6 +1046,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         terminalBottomCover.isHidden = terminalBottomCover.frame.height <= 0
         if !terminalBottomCover.isHidden {
             view.bringSubviewToFront(term)
+            view.bringSubviewToFront(channelStrip)
             view.bringSubviewToFront(terminalBottomCover)
             view.bringSubviewToFront(voiceOverlay)
         }
@@ -947,6 +1082,17 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         term.frame = f
         voiceOverlay.frame = f
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
+        layoutChannelStrip()
+    }
+
+    private func layoutChannelStrip() {
+        guard !channelStrip.isHidden else { return }
+        channelStrip.frame = CGRect(
+            x: term.frame.minX,
+            y: term.frame.maxY - Self.channelStripHeight,
+            width: term.frame.width,
+            height: Self.channelStripHeight
+        )
     }
 
     /// terminal 触摸分区:上 2/5 → 翻页上;中 2/5 → 翻页下;底部热区由 `handleTermVoicePress` 接管。
@@ -966,7 +1112,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     func termPage(up: Bool) {
         guard view_ == .terminal, voice.currentState == .idle else { return }
         // Claude Code 对 PageUp/PageDown 不稳定;当前所有 project 类型统一走 tmux 半页滚。
-        ssh?.send(Data(up ? Self.shiftUpBytes : Self.shiftDownBytes))
+        sendToActivePTY(Data(up ? Self.shiftUpBytes : Self.shiftDownBytes))
+        tmuxModeLikely = true
     }
 
     @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {
@@ -1154,7 +1301,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     // MARK: - SwiftTerm delegate(终端 → app)
-    func send(source: TerminalView, data: ArraySlice<UInt8>) { ssh?.send(Data(data)) }
+    func send(source: TerminalView, data: ArraySlice<UInt8>) { sendToActivePTY(Data(data)) }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { ssh?.resize(cols: newCols, rows: newRows) }
     func scrolled(source: TerminalView, position: Double) {}
     func setTerminalTitle(source: TerminalView, title: String) {}
@@ -1168,7 +1315,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // MARK: - TerminalHostKeyHandler(SwiftTerm 子类拦下的 app 专用键)
     func termVoiceKey(down: Bool) { voiceKeyAction(pressed: down) }
     func termBackKey() { backToList() }
-    func termSend(bytes: [UInt8]) { ssh?.send(Data(bytes)) }
+    func termSend(bytes: [UInt8]) { sendToActivePTY(Data(bytes)) }
     func termVoiceActive() -> Bool { voice.currentState != .idle }
     func termVoiceEnter() -> Bool { voice.onEnter() }
     func termVoiceEsc() -> Bool { voice.onEsc() }
@@ -1191,16 +1338,20 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             keyHaptic.prepare(); keyHaptic.impactOccurred()
         }
         switch a {
-        case .up:       ssh?.send(Data(arrowBytes(0x41)))
-        case .down:     ssh?.send(Data(arrowBytes(0x42)))
-        case .right:    ssh?.send(Data(arrowBytes(0x43)))
-        case .left:     ssh?.send(Data(arrowBytes(0x44)))
-        case .enter:    if !voice.onEnter() { ssh?.send(Data([13])) }
-        case .esc:      if !voice.onEsc()  { ssh?.send(Data([27])) }
-        case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))
-        case .ctrlC:    ssh?.send(Data([0x03]))
-        case .ctrlB:    ssh?.send(Data([0x02]))
-        case .delWord:  ssh?.send(Data([0x17]))
+        case .up:       sendToActivePTY(Data(arrowBytes(0x41)))
+        case .down:     sendToActivePTY(Data(arrowBytes(0x42)))
+        case .right:    sendToActivePTY(Data(arrowBytes(0x43)))
+        case .left:     sendToActivePTY(Data(arrowBytes(0x44)))
+        case .enter:    if !voice.onEnter() { sendToActivePTY(Data([13])) }
+        case .esc:
+            if !voice.onEsc() {
+                tmuxModeLikely = false
+                sendToActivePTY(Data([27]))
+            }
+        case .shiftTab: sendToActivePTY(Data([0x1b, 0x5b, 0x5a]))
+        case .ctrlC:    sendToActivePTY(Data([0x03]))
+        case .ctrlB:    sendToActivePTY(Data([0x02]), expectOutput: false)
+        case .delWord:  sendToActivePTY(Data([0x17]))
         }
     }
     private func arrowBytes(_ final: UInt8) -> [UInt8] {
@@ -1212,7 +1363,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func voiceKeyAction(pressed: Bool) {
         guard view_ == .terminal else { return }
         if pressed {
-            if !voiceKeyHeld { voiceKeyHeld = true; ensureMicThenRecord(); voice.voiceDown(lang: "zh") }
+            if !voiceKeyHeld {
+                voiceKeyHeld = true
+                ensureMicThenRecord()
+                voice.voiceDown(lang: "zh")
+                warnIfTmuxCopyModeForVoice()
+            }
         } else if voiceKeyHeld {
             voiceKeyHeld = false; voice.voiceUp(lang: "zh")
         }
@@ -1236,8 +1392,38 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             showOverlay: { [weak self] status, text in self?.voiceOverlay.show(status: status, text: text) },
             hideOverlay: { [weak self] in self?.voiceOverlay.hide() }
         )
-        voice.inject = { [weak self] data in self?.ssh?.send(data) }
+        voice.inject = { [weak self] data in self?.sendToActivePTY(data) }
         voice.recorder = AudioCapture()   // 同步建好,否则首次 voiceDown recorder 还 nil
+    }
+
+    private func warnIfTmuxCopyModeForVoice() {
+        guard activeProjectType?.isAiAgent == true,
+              let h = activeHostConfig,
+              let session = activeSessionName,
+              ssh != nil else { voice.setInputWarning(nil); return }
+        let via = activeViaConfig
+        let gen = sessionGen
+        let likely = tmuxModeLikely
+        if likely { voice.setInputWarning(Self.copyModeVoiceWarning) }
+        Task {
+            let inMode = await TmuxModeProbe.paneInMode(host: h, via: via, session: session)
+            await MainActor.run {
+                guard self.sessionGen == gen,
+                      self.activeSessionName == session,
+                      self.ssh != nil,
+                      self.voice.currentState != .idle else { return }
+                if inMode == true {
+                    self.tmuxModeLikely = true
+                    self.voice.setInputWarning(Self.copyModeVoiceWarning)
+                    AgentLog.info("terminal", "voice warns tmux copy-mode session=\(session)")
+                } else if inMode == false {
+                    self.tmuxModeLikely = false
+                    self.voice.setInputWarning(nil)
+                } else if likely {
+                    self.voice.setInputWarning(Self.copyModeVoiceWarning)
+                }
+            }
+        }
     }
     private func ensureMicThenRecord() {
         guard !micRequested else { return }

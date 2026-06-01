@@ -172,3 +172,58 @@ final class SSHSession {
             "exec tmux -u -f \(c) new -A -s '\(session)'\n"   // cold-start:server 出生即带 conf(50000 + bindings)
     }
 }
+
+enum TmuxModeProbe {
+    private static let timeoutMs = 1_600
+
+    static func paneInMode(host h: HostConfig, via: HostConfig?, session: String) async -> Bool? {
+        guard ProjectConfig(session: session, name: session, type: .ssh, hotwords: []).isSessionNameSafe else {
+            return nil
+        }
+        return await withTimeout(ms: timeoutMs) {
+            await queryPaneInMode(host: h, via: via, session: session)
+        }
+    }
+
+    private static func queryPaneInMode(host h: HostConfig, via: HostConfig?, session: String) async -> Bool? {
+        do {
+            let conn = try await SshConnect.connect(target: h, via: via)
+            do {
+                var buf = try await conn.target.executeCommand("tmux display-message -p -t '\(session)' '#{pane_in_mode}' 2>/dev/null")
+                let text = buf.readString(length: buf.readableBytes)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                await conn.closeAll()
+                AgentLog.debug("terminal", "tmux mode probe host=\(h.name) session=\(session) pane_in_mode=\(text ?? "-")")
+                if text == "1" { return true }
+                if text == "0" { return false }
+                return nil
+            } catch {
+                await conn.closeAll()
+                throw error
+            }
+        } catch {
+            AgentLog.warn("terminal", "tmux mode probe failed host=\(h.name) session=\(session): \(String(describing: error).prefix(140))")
+            return nil
+        }
+    }
+
+    private actor ResumeOnce<T> {
+        private var done = false
+        func resume(_ cont: CheckedContinuation<T?, Never>, _ value: T?) {
+            if done { return }
+            done = true
+            cont.resume(returning: value)
+        }
+    }
+
+    private static func withTimeout<T: Sendable>(ms: Int, _ op: @escaping @Sendable () async -> T?) async -> T? {
+        let gate = ResumeOnce<T>()
+        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            Task { await gate.resume(cont, await op()) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(ms) * 1_000_000)
+                await gate.resume(cont, nil)
+            }
+        }
+    }
+}

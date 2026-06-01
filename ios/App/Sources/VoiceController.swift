@@ -34,6 +34,7 @@ final class VoiceController: AsrCallback {
 
     private var state: State = .idle
     private var currentText: String?
+    private var inputWarning: String?
     private var stream: AsrStream?
     /// 会话代数:每次 down/esc ++,回调凭捕获的 gen 比对,过滤上一会话的迟到回调。
     private var asrGen = 0
@@ -50,6 +51,12 @@ final class VoiceController: AsrCallback {
     }
 
     var currentState: State { state }
+    var hasInputWarning: Bool { inputWarning != nil }
+
+    func setInputWarning(_ warning: String?) {
+        inputWarning = warning
+        renderCurrentOverlay()
+    }
 
     // MARK: - 语音键(SPA Bridge.voiceDown/voiceUp)
 
@@ -59,6 +66,7 @@ final class VoiceController: AsrCallback {
         stream?.cancel()
         recorder?.cancel()
         currentText = nil
+        inputWarning = nil
         state = .streaming
         showOverlay("🎤 聆听中…", "")
 
@@ -122,6 +130,11 @@ final class VoiceController: AsrCallback {
     /// @return true = overlay 接管 Enter(写文本);false = 透传(正常 CR)。
     func onEnter() -> Bool {
         guard state == .preview else { return false }
+        if inputWarning != nil {
+            renderCurrentOverlay()
+            AgentLog.warn("voice", "inject blocked by input warning")
+            return true
+        }
         guard let text = currentText else { resetIdle(); return false }
         let payload = voiceMarkerEnabled ? VoiceController.voiceMarker + text : text
         inject?(Data(payload.utf8))   // 不 auto-\n:语音误识安全网,再按 Enter 才执行
@@ -133,13 +146,14 @@ final class VoiceController: AsrCallback {
     /// @return true = 拦截(取消会话/preview);false = 透传。
     func onEsc() -> Bool {
         guard state != .idle else { return false }
+        let passThrough = inputWarning != nil
         asrGen += 1                  // 作废当前会话的迟到回调
         stream?.cancel()
         recorder?.cancel()
         resetIdle()
         NSLog("[VoiceController] ESC cancel")
         AgentLog.info("voice", "cancel")
-        return true
+        return !passThrough
     }
 
     /// 切 project / 回列表 / 断连时收尾(不重建 VoiceController)。
@@ -150,6 +164,7 @@ final class VoiceController: AsrCallback {
         hideOverlay()
         state = .idle
         currentText = nil
+        inputWarning = nil
         stream = nil
         AgentLog.debug("voice", "shutdown")
     }
@@ -157,11 +172,32 @@ final class VoiceController: AsrCallback {
     private func resetIdle() {
         state = .idle
         currentText = nil
+        inputWarning = nil
         stream = nil
         hideOverlay()
     }
 
-    private func showOverlay(_ status: String, _ text: String) { showOverlayJS(status, text) }
+    private func renderCurrentOverlay() {
+        switch state {
+        case .idle:
+            return
+        case .streaming:
+            showOverlay("🎤 聆听中…", currentText ?? "")
+        case .asrPending:
+            showOverlay("识别中…", currentText ?? "")
+        case .preview:
+            showOverlay("🎤 已识别", currentText ?? "")
+        }
+    }
+
+    private func showOverlay(_ status: String, _ text: String) {
+        if let inputWarning {
+            let body = text.isEmpty ? inputWarning : "\(inputWarning)\n\n\(text)"
+            showOverlayJS("⚠️ 先按 Esc 退出翻页模式", body)
+        } else {
+            showOverlayJS(status, text)
+        }
+    }
     private func hideOverlay() { hideOverlayJS() }
 
     /// 注入 AI-agent 会话时的语音前缀(U+1F3A4 + 空格)。与 sub-project CLAUDE.md 约定一致。

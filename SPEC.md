@@ -223,6 +223,10 @@ terminal 核心显示区纵向分成 **5 unit**:
 
 与物理键 Shift+↑/↓ **同语义**,具体实现按平台选择。Android 当前由 tmux 的 `S-Up`/`S-Down` 绑定接住做半页滚;iOS 原生 SwiftTerm 拦截后同样发 S-Up/S-Down 给 tmux binding。Claude Code 的 PageUp/PageDown 路径在 tmux/PTY 组合里不稳定,所以当前已知 project 类型统一用 tmux scrollback;客户端注入的 tmux conf 可调淡 copy-mode highlight,降低 repaint 白块感。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`),并对触摸翻页做短节流以避免 cue 高频闪烁;Android 锁横屏 + 物理键为主,按需补。
 
+**tmux copy-mode 输入提醒:** 语音触发时,客户端可用独立短命 SSH exec 查询 `tmux display-message -p -t <session> '#{pane_in_mode}'`。若当前 pane 在 copy-mode,**不要自动发送 `Esc`**(用户可能误触语音,自动退出会打断阅读位置),只在语音 overlay 上提示“先按 Esc 退出翻页模式”。此时确认注入应被拦住或提醒,避免文本被 tmux 吞掉;用户按 Esc 后再重新语音输入。该查询只发生在语音触发等高价值时刻,不做常驻轮询。
+
+**SSH 通道异常提示:** 终端态可在最底部叠加一条很薄的本地 status strip(视觉上覆盖 tmux status line)。正常隐藏;若 PTY 明确断开/重连中/用户输入后长时间无回显,用红/橙/紫等颜色提示“断开、无回显、重连中”。该提示是客户端本地 UI,不要依赖远端 tmux 还能响应,因为真正断线时远端状态栏已经无法被更新。
+
 **语音 overlay 点击语义:** overlay 的布局和点击分区同样只覆盖 terminal 核心显示区,不能覆盖 vkey。overlay 必须避开 bottom 语音热区,至少不能遮盖 bottom 1 unit 的底部 2/3。overlay 出现后,terminal 翻页热区自然失效,terminal 核心区触摸只剩三块:
 
 - 点击 overlay 卡片本身 = Enter,确认并注入当前语音识别文本。
