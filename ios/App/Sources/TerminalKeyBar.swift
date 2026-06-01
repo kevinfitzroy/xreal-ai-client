@@ -2,7 +2,7 @@ import UIKit
 
 /// 触屏虚拟键盘的动作。文本输入靠语音(本产品语音优先),故 key bar 只放特殊键。
 enum TerminalKeyAction {
-    case back, up, down, left, right, enter, esc, tab, shiftTab, ctrlC, delWord, voiceDown, voiceUp
+    case back, up, down, left, right, enter, esc, tab, shiftTab, ctrlC, ctrlB, delWord, voiceDown, voiceUp
 }
 
 /// 触屏虚拟键盘(原生),**无硬件键盘时**挂为 SwiftTerm 的 `inputAccessoryView`。视觉对齐 index.html `.kc`
@@ -30,7 +30,7 @@ final class TerminalKeyBar: UIInputView {
         ("⌂", "返回", .back),
         ("←", "", .left), ("↑", "", .up), ("↓", "", .down), ("→", "", .right),
         ("↵", "Enter", .enter), ("⎋", "Esc", .esc), ("⌫", "删词", .delWord),
-        ("⇥", "Tab", .tab), ("⇧⇥", "模式", .shiftTab), ("^C", "中断", .ctrlC),
+        ("^B", "Ctrl-B", .ctrlB), ("⇧⇥", "模式", .shiftTab), ("^C", "中断", .ctrlC),
     ]
 
     override var intrinsicContentSize: CGSize {
@@ -96,6 +96,12 @@ final class TerminalKeyBar: UIInputView {
 
     private func makeButton(symbol: String, sub: String, tap action: TerminalKeyAction) -> UIButton {
         let b = styledButton(symbol: symbol, sub: sub)
+        // 按压视觉反馈:按下时背景变亮(所有普通键)。
+        b.configurationUpdateHandler = { btn in
+            var c = btn.configuration
+            c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
+            btn.configuration = c
+        }
         b.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
         return b
     }
@@ -114,8 +120,7 @@ final class TerminalKeyBar: UIInputView {
     @objc private func voiceLongPress(_ g: UILongPressGestureRecognizer) {
         switch g.state {
         case .began:
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()   // 按下震动反馈
-            setVoiceActive(true)                                         // 视觉:按钮变红(录音中)
+            setVoiceActive(true)               // 视觉:按钮变红(录音中);震动在 VC handleKeyBarAction 里(主窗口上下文)
             onAction?(.voiceDown)
         case .ended, .cancelled, .failed:
             setVoiceActive(false)

@@ -27,6 +27,8 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private let voiceOverlay = VoiceOverlayView()
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
+    // 按键震动(在 VC 主窗口上下文触发;keybar 在键盘窗口里触发观测不到震动)。
+    private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
     // 键盘(触屏 vkey)避让:终端高度缩到键盘顶之上,否则 vkey 盖住终端底部输入行。
     private var keyboardOverlap: CGFloat = 0
     private var kbFrameObs: NSObjectProtocol?
@@ -234,6 +236,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     /// tmux 的 `bind -n S-Up/S-Down`(SSHSession.tmuxAttachCommand 注入)接住,半页滚。
     @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
         guard view_ == .terminal else { return }
+        keyHaptic.prepare(); keyHaptic.impactOccurred()   // 翻页震动反馈
         let topHalf = g.location(in: term).y < term.bounds.height / 2
         ssh?.send(Data(topHalf ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]    // ESC [ 1 ; 2 A
                                 : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))  // ESC [ 1 ; 2 B
@@ -623,6 +626,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     /// 触屏 vkey 动作 → 字节发 ssh / app 动作。Enter/Esc voice-aware;方向键 DECCKM 适配。
     private func handleKeyBarAction(_ a: TerminalKeyAction) {
+        if a != .voiceUp { keyHaptic.prepare(); keyHaptic.impactOccurred() }   // 每次按键震动(语音松开不震)
         switch a {
         case .back:     backToList()
         case .up:       ssh?.send(Data(arrowBytes(0x41)))
@@ -634,6 +638,7 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         case .tab:      ssh?.send(Data([0x09]))
         case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))             // ESC [ Z(back-tab)
         case .ctrlC:    ssh?.send(Data([0x03]))
+        case .ctrlB:    ssh?.send(Data([0x02]))                         // Ctrl-B(Claude Code 用)
         case .delWord:  ssh?.send(Data([0x17]))                         // Ctrl-W 删词
         case .voiceDown: voiceKeyAction(pressed: true)    // 复用 F1 路径(voiceKeyHeld 去重 + 权限)
         case .voiceUp:   voiceKeyAction(pressed: false)
