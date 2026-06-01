@@ -95,7 +95,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
         // 原生终端(SwiftTerm),覆盖在列表之上,默认隐藏,终端态显示。
         TerminalKeyInterceptor.installOnce()   // swizzle pressesBegan 拦 F1/F2 + 语音 Enter/Esc
-        let t = TerminalHostView(frame: view.bounds, font: UIFont(name: "Menlo", size: 13))
+        let t = TerminalHostView(frame: view.bounds, font: TerminalFonts.terminalFont(size: 13))
         t.autoresizingMask = []   // 高度由 layoutTerm 按触屏 vkey 避让管理
         t.terminalDelegate = self
         t.keyHandler = self

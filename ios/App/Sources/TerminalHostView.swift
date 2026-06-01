@@ -1,6 +1,7 @@
 import UIKit
 import SwiftTerm
 import ObjectiveC.runtime
+import CoreText
 
 /// app 层物理键回调(F1 语音 / F2 返回 / 语音预览态的 Enter·Esc)。其余键全交给 SwiftTerm 自己编码。
 protocol TerminalHostKeyHandler: AnyObject {
@@ -23,6 +24,42 @@ final class TerminalHostView: TerminalView {
     /// textInputMode 是 UIResponder 的 open 属性,SwiftTerm 只读不覆盖 → 可在此 override(无需 swizzle)。
     override var textInputMode: UITextInputMode? {
         UITextInputMode.activeInputModes.first { $0.primaryLanguage?.hasPrefix("en") ?? false } ?? super.textInputMode
+    }
+}
+
+/// iOS 原生终端用 SwiftTerm,只能接一个 UIFont,不像 xterm.js 能写 CSS fallback list。
+/// 两个 Android 同款字体都注册;实际优先 Sarasa,覆盖 CJK + Nerd/box glyphs 更稳。
+enum TerminalFonts {
+    static func terminalFont(size: CGFloat) -> UIFont {
+        let meslo = registerFont(resource: "meslo-powerline", ext: "otf")
+        let sarasa = registerFont(resource: "sarasa-term", ext: "ttf")
+        for postScriptName in [sarasa, meslo].compactMap({ $0 }) {
+            if let font = UIFont(name: postScriptName, size: size) {
+                NSLog("[TerminalFonts] using \(postScriptName)")
+                return font
+            }
+        }
+        NSLog("[TerminalFonts] bundled fonts unavailable, falling back to Menlo")
+        return UIFont(name: "Menlo", size: size) ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    private static func registerFont(resource: String, ext: String) -> String? {
+        guard let url = Bundle.main.url(forResource: resource, withExtension: ext, subdirectory: "web") else {
+            NSLog("[TerminalFonts] missing web/\(resource).\(ext)")
+            return nil
+        }
+        let postScriptName = loadPostScriptName(url: url)
+        var err: Unmanaged<CFError>?
+        if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &err), let err {
+            let message = (err.takeRetainedValue() as Error).localizedDescription
+            NSLog("[TerminalFonts] register \(resource).\(ext): \(message)")
+        }
+        return postScriptName
+    }
+
+    private static func loadPostScriptName(url: URL) -> String? {
+        guard let provider = CGDataProvider(url: url as CFURL), let font = CGFont(provider) else { return nil }
+        return font.postScriptName as String?
     }
 }
 

@@ -320,13 +320,13 @@ terminal 核心显示区纵向分成 **5 unit**:
 
 ## 11. 平台实现矩阵(契约 → 各端落点)
 
-> **iOS 列状态标记**:✅ = 模拟器 POC(2026-05-31,`ios/`)已实测验过;否则为规划/待真机。POC 验掉的核心风险:**WKWebView 原样跑 index.html + Base64 桥 + 字体 + WebGL + 真 PTY SSH 全通**。
+> **iOS 列状态标记**:✅ = 模拟器 POC(2026-05-31,`ios/`)已实测验过;否则为规划/待真机。POC 验掉的核心风险:**WKWebView 原样跑 index.html + Base64 桥 + 字体 + WebGL + 真 PTY SSH 全通**。2026-06 起 iOS 终端/列表转原生,WKWebView POC 只作为历史验证保留。
 
 | 契约项 | Android(已上真机) | iOS |
 |---|---|---|
-| 终端 UI | WebView + xterm.js + WebGL + unicode11 | **WKWebView + 同一套 `index.html`(POC ✅ 原样跑通,零改动)**;Bridge shim→`messageHandlers` |
-| 字体(Meslo/Sarasa/emoji,file://) | WebView `allowFileAccessFromFileURLs` | **`loadFileURL(allowingReadAccessTo:)` 授权整目录,无跨域(POC ✅)** |
-| WebGL | xterm webgl addon | **WKWebView 提供,addon 正常无 DOM 回退(POC ✅)** |
+| 终端 UI | WebView + xterm.js + WebGL + unicode11 | **原生 SwiftTerm `TerminalView`**(键盘/修饰键/DECCKM 走 native,POC ✅ 真 PTY 跑通);旧 WKWebView + `index.html` POC 已退役 |
+| 字体(Meslo/Sarasa/emoji,file://) | WebView `allowFileAccessFromFileURLs` | `App/web` 同包 `sarasa-term.ttf` + `meslo-powerline.otf`;CoreText runtime register。SwiftTerm 只能吃单 `UIFont`,优先 `SarasaTermSCNerd-Regular`(CJK + Nerd/box glyphs),Meslo/系统 monospace 兜底 |
+| WebGL | xterm webgl addon | 旧 WKWebView POC 已验证 WebGL;当前原生 SwiftTerm 不走 WebGL |
 | SSH | sshj 0.39 + BouncyCastle | **Citadel 0.12(SwiftNIO SSH,async/await;POC ✅ 真 PTY 跑通)** ⚠️ RSA 走 legacy `ssh-rsa`,见 §5 |
 | 多跳 ProxyJump | sshj LocalPortForwarder | **Citadel `SSHClient.jump(to:)` → directTCPIP channel(POC ✅,两跳模拟器跑通)**;无本地 socket 转发,跳板 client 上开 directTCPIP 隧道 + 第二次握手端到端认证到目标 |
 | SSH-over-443 代理(§5.1) | ✅ 自建 `xraybridge.aar`(gomobile 封官方 xtls/xray-core,见 `xray-bridge/`)起本地 **dokodemo-door**(override→服务端 `127.0.0.1:22`)+ sshj **直连**该本地口 + Android resolver 预解析域名(真机验通) | **待实现(与 Android 对等的一等能力,非可选)**:推荐 **sing-box**(有官方 Apple/gomobile 库;`direct` inbound + `override_address`/`override_port` = 等价 override)或 xray-core;起本地端口转发,Citadel **直连**本地口;按 §5.1「行为契约」1–6 实现(尤其:终端+轮询两类连接都走、DNS 预解析、127.0.0.1 promiscuous)。不绑系统 VPN |

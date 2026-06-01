@@ -35,7 +35,7 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|---|---|---|
-| iOS.1 | **终端改原生 SwiftTerm** | ✅(2026-06-01) | 替代 WKWebView+xterm,解键盘死结。键盘全原生正确(字母/Tab/Shift+Tab/方向/Ctrl/DECCKM);F1/F2 + 语音 Enter/Esc 经 swizzle 拦;软键盘抑制 inputView 0 高;tmux 翻页 conf 注入 |
+| iOS.1 | **终端改原生 SwiftTerm** | ✅(2026-06-01) | 替代 WKWebView+xterm,解键盘死结。键盘全原生正确(字母/Tab/Shift+Tab/方向/Ctrl/DECCKM);F1/F2 + 语音 Enter/Esc 经 swizzle 拦;软键盘抑制 inputView 0 高;tmux 翻页 conf 注入。字体按 Android 方案打包 Sarasa/Meslo,CoreText 注册;SwiftTerm 单字体优先 Sarasa |
 | iOS.2 | **触屏 vkey(无硬件键盘)** | ✅ | 无 8BitDo 时终端挂原生 `TerminalKeyBar`(inputAccessoryView):返回/方向/Enter/Esc/删词/Ctrl-B/模式/Ctrl-C/🎤;横屏 1 行竖屏 2 行;键盘避让(终端缩到 vkey 上);按键震动 + 高亮 |
 | iOS.3 | **tmux 触摸翻页** | ✅ | 见 P2.8(点终端上/下半 = Shift+↑/↓) |
 | iOS.4 | **列表改原生(苹果设计语言)** | 🔄 进行中(已编译,待真机验) | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
