@@ -1,5 +1,4 @@
 import UIKit
-import WebKit
 import GameController
 import AVFoundation
 import SwiftTerm
@@ -7,29 +6,27 @@ import SwiftTerm
 /// Core-loop controller. Mirrors Android's MainActivity:
 ///   hosts.json → Agent Deck list → openProject → SSH(ed25519) PTY terminal → back.
 ///
-/// **架构(2026-06 改)**:列表态 = WKWebView 跑共享 `index.html`(Agent Deck SPA);终端态 = **原生
-/// SwiftTerm `TerminalView`**(替代 WKWebView 里的 xterm.js)。原因:iOS WKWebView 收不到硬件键 DOM
-/// 事件 + 软键盘抑制与 DOM 投递互斥 → 键盘死结。SwiftTerm 是原生 VT100 引擎,键盘全原生正确处理。
-/// 两个 view 叠放,按 view_ 显隐切换;F1/F2 + 语音 overlay 原生。
-final class TerminalViewController: UIViewController, WKScriptMessageHandler, WKNavigationDelegate,
-                                     TerminalViewDelegate, TerminalHostKeyHandler {
+/// **架构(2026-06 iOS 全面原生化)**:列表态 = **原生 `DeckListView`(UITableView)**,标准 iPhone 体验
+/// (点 cell 进 project、下拉刷新、滑动、状态栏可见);终端态 = **原生 SwiftTerm `TerminalView`**(沉浸式全屏)。
+/// WKWebView/index.html 已退出 iOS(只留 Android)。两个 view 叠放,按 view_ 显隐切换;
+/// 物理键(8BitDo)经 pressesBegan:列表态 → deckList 选择/打开;终端态 → SwiftTerm 直接编码;F1/F2 拦截。
+final class TerminalViewController: UIViewController, TerminalViewDelegate, TerminalHostKeyHandler {
 
-    // 全屏沉浸(AR 眼镜场景):隐藏状态栏(时间/电量/信号)+ home indicator = Android immersive。
-    override var prefersStatusBarHidden: Bool { true }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    // 沉浸式全屏**只在终端态**(AR 眼镜):隐藏状态栏 + home indicator。列表态恢复标准 iOS chrome。
+    override var prefersStatusBarHidden: Bool { view_ == .terminal }
+    override var prefersHomeIndicatorAutoHidden: Bool { view_ == .terminal }
 
-    private var webView: WKWebView!
-    private var pageReady = false
-
-    // 原生终端(SwiftTerm):终端态渲染 + 键盘;列表态隐藏。替代 WKWebView 里的 xterm。
+    // 原生列表(替代 WKWebView/index.html)。
+    private let deckList = DeckListView(frame: .zero)
+    // 原生终端(SwiftTerm):终端态渲染 + 键盘;列表态隐藏。
     private var term: TerminalHostView!
-    // 语音预览浮层(原生),替代 index.html 的 showOverlay/hideOverlay。
+    // 语音预览浮层(原生)。
     private let voiceOverlay = VoiceOverlayView()
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
-    // 按键震动(在 VC 主窗口上下文触发;keybar 在键盘窗口里触发观测不到震动)。
+    // 按键震动(VC 主窗口上下文触发;keybar 在键盘窗口里触发观测不到震动)。
     private let keyHaptic = UIImpactFeedbackGenerator(style: .light)
-    // 键盘(触屏 vkey)避让:终端高度缩到键盘顶之上,否则 vkey 盖住终端底部输入行。
+    // 键盘(触屏 vkey)避让:终端高度缩到键盘顶之上。
     private var keyboardOverlap: CGFloat = 0
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
@@ -37,145 +34,76 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     private enum ViewState { case list, terminal }
     private var view_ = ViewState.list
 
-    // Active PTY session (nil in list view). Mirrors Android's activeChannel swap.
+    // Active PTY session (nil in list view).
     private var ssh: SSHSession?
-    // open序号 race guard (Android openSeq): fast open→back→open mustn't bind a stale PTY.
-    private var openSeq = 0
-    // reader/session generation: a late output chunk from a closed session must not
-    // paint over a new one. Bumped on every switch.
-    private var sessionGen = 0
+    private var openSeq = 0      // fast open→back→open mustn't bind a stale PTY
+    private var sessionGen = 0   // late output chunk from a closed session must not paint a new one
 
     private var hosts: [HostConfig] = []
-    // Live status from the last manifest+status fetch (SPEC §3). nil reachable = not yet
-    // probed → list pushes omit `state` so the JS shows seed/loading instead of a badge.
+    // Live status (SPEC §3). reachable == nil = not yet probed.
     private var statusByHost: [String: [String: SessionState]] = [:]
     private var reachable: Set<String>? = nil
-    // Phase 3 incremental loading: hosts whose probe has landed this round. A host NOT in
-    // here is still loading (spinner); replaces the all-or-nothing `loading` flag so a live
-    // host can show real status while a dead host still spins toward its timeout.
-    private var probedHosts: Set<String> = []
-    // Phase 3 race guard (Android's fetchGen): foreground + back-to-list can both fire
-    // refreshManifests → overlapping fetch Tasks. Each fetch captures the current gen;
-    // stale results (and stale per-host callbacks) are dropped on the main hop.
-    private var fetchGen = 0
-    // GameController keyboard observers (hardware keyboard → hide vkey, SPEC §6.1).
+    private var probedHosts: Set<String> = []   // hosts whose probe landed this round (incremental loading)
+    private var fetchGen = 0                     // race guard: overlapping refreshManifests
+
     private var kbConnectObs: NSObjectProtocol?
     private var kbDisconnectObs: NSObjectProtocol?
-    // Phase 3: app-foreground observer → refetch status when the user returns (Android onStart).
     private var foregroundObs: NSObjectProtocol?
 
-    // 语音输入(Android VoiceDaemon 的对应):状态机 + ASR + 注入。index.html 的语音键经
-    // Bridge.voiceDown/voiceUp 进来 → voice.voiceDown/voiceUp;overlay 走注入的 window.showOverlay。
-    // 实例创建后不重建(inject 闭包按 open 热切,等价 Android @Volatile channel)。
+    // 语音输入(Android VoiceDaemon 的对应)。
     private var voice: VoiceController!
     private var micRequested = false
-    // 物理键 F1(语音 hold-to-talk)按住态:GameController 的 keyChangedHandler 在状态变化时各发一次
-    // (理论上不像 Android ACTION_DOWN 会自动重复),仍加此 guard 防重复 voiceDown / 漏 up。
     private var voiceKeyHeld = false
-
-    // MARK: - Bridge shim (injected at document start)
-    // index.html calls window.Bridge.{onInput,onResize,openProject,goHome,vkeyEnter,...};
-    // each forwards to the bridge message handler. Every method the SPA *might* call is
-    // defined so its `if(window.Bridge && window.Bridge.x)` guards pass.
-    private let bridgeShim = """
-    window.Bridge = {
-      onInput:    function(b64){ window.webkit.messageHandlers.bridge.postMessage({m:'onInput',    a:[b64]}); },
-      onResize:   function(c,r){ window.webkit.messageHandlers.bridge.postMessage({m:'onResize',   a:[c,r]}); },
-      openProject:function(h,s,n,t){ window.webkit.messageHandlers.bridge.postMessage({m:'openProject', a:[h,s,n,t]}); },
-      goHome:     function(){ window.webkit.messageHandlers.bridge.postMessage({m:'goHome', a:[]}); },
-      vkeyEnter:  function(){ window.webkit.messageHandlers.bridge.postMessage({m:'vkeyEnter', a:[]}); },
-      vkeyEsc:    function(){ window.webkit.messageHandlers.bridge.postMessage({m:'vkeyEsc', a:[]}); },
-      voiceDown:  function(l){ window.webkit.messageHandlers.bridge.postMessage({m:'voiceDown', a:[l]}); },
-      voiceUp:    function(l){ window.webkit.messageHandlers.bridge.postMessage({m:'voiceUp', a:[l]}); },
-      hasHardwareKeyboard: function(){ return false; }
-    };
-    """
-
-    private let consoleShim = """
-    (function(){
-      function send(level, args){
-        try {
-          var s = Array.prototype.map.call(args, function(a){
-            try { return (typeof a==='object') ? JSON.stringify(a) : String(a); }
-            catch(e){ return String(a); }
-          }).join(' ');
-          window.webkit.messageHandlers.log.postMessage({level:level, text:s});
-        } catch(e){}
-      }
-      ['log','warn','error','info'].forEach(function(k){
-        var orig = console[k];
-        console[k] = function(){ send(k, arguments); orig && orig.apply(console, arguments); };
-      });
-      window.addEventListener('error', function(e){
-        send('uncaught', [(e.message||'')+' @ '+(e.filename||'')+':'+(e.lineno||'')]);
-      });
-      window.addEventListener('unhandledrejection', function(e){
-        send('reject', [String(e.reason)]);
-      });
-    })();
-    """
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = .systemBackground
+        navigationItem.title = "Deck"
+        navigationItem.largeTitleDisplayMode = .always
 
-        let cfg = WKWebViewConfiguration()
-        let ucc = WKUserContentController()
-        ucc.addUserScript(WKUserScript(source: consoleShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        ucc.addUserScript(WKUserScript(source: bridgeShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        ucc.add(self, name: "bridge")
-        ucc.add(self, name: "log")
-        cfg.userContentController = ucc
-        cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
-        cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        // 原生列表:全屏(内容自动避让安全区/状态栏);终端态被 term 盖住。
+        deckList.translatesAutoresizingMaskIntoConstraints = false
+        deckList.onSelect = { [weak self] r in self?.onOpenProject(host: r.host, session: r.session, name: r.name, type: r.type.rawValue) }
+        deckList.onRefresh = { [weak self] in self?.refreshManifests() }
+        view.addSubview(deckList)
+        NSLayoutConstraint.activate([
+            deckList.topAnchor.constraint(equalTo: view.topAnchor),
+            deckList.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            deckList.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            deckList.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
 
-        webView = WKWebView(frame: view.bounds, configuration: cfg)
-        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        webView.navigationDelegate = self
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.contentInsetAdjustmentBehavior = .never
-        webView.isOpaque = false
-        webView.backgroundColor = .black
-        view.addSubview(webView)
-
-        // 原生终端(SwiftTerm),覆盖在 webView 之上,默认隐藏,终端态显示。
+        // 原生终端(SwiftTerm),覆盖在列表之上,默认隐藏,终端态显示。
         TerminalKeyInterceptor.installOnce()   // swizzle pressesBegan 拦 F1/F2 + 语音 Enter/Esc
         let t = TerminalHostView(frame: view.bounds, font: UIFont(name: "Menlo", size: 13))
-        t.autoresizingMask = []   // 高度由 layoutTerm 按触屏 vkey(inputAccessoryView)避让管理
+        t.autoresizingMask = []   // 高度由 layoutTerm 按触屏 vkey 避让管理
         t.terminalDelegate = self
         t.keyHandler = self
         t.nativeBackgroundColor = .black
         t.nativeForegroundColor = UIColor(white: 0.9, alpha: 1)
-        // AR 眼镜:纯硬件键盘,不弹软键盘也不要 SwiftTerm 自带的触屏终端工具条。
-        // inputView 设 0 高度空 view = iOS 用它代替系统键盘(看不见),但仍是键盘 first responder → 硬件键照常进。
-        // inputAccessoryView 由 updateTermAccessory 按是否有硬件键盘挂触屏 vkey / 设 nil。
-        t.inputView = UIView(frame: .zero)
+        t.inputView = UIView(frame: .zero)   // 0 高度 → 不弹软键盘,但仍是键盘 first responder(硬件键进)
         t.isHidden = true
         view.addSubview(t)
         self.term = t
 
-        // 禁掉 SwiftTerm 的文本选择/编辑菜单手势:长按选择、双击选词、三击选行、拖动选择/鼠标。
-        // 它们与触摸翻页冲突(双击弹"复制/全选"小窗),且本产品不需要选词复制(语音优先)。
-        // 保留 UIScrollView 自带滚动 pan(scrollback)+ 我的单击翻页。
+        // 禁掉 SwiftTerm 的文本选择/编辑菜单手势(长按/双击选词/三击/拖选),与触摸翻页冲突;保留滚动 + 单击翻页。
         for gr in t.gestureRecognizers ?? [] {
             if gr is UILongPressGestureRecognizer { gr.isEnabled = false }
             else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
             else if gr is UIPanGestureRecognizer, gr !== t.panGestureRecognizer { gr.isEnabled = false }
         }
-
-        // tmux 触摸翻页(SPEC §6):点终端**上半**= Shift+Up(半页上)、**下半**= Shift+Down(半页下)。
-        // cancelsTouchesInView=false → 不挡 SwiftTerm 自身手势(选择/滚动)。
+        // tmux 触摸翻页(SPEC §6):点终端上半 = Shift+Up、下半 = Shift+Down。
         let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
         pageTap.cancelsTouchesInView = false
         t.addGestureRecognizer(pageTap)
 
-        // 触屏虚拟键盘:无硬件键盘时挂为 inputAccessoryView(文本靠语音,只放特殊键)。
+        // 触屏虚拟键盘:无硬件键盘时挂为终端 inputAccessoryView。
         let kb = TerminalKeyBar(width: view.bounds.width)
         kb.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
         self.keyBar = kb
         updateTermAccessory()
 
-        // 语音浮层最上层,默认隐藏。frame 由 layoutTerm 跟随 term(缩到 keybar 之上)→ overlay 卡片在可见区内,不被 vkey 挡。
+        // 语音浮层最上层,默认隐藏。frame 由 layoutTerm 跟随 term(缩到 keybar 之上)。
         voiceOverlay.frame = view.bounds
         voiceOverlay.autoresizingMask = []
         view.addSubview(voiceOverlay)
@@ -184,21 +112,24 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
-
-        guard let webDir = Bundle.main.url(forResource: "web", withExtension: nil) else {
-            NSLog("[VC] FATAL: web/ folder not found in bundle"); return
+        deckList.setEmptyText(hosts.isEmpty ? "暂无 host\n\nAirDrop 一个 .xrhosts 配置导入" : nil)
+        if !hosts.isEmpty {
+            deckList.setSections(buildSections())   // 初始 = 全部 loading
+            refreshManifests()
         }
-        let indexURL = webDir.appendingPathComponent("index.html")
-        webView.loadFileURL(indexURL, allowingReadAccessTo: webDir)
 
         registerKeyboardObservers()
         registerForegroundObserver()
         registerKeyboardAvoidance()
+
+        #if DEBUG
+        applyDebugLevers()
+        #endif
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if view_ == .list { becomeFirstResponder() }   // 列表态 VC 收硬件键 → 列表导航(navKey)
+        if view_ == .list { becomeFirstResponder() }   // 列表态 VC 收硬件键 → 列表导航
     }
 
     override func viewDidLayoutSubviews() {
@@ -206,204 +137,40 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         layoutTerm()
     }
 
-    // MARK: - 键盘(触屏 vkey)避让:终端缩到键盘顶之上
-    /// 触屏 vkey 作 inputAccessoryView 出现时,iOS 发 keyboardWillChangeFrame;按键盘顶把终端高度缩上去
-    /// → SwiftTerm sizeChanged → ssh.resize → PTY 行数变小 → 提示行落到可见区,不被 vkey 盖住。
-    /// 有硬件键盘时无 vkey(inputView 0 高、accessory nil)→ overlap≈0 → 终端撑满。
-    private func registerKeyboardAvoidance() {
-        let nc = NotificationCenter.default
-        kbFrameObs = nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
-            guard let self,
-                  let v = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
-            let kbInView = self.view.convert(v, from: nil)
-            self.keyboardOverlap = max(0, self.view.bounds.maxY - kbInView.minY)
-            self.layoutTerm()
-        }
-        kbHideObs = nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.keyboardOverlap = 0; self?.layoutTerm()
-        }
-    }
-
-    private func layoutTerm() {
-        guard let term else { return }
-        let f = CGRect(x: 0, y: 0, width: view.bounds.width,
-                       height: max(0, view.bounds.height - keyboardOverlap))
-        term.frame = f
-        voiceOverlay.frame = f   // overlay 跟随 term → 卡片落在 keybar 之上的可见区
-    }
-
-    /// tmux 触摸翻页:终端上半 → Shift+Up(`ESC[1;2A`,进 copy-mode 半页上);下半 → Shift+Down(`ESC[1;2B`)。
-    /// tmux 的 `bind -n S-Up/S-Down`(SSHSession.tmuxAttachCommand 注入)接住,半页滚。
-    @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
-        guard view_ == .terminal else { return }
-        keyHaptic.prepare(); keyHaptic.impactOccurred()   // 翻页震动反馈
-        let topHalf = g.location(in: term).y < term.bounds.height / 2
-        ssh?.send(Data(topHalf ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]    // ESC [ 1 ; 2 A
-                                : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))  // ESC [ 1 ; 2 B
-    }
-
-    // MARK: - App foreground → refetch status (item 1; Android's onStart guarded by LIST)
-    /// AppDelegate-based app with a manual UIWindow + no SceneDelegate, so we use
-    /// `willEnterForegroundNotification` (fires reliably on warm foreground; the UIScene
-    /// variant needs scene adoption we don't have). Refetch only in the LIST view — refetching
-    /// while in a terminal would pointlessly SSH every host; the terminal's own PTY is what
-    /// matters there. Matches Android MainActivity.onStart (`if view == LIST refreshManifests`).
-    private func registerForegroundObserver() {
-        foregroundObs = NotificationCenter.default.addObserver(
-            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            NSLog("[VC] willEnterForeground view=\(self.view_ == .list ? "list" : "terminal")")
-            if self.view_ == .list, !self.hosts.isEmpty { self.refreshManifests() }
-        }
-    }
-
-    // 配置导入(SPEC §8):本版**只走分享单「Open in」**(Valet AirDrop 自含 `.xrhosts`,
-    // AppDelegate.application(_:open:) 处理 → importConfig → reloadHostsAfterImport)。
-    // app 内「齿轮→host 配置页文档选择器」那套手动导入**搁置 P2**(与「无设置 UI / agent 代劳」
-    // 哲学略拧;AirDrop 已够)。importConfig 的三类判别(单 host/全局/asr)对 AirDrop 文件仍生效。
-
-    // MARK: - WKNavigationDelegate
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        NSLog("[VC] index.html loaded")
-        pageReady = true
-        // Push seed list immediately (Enter can open a real terminal), then refresh
-        // from manifest. If no hosts configured, leave the index.html mock in place.
-        if !hosts.isEmpty {
-            pushHostList(loading: true)   // seed list with spinners; real status fills in after fetch
-            refreshManifests()
-        }
-        pushHwKeyboardState()
-        #if DEBUG
-        applyDebugLevers()
-        #endif
-    }
-
-    #if DEBUG
-    /// Screenshot-only levers (launch-arg gated, no production effect):
-    /// `-forceShowVkey` forces the virtual keyboard visible (the sim always reports a
-    /// hardware keyboard, which would hide it); `-forceLandscape` rotates to a real
-    /// landscape viewport so the `@media (orientation)` CSS actually flips.
-    private func applyDebugLevers() {
-        let args = ProcessInfo.processInfo.arguments
-        if args.contains("-forceShowVkey") {
-            eval("window.setHwKeyboard && window.setHwKeyboard(false)")
-        }
-        if args.contains("-forceLandscape") {
-            requestOrientation(.landscapeRight)
-        }
-        // Voice self-verify (no mic / no creds needed): drive the REAL bridge → VoiceController →
-        // overlay chain with MockAsr. Fires Bridge.voiceDown('zh') then voiceUp after a beat, walking
-        // 聆听中… → "ls -la" → 已识别 (PREVIEW) so a screenshot proves the injected overlay + state
-        // machine. Production launches pass no such arg → no effect.
-        if args.contains("-voiceMicTest") {
-            // Exercise the REAL recording path (AudioCapture via AVAudioEngine on the Mac mic): open a
-            // project, attach the recorder (mic pre-granted via simctl), then voiceDown to start the tap.
-            // Confirms tap fires + 16k/mono/Int16 conversion (look for [AudioCapture] tap# / started: logs).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.onOpenProject(host: "demo", session: "demo", name: "mic-test", type: "claude")
-                self?.voice.recorder = AudioCapture()   // mic pre-granted → attach directly
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    self?.voice.voiceDown(lang: "zh")   // starts AudioCapture.start → tap → ASR send
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                        self?.voice.voiceUp(lang: "zh")
-                    }
-                }
+    // MARK: - 列表数据:hosts + 状态 → [DeckSection](SPEC §3 状态映射,对齐 DeckJSON 逻辑)
+    private func buildSections() -> [DeckSection] {
+        hosts.map { h in
+            let hostStatus = statusByHost[h.name] ?? [:]
+            let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
+            let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
+            let rows = h.projects.map { p -> DeckRow in
+                let live = hostStatus[p.session]
+                let state: String? = {
+                    if reachable == nil { return nil }   // 未探测
+                    if hostLoading { return nil }        // 本 host 仍 loading
+                    if unreachable { return "disconnected" }
+                    return live?.state ?? "unknown"
+                }()
+                return DeckRow(host: h.name, session: p.session, name: p.name, type: p.type,
+                               state: state, since: live?.since ?? 0, loading: hostLoading)
             }
-        }
-        if args.contains("-voiceDemo") {
-            // Drive the voice chain in the REALISTIC view (terminal, where voice runs): open a mock
-            // project first (the [no SSH config] branch still flips to #view-term), then voiceDown/Up.
-            // Skip ensureMicThenRecord so no permission modal blocks the screenshot; MockAsr ignores
-            // audio. Walks 聆听中… → "ls -la" → 已识别 PREVIEW so the overlay + state machine show.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.onOpenProject(host: "demo", session: "demo", name: "voice-demo", type: "claude")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    self?.voice.voiceDown(lang: "zh")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        self?.voice.voiceUp(lang: "zh")   // → MockAsr final → 已识别 PREVIEW
-                    }
-                }
-            }
-        }
-        // Verify the "Open in" import path without an AirDrop: -importConfigPath <file> runs the
-        // exact same HostStore.importConfig + reloadHostsAfterImport an open: would (the sim can
-        // read /tmp at the BSD level). Production launches pass no such arg → no effect.
-        if let i = args.firstIndex(of: "-importConfigPath"), i + 1 < args.count {
-            let path = args[i + 1]
-            NSLog("[VC] DEBUG -importConfigPath \(path)")
-            do {
-                let r = try HostStore.importConfig(from: URL(fileURLWithPath: path))
-                reloadHostsAfterImport(r)
-            } catch {
-                reportImportFailure("\(error)")
-            }
+            return DeckSection(hostName: h.name, addr: h.addr, up: hostLoading || !unreachable, rows: rows)
         }
     }
 
-    private func requestOrientation(_ mask: UIInterfaceOrientationMask) {
-        guard let scene = view.window?.windowScene else { return }
-        let geo = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
-        scene.requestGeometryUpdate(geo) { err in NSLog("[VC] orientation update: \(err)") }
-        setNeedsUpdateOfSupportedInterfaceOrientations()
-    }
-    #endif
-
-    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        NSLog("[VC] navigation FAILED: \(error)")
+    private func pushList() {
+        if view_ == .list { deckList.setSections(buildSections()) }
     }
 
-    /// WKWebView analog of Android's onRenderProcessGone→recreate (graceful degradation,
-    /// SPEC §9): the WebGL render content-process was killed (OOM / GPU context loss). Default
-    /// behavior leaves a blank webview; instead reload index.html so the app self-heals back
-    /// to the list. Any live PTY is torn down (its render target is gone) and the user lands
-    /// on a fresh list. NOTE: not reproducible in the simulator — implemented defensively + logged.
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        NSLog("[VC] WebContent process TERMINATED → reload index.html (self-heal to list)")
-        pageReady = false
-        ssh?.close(); ssh = nil
-        sessionGen += 1; openSeq += 1
-        view_ = .list
-        term?.isHidden = true; term?.resignFirstResponder(); voiceOverlay.hide()
-        guard let webDir = Bundle.main.url(forResource: "web", withExtension: nil) else { return }
-        webView.loadFileURL(webDir.appendingPathComponent("index.html"), allowingReadAccessTo: webDir)
-        // didFinish will re-seed the list + refreshManifests as on a fresh load.
-    }
-
-    // MARK: - List push + manifest refresh
-    /// Push the current deck to the list view, merging the last-known live status.
-    /// `loading:true` (the very first pre-fetch push) spins every card and omits state.
-    /// After that, per-host loading is driven by `probedHosts`: a host not yet probed keeps
-    /// spinning while already-resolved hosts show real badges (Phase 3 incremental).
-    private func pushHostList(loading: Bool = false) {
-        let json = DeckJSON.hostsArray(
-            hosts, loading: loading,
-            statusByHost: statusByHost,
-            reachable: loading ? nil : reachable,   // loading push = unprobed → no state yet
-            probed: loading ? nil : probedHosts     // nil = treat all as loading (initial seed)
-        )
-        eval("window.setHosts(\(jsString(json)))")
-    }
-
-    /// Fetch each host's manifest + status off the main actor (concurrent + per-host timeout
-    /// in ManifestFetcher), re-pushing the list INCREMENTALLY as each host resolves so a live
-    /// host appears immediately and a dead host only flips to disconnected at its timeout —
-    /// it never hangs the list (SPEC §9). Runs on initial list entry, back-to-list, and
-    /// app-foreground. `fetchGen` discards results from a superseded fetch.
+    /// Fetch each host's manifest + status off the main actor (concurrent + per-host timeout in
+    /// ManifestFetcher), pushing the list INCREMENTALLY as each host resolves (SPEC §9). `fetchGen`
+    /// discards a superseded fetch.
     private func refreshManifests() {
         let snapshot = hosts
         fetchGen += 1
         let gen = fetchGen
-        // SPEC §3 anti-flicker: do NOT clear probedHosts on a warm refresh (foreground /
-        // back-to-list). The cold path already shows spinners via didFinish's loading push;
-        // once the first fetch fills probedHosts, later refreshes keep every host's last-known
-        // badge and update it IN PLACE as it re-resolves — a settled `offline` host must not
-        // revert to a 7s spinner just because the user returned. Only the cold load (empty
-        // set, never yet probed) spins. Mirrors Android holding the old list across a refetch.
         Task {
             let result = await ManifestFetcher.fetch(snapshot) { [weak self] r in
-                // Per-host landing (already on MainActor). Merge just this host's outcome and
-                // re-push so the live ones show up without waiting for the dead one.
                 guard let self, gen == self.fetchGen else { return }
                 self.probedHosts.insert(r.host.name)
                 self.statusByHost[r.host.name] = r.status
@@ -413,98 +180,19 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
                     self.reachable = reach
                 }
                 self.hosts = self.hosts.map { $0.name == r.host.name ? r.host : $0 }
-                if self.view_ == .list { self.pushHostList(loading: false) }
+                self.pushList()
             }
             await MainActor.run {
-                guard gen == self.fetchGen else { return }   // a newer fetch already owns the UI
+                guard gen == self.fetchGen else { return }
                 self.hosts = result.hosts
                 self.statusByHost = result.statusByHost
                 self.reachable = result.reachable
-                // Every host in this round has now resolved → no more spinners.
                 self.probedHosts = Set(result.hosts.map { $0.name })
-                if self.view_ == .list { self.pushHostList(loading: false) }
+                self.pushList()
                 #if DEBUG
-                self.maybeAutoOpen()   // self-verification hook (launch-arg gated)
+                self.maybeAutoOpen()
                 #endif
             }
-        }
-    }
-
-    #if DEBUG
-    /// Self-verification only: with `-autoOpenSession <name>` (and optional `-autoOpenHost`)
-    /// in the scheme/launch args, auto-open that project once the real manifest is in.
-    /// `-autoCycleSession <name2>` additionally drives open→back→reopen to verify the
-    /// teardown / openSeq / sessionGen race guards (must rebind correctly, not hang).
-    /// Production launches pass no such arg → no effect.
-    private var didAutoOpen = false
-    private func maybeAutoOpen() {
-        guard !didAutoOpen, view_ == .list else { return }
-        let args = ProcessInfo.processInfo.arguments
-        guard let i = args.firstIndex(of: "-autoOpenSession"), i + 1 < args.count else { return }
-        let session = args[i + 1]
-        let host = (args.firstIndex(of: "-autoOpenHost").map { args[$0 + 1] }) ?? hosts.first?.name ?? ""
-        guard let h = hosts.first(where: { $0.name == host }),
-              let p = h.projects.first(where: { $0.session == session }) else { return }
-        didAutoOpen = true
-        onOpenProject(host: host, session: p.session, name: p.name, type: p.type.rawValue)
-
-        if let j = args.firstIndex(of: "-autoCycleSession"), j + 1 < args.count,
-           let p2 = h.projects.first(where: { $0.session == args[j + 1] }) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                self?.backToList()   // verify teardown does not hang
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                    self?.onOpenProject(host: host, session: p2.session, name: p2.name, type: p2.type.rawValue)
-                }
-            }
-        }
-    }
-    #endif
-
-    // MARK: - WKScriptMessageHandler
-    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
-        if message.name == "log" {
-            if let d = message.body as? [String: Any] {
-                NSLog("[JS:\(d["level"] ?? "?")] \(d["text"] ?? "")")
-            }
-            return
-        }
-        guard message.name == "bridge", let body = message.body as? [String: Any],
-              let m = body["m"] as? String else { return }
-        let a = body["a"] as? [Any] ?? []
-        switch m {
-        case "onInput":
-            if let b64 = a.first as? String, let data = Data(base64Encoded: b64) { ssh?.send(data) }
-        case "onResize":
-            let cols = (a.first as? NSNumber)?.intValue ?? 0
-            let rows = (a.count > 1 ? a[1] as? NSNumber : nil)?.intValue ?? 0
-            if cols > 0, rows > 0 { ssh?.resize(cols: cols, rows: rows) }
-        case "openProject":
-            let host = a.indices.contains(0) ? (a[0] as? String ?? "") : ""
-            let session = a.indices.contains(1) ? (a[1] as? String ?? "") : ""
-            let name = a.indices.contains(2) ? (a[2] as? String ?? "") : ""
-            let type = a.indices.contains(3) ? (a[3] as? String ?? "") : ""
-            onOpenProject(host: host, session: session, name: name, type: type)
-        case "goHome":
-            if view_ == .terminal { backToList() }
-        case "vkeyEnter":
-            // PREVIEW: first Enter injects the recognized text (no CR —误识安全网, SPEC §4);
-            // otherwise normal CR. Mirrors Android onVkeyEnter = if(!voice.onEnter()) writeChannelByte(13).
-            if !voice.onEnter() { ssh?.send(Data([13])) }   // CR
-        case "vkeyEsc":
-            if !voice.onEsc() { ssh?.send(Data([27])) }     // ESC (cancels a voice session if active)
-        case "voiceDown":
-            // iOS 终端是原生 SwiftTerm,webview 只显示列表 → 这条只可能来自列表页的 webview 语音键(灰键)。
-            // 守 view_==.terminal → 列表态忽略(列表页语音键不激活)。原生终端语音走 F1/keybar 🎤,不经这里。
-            guard view_ == .terminal else { return }
-            let lang = (a.first as? String) ?? "zh"
-            ensureMicThenRecord()
-            voice.voiceDown(lang: lang)
-        case "voiceUp":
-            guard view_ == .terminal else { return }
-            let lang = (a.first as? String) ?? "zh"
-            voice.voiceUp(lang: lang)
-        default:
-            NSLog("[VC] bridge msg \(m) \(a)")
         }
     }
 
@@ -513,20 +201,15 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         NSLog("[VC] openProject host=\(host) session=\(session)")
         let seq = { openSeq += 1; return openSeq }()
         view_ = .terminal
-        showTerminalView()   // 显示 SwiftTerm + 抢焦 + 清屏
+        showTerminalView()   // 显示 SwiftTerm + 抢焦 + 清屏 + 隐藏状态栏
 
         guard let h = hosts.first(where: { $0.name == host }),
               let p = (h.projects.first(where: { $0.session == session })) else {
-            // mock / unconfigured — nothing to connect to; stay on the (empty) terminal.
-            applyVoiceContext(nil)   // no project context → BASE words, marker off
+            applyVoiceContext(nil)
             writeToTerm("\r\n[no SSH config for \(session)]\r\n")
             return
         }
-        // Voice context for this project: BASE + its hotwords, 🎤 marker on for AI-agent types.
         applyVoiceContext(p)
-        // Multi-hop (SPEC §5): if this host has a `via`, resolve the jump host by name from
-        // the deck (mirrors Android's byName lookup) so the PTY tunnels through it. Unknown
-        // via name → nil → direct (degrade, don't fail the open).
         let jump = h.via.flatMap { vn in hosts.first(where: { $0.name == vn }) }
         let viaNote = jump.map { " ⤳ \($0.name)" } ?? ""
         writeToTerm("连接 \(h.name)\(viaNote) … (\(p.session))\r\n")   // alias, never the real IP
@@ -539,14 +222,6 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
                 self.term.feed(byteArray: ArraySlice(data))
             }
         }
-        // PTY loop ended (item 3). onClosed fires for user-back, a server-side drop
-        // (tmux kill-session, connection drop), AND a connect failure (connect() always calls
-        // onClosed after its do/catch). backToList already bumped sessionGen, so its close
-        // no-ops here. The `self.ssh === s` guard distinguishes a *live* session that dropped
-        // (ssh was assigned in onConnected) from a connect failure that never went live (ssh
-        // still nil → onFailure already showed "连接失败", don't also print "连接已断开").
-        // We do NOT auto-navigate: the user keeps their terminal context and chooses to leave
-        // (graceful, SPEC §9 — never freeze, never crash). Reopen rebuilds via `tmux new -A`.
         s.onClosed = { [weak self] in
             DispatchQueue.main.async {
                 guard let self, self.sessionGen == gen, self.view_ == .terminal,
@@ -560,22 +235,17 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             onConnected: { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    // open→back→open race: user already left → discard this connection.
                     if seq != self.openSeq || self.view_ != .terminal {
                         NSLog("[VC] PTY connected but obsolete (seq=\(seq)) → close")
                         s.close(); return
                     }
                     self.ssh = s
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session)")
-                    // 连接前 sizeChanged 可能已触发(那时 ssh 还没绑定)→ 这里把当前终端尺寸补推给 PTY,
-                    // 否则 PTY 停在 connect 时传的 80×24、tmux 画不满。
                     let t = self.term.getTerminal()
-                    self.ssh?.resize(cols: t.cols, rows: t.rows)
+                    self.ssh?.resize(cols: t.cols, rows: t.rows)   // 补推当前终端尺寸(连接前 sizeChanged 时 ssh 还没绑定)
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("-autoTypeAfterOpen") {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            self.ssh?.send(Data("echo XREAL_OK\n".utf8))
-                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.ssh?.send(Data("echo XREAL_OK\n".utf8)) }
                     }
                     #endif
                 }
@@ -592,108 +262,102 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
 
     private func backToList() {
         NSLog("[VC] backToList")
-        voiceKeyHeld = false   // 若按住 F1 时按 F2 离开,清掉按住态,否则下次 F1 不触发
-        openSeq += 1     // in-flight connections are now obsolete
-        sessionGen += 1  // late output chunks are now obsolete
-        voice.shutdown() // cancel any in-flight voice session + hide overlay before leaving
+        voiceKeyHeld = false
+        openSeq += 1
+        sessionGen += 1
+        voice.shutdown()
         applyVoiceContext(nil)
         view_ = .list
         let old = ssh
         ssh = nil
-        old?.close()     // finishes stream + closes client → PTY loop exits, tmux persists
+        old?.close()
         showListView()
         refreshManifests()   // a project Maestro just created shows up now
     }
 
-    // MARK: - 终端/列表 view 切换(SwiftTerm 显隐 + first responder 归属)
-    /// 进终端态:清屏 + 显示 SwiftTerm + 它抢 first responder(硬件键进它,由它编码)。
+    // MARK: - 终端/列表 view 切换
     private func showTerminalView() {
-        term.feed(text: "\u{1b}c")      // RIS 全复位,清掉上次 session 残留
+        term.feed(text: "\u{1b}c")      // RIS 全复位
         term.isHidden = false
         view.bringSubviewToFront(term)
         view.bringSubviewToFront(voiceOverlay)
-        updateTermAccessory()           // 按当前是否有硬件键盘挂/卸触屏 vkey
+        updateTermAccessory()
         term.becomeFirstResponder()
+        navigationController?.setNavigationBarHidden(true, animated: true)   // 终端沉浸:隐藏 nav bar
+        setNeedsStatusBarAppearanceUpdate()                                  // + 状态栏 + home indicator
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
-
-    /// 无硬件键盘 → 挂触屏 vkey 为 inputAccessoryView;有硬件键盘 → nil(纯硬件键)。
-    /// term 在 becomeFirstResponder 时读 inputAccessoryView;运行中变更(插拔键盘)需 reloadInputViews。
-    private func updateTermAccessory() {
-        guard let term, let keyBar else { return }
-        term.inputAccessoryView = (GCKeyboard.coalesced == nil) ? keyBar : nil
-        if view_ == .terminal, term.isFirstResponder { term.reloadInputViews() }
-    }
-
-    /// 触屏 vkey 动作 → 字节发 ssh / app 动作。Enter/Esc voice-aware;方向键 DECCKM 适配。
-    private func handleKeyBarAction(_ a: TerminalKeyAction) {
-        if a != .voiceUp { keyHaptic.prepare(); keyHaptic.impactOccurred() }   // 每次按键震动(语音松开不震)
-        switch a {
-        case .back:     backToList()
-        case .up:       ssh?.send(Data(arrowBytes(0x41)))
-        case .down:     ssh?.send(Data(arrowBytes(0x42)))
-        case .right:    ssh?.send(Data(arrowBytes(0x43)))
-        case .left:     ssh?.send(Data(arrowBytes(0x44)))
-        case .enter:    if !voice.onEnter() { ssh?.send(Data([13])) }    // 预览态注入;否则 CR
-        case .esc:      if !voice.onEsc()  { ssh?.send(Data([27])) }     // 取消会话;否则 ESC
-        case .tab:      ssh?.send(Data([0x09]))
-        case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))             // ESC [ Z(back-tab)
-        case .ctrlC:    ssh?.send(Data([0x03]))
-        case .ctrlB:    ssh?.send(Data([0x02]))                         // Ctrl-B(Claude Code 用)
-        case .delWord:  ssh?.send(Data([0x17]))                         // Ctrl-W 删词
-        case .voiceDown: voiceKeyAction(pressed: true)    // 复用 F1 路径(voiceKeyHeld 去重 + 权限)
-        case .voiceUp:   voiceKeyAction(pressed: false)
-        }
-    }
-
-    /// 方向键字节,DECCKM 适配:application cursor 模式发 `ESC O X`,否则 `ESC [ X`。
-    private func arrowBytes(_ final: UInt8) -> [UInt8] {
-        let app = term.getTerminal().applicationCursor
-        return [0x1b, app ? 0x4f : 0x5b, final]
-    }
-    /// 回列表态:隐藏 SwiftTerm + 让 VC 收硬件键(列表导航走 handlePresses → navKey)。
     private func showListView() {
         voiceOverlay.hide()
         term.resignFirstResponder()
         term.isHidden = true
-        becomeFirstResponder()          // 列表态 VC 当 first responder → 方向键/Enter 进 handlePresses
-        eval("window.showList()")
+        becomeFirstResponder()          // 列表态 VC 收硬件键 → 列表导航
+        pushList()
+        navigationController?.setNavigationBarHidden(false, animated: true)  // 列表:恢复 nav bar(大标题)
+        setNeedsStatusBarAppearanceUpdate()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
 
-    // MARK: - Valet "Open in" import → reload list (SPEC §8 real-device channel)
-    /// Called by AppDelegate after a `.xrhosts` file imports into private storage. Re-read the
-    /// now-updated hosts.json from disk (refreshManifests only walks the in-memory snapshot, so it
-    /// would never discover a freshly-imported host) and re-seed the list, then live-fetch.
-    /// Order-robust on cold-launch-via-file: if the page isn't ready yet, didFinish's own
-    /// `if !hosts.isEmpty` push covers it (we've set self.hosts); if ready, we push now.
-    /// Takes the full ImportResult so the toast reflects what actually landed — an asr-only
-    /// import has 0 hosts, so a bare "N host" line would read "0 host" (wrong, and on the
-    /// AirDrop path there's no native alert to correct it).
+    // MARK: - 键盘(触屏 vkey)避让
+    private func registerKeyboardAvoidance() {
+        let nc = NotificationCenter.default
+        kbFrameObs = nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
+            guard let self,
+                  let v = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+            let kbInView = self.view.convert(v, from: nil)
+            self.keyboardOverlap = max(0, self.view.bounds.maxY - kbInView.minY)
+            self.layoutTerm()
+        }
+        kbHideObs = nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.keyboardOverlap = 0; self?.layoutTerm()
+        }
+    }
+    private func layoutTerm() {
+        guard let term else { return }
+        let f = CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - keyboardOverlap))
+        term.frame = f
+        voiceOverlay.frame = f
+    }
+
+    /// tmux 触摸翻页:终端上半 → Shift+Up(`ESC[1;2A`);下半 → Shift+Down(`ESC[1;2B`)。
+    @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
+        guard view_ == .terminal else { return }
+        keyHaptic.prepare(); keyHaptic.impactOccurred()
+        let topHalf = g.location(in: term).y < term.bounds.height / 2
+        ssh?.send(Data(topHalf ? [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41] : [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]))
+    }
+
+    // MARK: - App foreground → refetch status(列表态)
+    private func registerForegroundObserver() {
+        foregroundObs = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            if self.view_ == .list, !self.hosts.isEmpty { self.refreshManifests() }
+        }
+    }
+
+    // MARK: - Valet "Open in" import → reload list (SPEC §8)
     func reloadHostsAfterImport(_ result: HostStore.ImportResult) {
         NSLog("[VC] reloadHostsAfterImport: mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         hosts = HostStore.loadHosts()
         statusByHost = [:]; reachable = nil; probedHosts = []
-        // An asr-bearing import just delivered real creds → swap MockAsr → VolcAsr now (the next
-        // voice press uses live ASR without a relaunch). Mirrors Android re-reading loadAsr.
         if result.asr, let creds = AsrCreds.load() {
             voice.asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
             NSLog("[VC] ASR creds imported → VolcAsr(resource=\(creds.resourceId))")
         }
-        guard pageReady else { return }   // didFinish will seed+refresh once loaded
-        // If a file is opened while a PTY is live (background → "Open in" → foreground in terminal),
-        // tear the session down before switching to the list — otherwise onOutput keeps painting a
-        // hidden xterm and the tmux attach leaks (bump openSeq/sessionGen so late chunks no-op).
+        // 若导入时终端正活着,先拆掉(背景→Open in→前台在终端)。
         if view_ == .terminal {
             openSeq += 1; sessionGen += 1
-            voice.shutdown(); applyVoiceContext(nil)   // cancel in-flight voice + hide overlay
+            voice.shutdown(); applyVoiceContext(nil)
             let old = ssh; ssh = nil; old?.close()
         }
         if view_ != .list { view_ = .list; showListView() }
-        toast(importToast(result))
-        pushHostList(loading: true)
-        refreshManifests()
+        nativeToast(importToast(result))
+        deckList.setEmptyText(hosts.isEmpty ? "暂无 host\n\nAirDrop 一个 .xrhosts 配置导入" : nil)
+        deckList.setSections(buildSections())
+        if !hosts.isEmpty { refreshManifests() }
     }
-
-    /// One-liner in-WebView toast for an import. Mode-aware so asr-only doesn't read "0 host".
     private func importToast(_ r: HostStore.ImportResult) -> String {
         switch r.mode {
         case .asrOnly: return "ASR 凭证已导入"
@@ -701,63 +365,60 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         case .replace: return "导入成功:\(r.hosts) host" + (r.asr ? " + ASR" : "")
         }
     }
-
-    /// Surface an import parse/validation failure (bad JSON, no valid host) without crashing —
-    /// graceful degradation (SPEC §9): the user keeps whatever list they already had.
     func reportImportFailure(_ message: String) {
         NSLog("[VC] import failure: \(message)")
-        if pageReady { toast("导入失败:\(message)") }
+        nativeToast("导入失败:\(message)")
     }
 
-    /// Lightweight in-WebView toast (no native alert chrome over the AR-glasses UI). Uses the
-    /// shared index.html if it exposes window.toast; otherwise a no-op (the list refresh is the
-    /// real feedback). Kept defensive so an absent JS hook never throws.
-    private func toast(_ s: String) {
-        eval("window.toast && window.toast(\(jsString(s)))")
+    /// 原生 toast(底部短暂浮现的胶囊,自动消失)。
+    private func nativeToast(_ s: String) {
+        let lbl = PaddingLabel()
+        lbl.text = s
+        lbl.font = .systemFont(ofSize: 14, weight: .medium)
+        lbl.textColor = .white
+        lbl.backgroundColor = UIColor(white: 0.1, alpha: 0.95)
+        lbl.layer.cornerRadius = 10; lbl.clipsToBounds = true
+        lbl.numberOfLines = 0; lbl.textAlignment = .center
+        lbl.alpha = 0
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(lbl)
+        NSLayoutConstraint.activate([
+            lbl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            lbl.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
+            lbl.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
+            lbl.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+        ])
+        UIView.animate(withDuration: 0.25, animations: { lbl.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.4, delay: 1.8, options: []) { lbl.alpha = 0 } completion: { _ in lbl.removeFromSuperview() }
+        }
     }
 
     // MARK: - Hardware keyboard detection (SPEC §6.1)
     private func registerKeyboardObservers() {
         kbConnectObs = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidConnect, object: nil, queue: .main) { [weak self] _ in
-            NSLog("[VC] GCKeyboard connected → hide vkey")
-            self?.eval("window.setHwKeyboard && window.setHwKeyboard(true)")   // 列表 webView vkey
-            self?.attachKeyHandler()      // 接 F1/F2 物理键路由
+            NSLog("[VC] GCKeyboard connected")
+            self?.attachKeyHandler()
             self?.updateTermAccessory()   // 终端:卸掉触屏 vkey
         }
         kbDisconnectObs = NotificationCenter.default.addObserver(
             forName: .GCKeyboardDidDisconnect, object: nil, queue: .main) { [weak self] _ in
-            NSLog("[VC] GCKeyboard disconnected → show vkey")
-            self?.eval("window.setHwKeyboard && window.setHwKeyboard(false)")
-            self?.voiceKeyHeld = false    // 键盘拔了,清掉可能卡住的按住态
+            NSLog("[VC] GCKeyboard disconnected")
+            self?.voiceKeyHeld = false
             self?.updateTermAccessory()   // 终端:挂回触屏 vkey
         }
-        attachKeyHandler()   // 键盘可能在 viewDidLoad 前就已连上(connect 通知已错过)→ 直接挂到 coalesced
+        attachKeyHandler()
     }
-
-    // MARK: - 物理键路由(8BitDo / 蓝牙键盘)
-    /// SPEC §6/§11 语义:F1 = 语音 hold-to-talk、F2 = 返回列表、方向键导航、Enter 确认/执行、Esc 取消。
-    /// **核心事实(真机实测)**:iOS 上硬件键盘**完全不进 WKWebView DOM** —— 终端态 `term.focus()` 也没用,
-    /// 每个键(含字符/Enter/Esc/方向)都经 UIKit 响应链冒泡到 VC 的 `pressesBegan`,xterm.onData / DOM keydown
-    /// 对硬件键永不触发(疑因 AR 眼镜的 IME 抑制 swizzle,根因不影响修复)。**故整条键盘输入都在原生处理**:
-    ///   - 列表态:方向键/Enter → `window.navKey`(SPA 导航);
-    ///   - 终端态:键 → 字节发 ssh(`terminalKey`,对齐 Android `dispatchKeyEvent`,Enter/Esc voice-aware)。
-    /// 8BitDo 在 iOS 实测发标准 HID:语音键=F1(58)、返回键=F2(59),与 Android 一致(经 Generic.kl)。
-    /// GameController(`keyChangedHandler`)在有 WKWebView 抢焦时**收不到** key 回调 → 仅作冗余兜底,主路由是
-    /// `pressesBegan`;GameController 的 connect/disconnect 仍负责**检测键盘插拔**显隐 vkey(一直正常)。
-    /// 终端态 `terminalKey` 做**完整键盘翻译**(可打印字符 + 控制键 + Ctrl 组合)→ 接全 BT 键盘自由打字。
-    /// (曾有每键 keyCode 发现日志,映射定了已删 —— 终端打字含密码,不该 keylog 进 syslog。)
     private func attachKeyHandler() {
         guard let kb = GCKeyboard.coalesced else { return }
-        kb.handlerQueue = .main   // handler 内要碰 UIKit/voice/webView → 必须主线程
+        kb.handlerQueue = .main
         kb.keyboardInput?.keyChangedHandler = { [weak self] _, _, keyCode, pressed in
             if keyCode == .F1 { self?.voiceKeyAction(pressed: pressed) }
             else if keyCode == .F2 { self?.backKeyAction(pressed: pressed) }
         }
-        NSLog("[VC] GCKeyboard key handler attached")
     }
 
-    // MARK: - UIPress(主路由):硬件键在响应链冒泡到 VC
+    // MARK: - UIPress 主路由:硬件键冒泡到 VC(列表态;终端态由 SwiftTerm 收键)
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if handlePresses(presses, pressed: true) { return }
         super.pressesBegan(presses, with: event)
@@ -767,15 +428,12 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
         super.pressesEnded(presses, with: event)
     }
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        _ = handlePresses(presses, pressed: false)   // cancel 当松手处理(别让语音卡在录音)
+        _ = handlePresses(presses, pressed: false)
         super.pressesCancelled(presses, with: event)
     }
-
-    // 列表态 VC 当 first responder 收硬件键(方向键/Enter → 列表导航)。终端态由 SwiftTerm(TerminalHostView)收键。
     override var canBecomeFirstResponder: Bool { true }
 
-    /// 硬件键 → 处理。**仅列表态**:方向键/Enter 驱动 SPA 列表导航;F1/F2 转 action(列表态 no-op)。
-    /// 终端态键盘由 SwiftTerm 直接处理(全键盘正确编码),**不经这里**。@return true 若 consume。
+    /// 硬件键:F1/F2 两态都拦;列表态方向键/Enter → 原生列表导航(deckList);终端态键归 SwiftTerm,不经这里。
     private func handlePresses(_ presses: Set<UIPress>, pressed: Bool) -> Bool {
         var handled = false
         for p in presses {
@@ -784,26 +442,19 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             case .keyboardF1: voiceKeyAction(pressed: pressed); handled = true
             case .keyboardF2: backKeyAction(pressed: pressed); handled = true
             default:
-                guard pressed, view_ == .list, let nav = Self.listNavKey(key.keyCode) else { break }
-                eval("window.navKey && window.navKey('\(nav)')"); handled = true
+                guard pressed, view_ == .list else { break }
+                switch key.keyCode {
+                case .keyboardDownArrow:                    deckList.moveSelection(1);  handled = true
+                case .keyboardUpArrow:                      deckList.moveSelection(-1); handled = true
+                case .keyboardReturnOrEnter, .keypadEnter:  deckList.openSelected();    handled = true
+                default: break
+                }
             }
         }
         return handled
     }
 
-    /// 硬件方向键 / Enter → SPA 列表导航方向串(仅列表视图用)。
-    private static func listNavKey(_ code: UIKeyboardHIDUsage) -> String? {
-        switch code {
-        case .keyboardDownArrow:  return "down"
-        case .keyboardUpArrow:    return "up"
-        case .keyboardRightArrow: return "right"
-        case .keyboardLeftArrow:  return "left"
-        case .keyboardReturnOrEnter, .keypadEnter: return "enter"
-        default: return nil
-        }
-    }
-
-    // MARK: - SwiftTerm delegate(终端 → app):用户输入发 ssh、尺寸变化重设 PTY
+    // MARK: - SwiftTerm delegate(终端 → app)
     func send(source: TerminalView, data: ArraySlice<UInt8>) { ssh?.send(Data(data)) }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { ssh?.resize(cols: newCols, rows: newRows) }
     func scrolled(source: TerminalView, position: Double) {}
@@ -816,41 +467,56 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
     func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
 
     // MARK: - TerminalHostKeyHandler(SwiftTerm 子类拦下的 app 专用键)
-    func termVoiceKey(down: Bool) { voiceKeyAction(pressed: down) }   // F1 hold-to-talk
-    func termBackKey() { backToList() }                              // F2 → 列表
-    func termVoiceActive() -> Bool { voice.currentState != .idle }   // overlay 可见 → 抢 Enter/Esc
-    func termVoiceEnter() -> Bool { voice.onEnter() }                // 预览态注入(true=接管);否则透传 CR
-    func termVoiceEsc() -> Bool { voice.onEsc() }                    // 取消会话(true=接管);否则透传 ESC
+    func termVoiceKey(down: Bool) { voiceKeyAction(pressed: down) }
+    func termBackKey() { backToList() }
+    func termVoiceActive() -> Bool { voice.currentState != .idle }
+    func termVoiceEnter() -> Bool { voice.onEnter() }
+    func termVoiceEsc() -> Bool { voice.onEsc() }
+
+    // MARK: - 触屏 vkey
+    private func updateTermAccessory() {
+        guard let term, let keyBar else { return }
+        term.inputAccessoryView = (GCKeyboard.coalesced == nil) ? keyBar : nil
+        if view_ == .terminal, term.isFirstResponder { term.reloadInputViews() }
+    }
+    private func handleKeyBarAction(_ a: TerminalKeyAction) {
+        if a != .voiceUp { keyHaptic.prepare(); keyHaptic.impactOccurred() }
+        switch a {
+        case .back:     backToList()
+        case .up:       ssh?.send(Data(arrowBytes(0x41)))
+        case .down:     ssh?.send(Data(arrowBytes(0x42)))
+        case .right:    ssh?.send(Data(arrowBytes(0x43)))
+        case .left:     ssh?.send(Data(arrowBytes(0x44)))
+        case .enter:    if !voice.onEnter() { ssh?.send(Data([13])) }
+        case .esc:      if !voice.onEsc()  { ssh?.send(Data([27])) }
+        case .tab:      ssh?.send(Data([0x09]))
+        case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))
+        case .ctrlC:    ssh?.send(Data([0x03]))
+        case .ctrlB:    ssh?.send(Data([0x02]))
+        case .delWord:  ssh?.send(Data([0x17]))
+        case .voiceDown: voiceKeyAction(pressed: true)
+        case .voiceUp:   voiceKeyAction(pressed: false)
+        }
+    }
+    private func arrowBytes(_ final: UInt8) -> [UInt8] {
+        let app = term.getTerminal().applicationCursor
+        return [0x1b, app ? 0x4f : 0x5b, final]
+    }
 
     // MARK: - 物理键 action(两条路由共用,幂等)
-    /// F1 = 语音 hold-to-talk。按住时 pressesBegan 可能因 key-repeat 重复 → voiceKeyHeld 去重;松开/取消才结束。
     private func voiceKeyAction(pressed: Bool) {
-        guard view_ == .terminal else { return }   // 列表页不介入(列表页 F2→host 配置页随配置页搁 P2)
+        guard view_ == .terminal else { return }
         if pressed {
             if !voiceKeyHeld { voiceKeyHeld = true; ensureMicThenRecord(); voice.voiceDown(lang: "zh") }
         } else if voiceKeyHeld {
             voiceKeyHeld = false; voice.voiceUp(lang: "zh")
         }
     }
-    /// F2 = 返回列表(松手触发,对齐 Android ACTION_UP)。view_ 守卫天然给两条路由去重:第一次触发后
-    /// view 变 list,第二条路由再来也被这里挡掉。
     private func backKeyAction(pressed: Bool) {
         if !pressed, view_ == .terminal { backToList() }
     }
 
-    private func pushHwKeyboardState() {
-        let present = GCKeyboard.coalesced != nil
-        NSLog("[VC] initial hwKeyboard present=\(present)")
-        eval("window.setHwKeyboard && window.setHwKeyboard(\(present))")
-    }
-
-    // 旋转:SwiftTerm 随 autoresizingMask 重排 → sizeChanged delegate → ssh.resize(自动);列表 webView 走 CSS。
-    // 故不再需要手动 syncSize override。
-
-    // MARK: - Voice input (Android VoiceDaemon)
-    /// Build the VoiceController once. ASR impl = VolcAsr if asr.json creds present, else MockAsr
-    /// (mirrors Android SettingsStore.loadAsr → VolcEngineAsr/MockAsr). Overlay closures eval the
-    /// injected window.showOverlay/hideOverlay. Mic recorder is attached lazily after permission.
+    // MARK: - Voice input
     private func setupVoice() {
         let asr: Asr
         if let creds = AsrCreds.load() {
@@ -865,27 +531,16 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             showOverlay: { [weak self] status, text in self?.voiceOverlay.show(status: status, text: text) },
             hideOverlay: { [weak self] in self?.voiceOverlay.hide() }
         )
-        // inject = write into the live PTY (single-writer SSHSession.send; SPEC §4). nil when no PTY.
         voice.inject = { [weak self] data in self?.ssh?.send(data) }
-        // recorder **同步建好**:否则第一次 voiceDown 时 recorder 还 nil(旧 bug:它建在异步权限
-        // 回调里,回调比同步的 voiceDown 晚 → 首次录空,第二次才正常)。权限只决定 start 时能否真录到音。
-        voice.recorder = AudioCapture()
+        voice.recorder = AudioCapture()   // 同步建好,否则首次 voiceDown recorder 还 nil
     }
-
-    /// First voice-key press requests mic permission (Android requests RECORD_AUDIO on first F1).
-    /// Granted → attach the AVAudioEngine recorder so the *next* press records. The triggering
-    /// press still runs (ASR opens, just no audio that first time) — matches Android's flow.
     private func ensureMicThenRecord() {
         guard !micRequested else { return }
         micRequested = true
-        // recorder 已在 setupVoice 同步建好;这里只为首次使用弹权限对话框(已授权则无对话框、立即 granted)。
         AVAudioSession.sharedInstance().requestRecordPermission { granted in
             NSLog("[VC] mic permission = \(granted ? "granted" : "DENIED — 语音录不到音")")
         }
     }
-
-    /// Apply the current project's voice context (hotwords + 🎤 marker), mirroring Android's
-    /// applyProjectHotwords. nil project (mock / list) → BASE words, marker off.
     private func applyVoiceContext(_ project: ProjectConfig?) {
         if let project {
             voice.hotwords = Hotwords.merge(project.hotwords)
@@ -894,38 +549,60 @@ final class TerminalViewController: UIViewController, WKScriptMessageHandler, WK
             voice.hotwords = Hotwords.base
             voice.voiceMarkerEnabled = false
         }
-        NSLog("[VC] voice ctx: hotwords=\(voice.hotwords.count) marker=\(voice.voiceMarkerEnabled) project=\(project?.session ?? "none")")
     }
 
-    // MARK: - helpers
-    /// app 自己的状态文案("连接 host…"/"连接失败"/"已断开")写进原生终端。
-    private func writeToTerm(_ s: String) {
-        term.feed(text: s)
-    }
+    private func writeToTerm(_ s: String) { term.feed(text: s) }
 
-    private func eval(_ js: String) {
-        DispatchQueue.main.async {
-            guard self.pageReady || js.contains("setHosts") == false else { return }
-            self.webView.evaluateJavaScript(js) { _, err in
-                if let err { NSLog("[VC] eval error: \(err) for: \(js.prefix(60))") }
+    #if DEBUG
+    /// Self-verification levers(launch-arg gated,生产无效)。
+    private func applyDebugLevers() {
+        let args = ProcessInfo.processInfo.arguments
+        if args.contains("-voiceDemo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.onOpenProject(host: "demo", session: "demo", name: "voice-demo", type: "claude")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self?.voice.voiceDown(lang: "zh")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self?.voice.voiceUp(lang: "zh") }
+                }
             }
         }
-    }
-
-    /// JS string literal for an arbitrary string (handles quotes/newlines safely).
-    private func jsString(_ s: String) -> String {
-        let data = try? JSONSerialization.data(withJSONObject: [s], options: [])
-        if let data, let arr = String(data: data, encoding: .utf8) {
-            return String(arr.dropFirst().dropLast())   // strip the [ ] → just the quoted scalar
+        if args.contains("-openMock") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.onOpenProject(host: "demo", session: "demo", name: "mock", type: "claude")
+            }
         }
-        return "\"\""
+        if let i = args.firstIndex(of: "-importConfigPath"), i + 1 < args.count {
+            do { reloadHostsAfterImport(try HostStore.importConfig(from: URL(fileURLWithPath: args[i + 1]))) }
+            catch { reportImportFailure("\(error)") }
+        }
     }
+    private var didAutoOpen = false
+    private func maybeAutoOpen() {
+        guard !didAutoOpen, view_ == .list else { return }
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-autoOpenSession"), i + 1 < args.count else { return }
+        let session = args[i + 1]
+        let host = (args.firstIndex(of: "-autoOpenHost").map { args[$0 + 1] }) ?? hosts.first?.name ?? ""
+        guard let h = hosts.first(where: { $0.name == host }),
+              let p = h.projects.first(where: { $0.session == session }) else { return }
+        didAutoOpen = true
+        onOpenProject(host: host, session: p.session, name: p.name, type: p.type.rawValue)
+    }
+    #endif
 
     deinit {
-        if let o = kbConnectObs { NotificationCenter.default.removeObserver(o) }
-        if let o = kbDisconnectObs { NotificationCenter.default.removeObserver(o) }
-        if let o = foregroundObs { NotificationCenter.default.removeObserver(o) }
-        if let o = kbFrameObs { NotificationCenter.default.removeObserver(o) }
-        if let o = kbHideObs { NotificationCenter.default.removeObserver(o) }
+        for o in [kbConnectObs, kbDisconnectObs, foregroundObs, kbFrameObs, kbHideObs] {
+            if let o { NotificationCenter.default.removeObserver(o) }
+        }
+    }
+}
+
+/// 带内边距的 UILabel(原生 toast 用)。
+final class PaddingLabel: UILabel {
+    private let inset = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: inset)) }
+    override var intrinsicContentSize: CGSize {
+        let s = super.intrinsicContentSize
+        return CGSize(width: s.width + inset.left + inset.right, height: s.height + inset.top + inset.bottom)
     }
 }

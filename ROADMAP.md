@@ -29,6 +29,22 @@
 
 ---
 
+## iOS 原生化 + 交互(2026-06 立项,逐项推进)
+
+> iOS 第二客户端从「WKWebView 跑共享 index.html」走向 **全面原生**。起因:WKWebView 收不到硬件键 DOM + 软键盘抑制死结(终端);后续列表也升级成标准 iPhone 体验。**做法:一项一项做,做完一项验一项**。契约仍归 SPEC,平台落点(SwiftTerm/UITableView)进 §11 矩阵。
+
+| # | 任务 | 状态 | 说明 |
+|---|---|---|---|
+| iOS.1 | **终端改原生 SwiftTerm** | ✅(2026-06-01) | 替代 WKWebView+xterm,解键盘死结。键盘全原生正确(字母/Tab/Shift+Tab/方向/Ctrl/DECCKM);F1/F2 + 语音 Enter/Esc 经 swizzle 拦;软键盘抑制 inputView 0 高;tmux 翻页 conf 注入 |
+| iOS.2 | **触屏 vkey(无硬件键盘)** | ✅ | 无 8BitDo 时终端挂原生 `TerminalKeyBar`(inputAccessoryView):返回/方向/Enter/Esc/删词/Ctrl-B/模式/Ctrl-C/🎤;横屏 1 行竖屏 2 行;键盘避让(终端缩到 vkey 上);按键震动 + 高亮 |
+| iOS.3 | **tmux 触摸翻页** | ✅ | 见 P2.8(点终端上/下半 = Shift+↑/↓) |
+| iOS.4 | **列表改原生(苹果设计语言)** | 🔄 进行中(已编译,待真机验) | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
+| iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
+| iOS.6 | **边缘滑动手势** | ⬜ 待做 | **列表页**:最右侧往左滑 → 打开**最近一次打开的终端**;**终端页**:从左侧往右滑 → 回列表。标准 iOS edge-swipe 手感 |
+| iOS.7 | **最近终端保活(keep-warm)** | ⬜ 待做(与 iOS.6 配套) | 离开终端后**短时间不 close tmux/SSH**,保留 SwiftTerm 绘制状态 → iOS.6 的"右滑开最近终端"能瞬间滑回原终端(而非重连)。需:保活时长策略 + 超时真正 close(tmux session 服务端仍在,只断 client)+ race 与现有 openSeq/sessionGen 协调 |
+
+---
+
 ## P1 — 可用性 / 录入(核心打通后优先)
 
 让 app 脱离 dev rig(`scripts/setup-mac-host.sh` + adb push)也能真正用起来。

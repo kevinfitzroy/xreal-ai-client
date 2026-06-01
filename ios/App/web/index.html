@@ -485,9 +485,9 @@
   });
   let hwkb=false;  // 是否接了外置物理键盘
   function updateBottomBar(){
-    // 有外接物理键盘(8BitDo 等)→ 只留 slim hint,全靠物理键 + 语音;
-    // 没有 → 常驻一行虚拟键盘(没蓝牙手柄时也能导航/输入)。
-    document.getElementById('vkeyboard').hidden=hwkb;
+    // 列表页:普通触屏 app 交互(点卡片 + 滑动)→ **不显示虚拟键盘**;物理键盘仍可方向键/Enter 导航。
+    // 终端页(Android):无外接物理键盘时常驻一行虚拟键盘;有则只留 slim hint。
+    document.getElementById('vkeyboard').hidden = hwkb || currentView==='list';
     document.getElementById('hint-footer').hidden=true;   // 不显示提示条(连键盘时底部保持干净)
     // CSS 上下文 class 与 currentView 同步(列表态淡化终端专用键)
     document.body.classList.toggle('ctx-list', currentView==='list');
@@ -499,6 +499,13 @@
   function tick(){ document.getElementById('clock').textContent=new Date().toTimeString().slice(0,5); }
   let resizePending=false;
   window.addEventListener('resize',()=>{ if(resizePending)return; resizePending=true; requestAnimationFrame(()=>{ resizePending=false; if(currentView==='term'){ try{ fitAddon.fit(); }catch(e){} } }); });
+  // 列表页:卡片可点(普通触屏 app 交互;事件委托在 #list 上,innerHTML 重建后仍有效)。
+  document.getElementById('list').addEventListener('click', e=>{
+    if(currentView!=='list') return;
+    const card=e.target.closest('.card'); if(!card) return;
+    const idx=parseInt(card.dataset.idx,10); if(isNaN(idx)) return;
+    setFocus(idx); openFocused();
+  });
   render(); setFocus(0); tick(); setInterval(tick,1000);
   hwkb = (window.Bridge&&window.Bridge.hasHardwareKeyboard) ? window.Bridge.hasHardwareKeyboard() : false;
   updateBottomBar();   // 初始列表态:无外接键盘则常驻一行虚拟键盘,有则 slim hint

@@ -222,7 +222,8 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 | Android(Beam Pro) | **锁横屏**(AR 眼镜固定横向) | 单行(终端态显示) |
 | iOS(iPhone) | **横竖兼容**(随设备旋转,终端 `fitAddon` 重排) | **横屏 1 行 / 竖屏 2 行**(CSS media query 响应) |
 
-- **硬件键盘接入 → 虚拟键盘消失**(两端一致语义):检测到外接/蓝牙键盘(8BitDo)connect → 客户端调 `window.setHwKeyboard(true)` 隐藏虚拟键盘;disconnect → 恢复。Android 走 `onConfigurationChanged`/`Configuration.keyboard`;iOS 走 `GCKeyboardDidConnect`/`GCKeyboardDidDisconnect`(GameController)。**`index.html` 的隐藏逻辑(`setHwKeyboard`)是共享的**,各端只负责**检测并调用**。
+- **列表页 = 普通触屏 app 交互(2026-06-01 升级)**:**点卡片**开 project、**滑动**滚动列表;**列表页不显示虚拟键盘**。物理键盘(8BitDo 等)仍可**方向键/Enter 导航**(触屏与物理键并存)。虚拟键盘**仅终端页**显示(终端文本输入靠语音 + 特殊键)。**产品定位升级**:不再是纯 AR 眼镜场景 —— 直接拿手机触屏用,列表浏览/开 project 走标准 app 手势,体验同样照顾。`index.html` 的列表卡片 click + `updateBottomBar` 列表态隐藏 vkey 是**共享逻辑**(Android 列表页同样受益:可点 + 无 vkey;Android 终端页 vkey 照常)。
+- **硬件键盘接入 → 终端页虚拟键盘消失**(两端一致语义):检测到外接/蓝牙键盘(8BitDo)connect → 客户端调 `window.setHwKeyboard(true)` 隐藏虚拟键盘;disconnect → 恢复。Android 走 `onConfigurationChanged`/`Configuration.keyboard`;iOS 走 `GCKeyboardDidConnect`/`GCKeyboardDidDisconnect`(GameController)。**`index.html` 的隐藏逻辑(`setHwKeyboard`)是共享的**,各端只负责**检测并调用**。(列表页本就无 vkey,此条只对终端页生效。)
 - 虚拟键盘的响应式行数 = `index.html` 的 CSS media query(**共享资产**);Android 锁横屏 → 永远命中 1 行分支,该改动对 Android **无可见影响**。
 
 ---

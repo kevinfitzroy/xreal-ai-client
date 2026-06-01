@@ -1,22 +1,31 @@
 import UIKit
 
+/// 导航容器:大标题「Deck」列表(苹果原生设计语言)。状态栏/home indicator **交给顶层 VC** 决定
+/// (列表态显示、终端态全屏隐藏)。
+final class DeckNavController: UINavigationController {
+    override var childForStatusBarHidden: UIViewController? { topViewController }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { topViewController }
+}
+
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        WebViewKeyboard.suppressTerminalIME()   // 终端页禁系统软键盘(inputView 0 高度,保留硬件键 DOM 投递)
+        // (iOS 全面原生化后无 WKWebView,旧的 WebViewKeyboard 软键盘抑制 swizzle 已无意义,移除。)
         let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = TerminalViewController()
+        let nav = DeckNavController(rootViewController: TerminalViewController())
+        nav.navigationBar.prefersLargeTitles = true
+        window.rootViewController = nav
         window.makeKeyAndVisible()
         self.window = window
         return true
     }
 
-    /// Convenience accessor for the single root VC (no SceneDelegate; manual UIWindow).
+    /// Convenience accessor for the single root VC(包在 DeckNavController 里)。
     private var terminalVC: TerminalViewController? {
-        window?.rootViewController as? TerminalViewController
+        (window?.rootViewController as? UINavigationController)?.viewControllers.first as? TerminalViewController
     }
 
     // MARK: - "Open in XrealPOC" import (SPEC §8 real-device channel)
