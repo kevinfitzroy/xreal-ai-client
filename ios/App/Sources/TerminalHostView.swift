@@ -8,6 +8,7 @@ protocol TerminalHostKeyHandler: AnyObject {
     func termVoiceKey(down: Bool)   // F1 hold-to-talk(down=按下/抬起)
     func termBackKey()              // F2 → 返回列表
     func termPage(up: Bool)         // Shift+↑/↓ → PageUp/PageDown 给远端 TUI
+    func termSend(bytes: [UInt8])   // 少数被中文输入法污染的 ASCII 键,走 raw bytes
     func termVoiceActive() -> Bool  // 语音是否在"应抢 Enter/Esc"的态(overlay 可见)
     func termVoiceEnter() -> Bool   // @return true=语音接管(注入预览文本);false=透传给终端(发 CR)
     func termVoiceEsc() -> Bool     // @return true=语音接管(取消会话);false=透传(发 ESC)
@@ -119,6 +120,10 @@ enum TerminalKeyInterceptor {
         case .keyboardDownArrow where key.modifierFlags.contains(.shift):
             if down { kh.termPage(up: false) }
             return true
+        case .keyboardB, .keyboardC, .keyboard1:
+            guard let bytes = asciiFallbackBytes(for: key) else { return false }
+            if down { kh.termSend(bytes: bytes) }
+            return true
         case .keyboardReturnOrEnter, .keypadEnter:
             // 语音预览态:Enter 确认注入(消费);否则透传给 SwiftTerm 发 CR。两步:注入后 state→idle,
             // 下一个 Enter 时 termVoiceEnter 返回 false → 透传 → 执行命令。
@@ -129,6 +134,26 @@ enum TerminalKeyInterceptor {
             return false
         default:
             return false
+        }
+    }
+
+    /// iOS 硬件键在中文输入源下,少数键的 `characters` 会被 IME 污染。只兜底已确认出问题的键位。
+    private static func asciiFallbackBytes(for key: UIKey) -> [UInt8]? {
+        let flags = key.modifierFlags
+        if flags.contains(.command) || flags.contains(.alternate) { return nil }
+        let control = flags.contains(.control)
+        let shifted = flags.contains(.shift) != flags.contains(.alphaShift)
+        switch key.keyCode {
+        case .keyboardB:
+            if control { return [0x02] }
+            return [shifted ? 0x42 : 0x62]
+        case .keyboardC:
+            if control { return [0x03] }
+            return [shifted ? 0x43 : 0x63]
+        case .keyboard1 where shifted && !control:
+            return [0x21] // !
+        default:
+            return nil
         }
     }
 }

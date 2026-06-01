@@ -535,6 +535,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.bringSubviewToFront(terminalBottomCover)
         term.isHidden = false
         _ = term.becomeFirstResponder()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.view_ == .terminal, !self.edgeDragging else { return }
+            self.primeTermAccessoryForTerminal()
+            self.layoutTerm()
+        }
         navigationController?.setNavigationBarHidden(true, animated: false)  // 终端沉浸:隐藏 nav bar
         setNeedsStatusBarAppearanceUpdate()                                  // + 状态栏 + home indicator
         setNeedsUpdateOfHomeIndicatorAutoHidden()
@@ -559,12 +564,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func predictedKeyBarOverlap() -> CGFloat {
         guard shouldShowTermAccessory, let keyBar else { return 0 }
-        keyBar.frame.size.width = view.bounds.width
+        let width = view.bounds.width > 0 ? view.bounds.width : max(keyBar.bounds.width, keyBar.frame.width)
+        keyBar.frame.size.width = width
         keyBar.setNeedsLayout()
         keyBar.layoutIfNeeded()
-        let intrinsic = max(0, keyBar.intrinsicContentSize.height)
-        let fallbackSafeBottom = keyBar.safeAreaInsets.bottom > 0 ? 0 : view.safeAreaInsets.bottom
-        return intrinsic + fallbackSafeBottom
+        let bottomInset = max(keyBar.safeAreaInsets.bottom, view.safeAreaInsets.bottom)
+        return TerminalKeyBar.preferredHeight(width: width, bottomInset: bottomInset)
     }
 
     private func primeTermAccessoryForTerminal() {
@@ -648,6 +653,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             self.slideTerminal(toX: 0)
         } completion: { _ in
             self.edgeDragging = false
+            self.primeTermAccessoryForTerminal()
             self.layoutTerm()
         }
     }
@@ -937,6 +943,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // MARK: - TerminalHostKeyHandler(SwiftTerm 子类拦下的 app 专用键)
     func termVoiceKey(down: Bool) { voiceKeyAction(pressed: down) }
     func termBackKey() { backToList() }
+    func termSend(bytes: [UInt8]) { ssh?.send(Data(bytes)) }
     func termVoiceActive() -> Bool { voice.currentState != .idle }
     func termVoiceEnter() -> Bool { voice.onEnter() }
     func termVoiceEsc() -> Bool { voice.onEsc() }
@@ -949,22 +956,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if term.isFirstResponder { term.reloadInputViews() }
     }
     private func handleKeyBarAction(_ a: TerminalKeyAction) {
-        if a != .voiceUp { keyHaptic.prepare(); keyHaptic.impactOccurred() }
+        keyHaptic.prepare(); keyHaptic.impactOccurred()
         switch a {
-        case .back:     backToList()
         case .up:       ssh?.send(Data(arrowBytes(0x41)))
         case .down:     ssh?.send(Data(arrowBytes(0x42)))
         case .right:    ssh?.send(Data(arrowBytes(0x43)))
         case .left:     ssh?.send(Data(arrowBytes(0x44)))
         case .enter:    if !voice.onEnter() { ssh?.send(Data([13])) }
         case .esc:      if !voice.onEsc()  { ssh?.send(Data([27])) }
-        case .tab:      ssh?.send(Data([0x09]))
         case .shiftTab: ssh?.send(Data([0x1b, 0x5b, 0x5a]))
         case .ctrlC:    ssh?.send(Data([0x03]))
         case .ctrlB:    ssh?.send(Data([0x02]))
         case .delWord:  ssh?.send(Data([0x17]))
-        case .voiceDown: voiceKeyAction(pressed: true)
-        case .voiceUp:   voiceKeyAction(pressed: false)
         }
     }
     private func arrowBytes(_ final: UInt8) -> [UInt8] {
