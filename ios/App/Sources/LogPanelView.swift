@@ -18,13 +18,19 @@ final class LogPanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         backgroundColor = UIColor(red: 0x1f / 255.0, green: 0x20 / 255.0, blue: 0x22 / 255.0, alpha: 1)
 
         titleLabel.text = "Logs"
-        titleLabel.font = .preferredFont(forTextStyle: .largeTitle)
+        titleLabel.font = .preferredFont(forTextStyle: .title2)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textColor = .white
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        versionLabel.text = AppVersion.display
-        versionLabel.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+        versionLabel.text = AppVersion.logPanelDisplay
+        versionLabel.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
         versionLabel.textColor = UIColor(white: 1, alpha: 0.42)
+        versionLabel.numberOfLines = 2
+        versionLabel.textAlignment = .right
+        versionLabel.lineBreakMode = .byTruncatingMiddle
+        versionLabel.adjustsFontSizeToFitWidth = true
+        versionLabel.minimumScaleFactor = 0.82
         versionLabel.setContentHuggingPriority(.required, for: .horizontal)
         versionLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -62,6 +68,8 @@ final class LogPanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         addSubview(table)
 
         NSLayoutConstraint.activate([
+            versionLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 132),
+
             closeButton.widthAnchor.constraint(equalToConstant: 38),
             closeButton.heightAnchor.constraint(equalToConstant: 38),
             clearButton.widthAnchor.constraint(equalToConstant: 38),
