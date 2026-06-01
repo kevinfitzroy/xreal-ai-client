@@ -1,6 +1,7 @@
 import Foundation
 import Citadel
 import Crypto
+import Darwin
 
 /// Multi-hop (ProxyJump) connect helper. The iOS equivalent of Android's `SshJump.kt`
 /// (`JumpSpec` + `open(spec, target, port)` → LocalPortForwarder).
@@ -42,11 +43,18 @@ enum SshConnect {
 
     /// ed25519 auth method + acceptAnything validator for a host (SPEC §5). Throws on a
     /// malformed key (caller treats as a connect failure).
-    private static func settings(for h: HostConfig) throws -> SSHClientSettings {
+    private static func settings(for h: HostConfig, proxy: ProxyConfig? = nil) throws -> SSHClientSettings {
         let key = try Curve25519.Signing.PrivateKey(sshEd25519: h.ssh.privateKeyPem)
+        let dial: (host: String, port: Int)
+        if let proxy {
+            try XrayProxy.tunnel(hostName: h.name, proxy: proxy, targetHost: "127.0.0.1", targetPort: h.ssh.port)
+            dial = ("127.0.0.1", proxy.localPort)
+        } else {
+            dial = (h.ssh.host, h.ssh.port)
+        }
         var s = SSHClientSettings(
-            host: h.ssh.host,
-            port: h.ssh.port,
+            host: dial.host,
+            port: dial.port,
             authenticationMethod: { .ed25519(username: h.ssh.user, privateKey: key) },
             hostKeyValidator: .acceptAnything()   // TOFU later; local rig only (matches existing code)
         )
@@ -60,19 +68,279 @@ enum SshConnect {
     /// auth fail) propagates; partial state (a live jump client when the target handshake
     /// fails) is cleaned up before rethrowing so we never leak a half-open jump connection.
     static func connect(target h: HostConfig, via: HostConfig?) async throws -> Connected {
-        let targetSettings = try settings(for: h)
+        let targetSettings = try settings(for: h, proxy: via == nil ? h.proxy : nil)
         guard let jh = via else {
             let c = try await SSHClient.connect(to: targetSettings)
             return Connected(target: c, jump: nil)
         }
         // Multi-hop: jump host first (its own ed25519), then tunnel to the target.
-        let jumpClient = try await SSHClient.connect(to: try settings(for: jh))
+        let jumpClient = try await SSHClient.connect(to: try settings(for: jh, proxy: jh.proxy))
         do {
             let targetClient = try await jumpClient.jump(to: targetSettings)
             return Connected(target: targetClient, jump: jumpClient)
         } catch {
             try? await jumpClient.close()   // target handshake failed — don't leak the jump
             throw error
+        }
+    }
+}
+
+// MARK: - SSH-over-443 runtime (SPEC §5.1)
+
+enum XrayConfig {
+    struct VmessLink {
+        let address: String
+        let port: Int
+        let id: String
+        let alterId: Int
+        let security: String
+        let network: String
+        let tls: Bool
+        let sni: String
+        let host: String
+        let path: String
+        let allowInsecure: Bool
+        let ps: String
+    }
+
+    static func parseVmess(_ url: String) throws -> VmessLink {
+        guard url.hasPrefix("vmess://") else { throw XrayError.badConfig("不是 vmess:// 链接") }
+        let raw = String(url.dropFirst("vmess://".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = decodeBase64(raw),
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw XrayError.badConfig("vmess 内容不是合法 JSON")
+        }
+        func str(_ key: String) -> String { (obj[key] as? String) ?? "" }
+        let address = str("add")
+        guard !address.isEmpty else { throw XrayError.badConfig("vmess 缺 add") }
+        let port = Int(str("port")) ?? (obj["port"] as? Int) ?? 0
+        guard (1...65535).contains(port) else { throw XrayError.badConfig("vmess port 非法") }
+        let id = str("id")
+        guard !id.isEmpty else { throw XrayError.badConfig("vmess 缺 id") }
+        return VmessLink(
+            address: address,
+            port: port,
+            id: id,
+            alterId: Int(str("aid")) ?? (obj["aid"] as? Int) ?? 0,
+            security: str("scy").isEmpty ? "auto" : str("scy"),
+            network: str("net").isEmpty ? "tcp" : str("net"),
+            tls: str("tls").lowercased() == "tls",
+            sni: str("sni"),
+            host: str("host"),
+            path: str("path"),
+            allowInsecure: str("insecure") == "1" || ((obj["insecure"] as? Bool) ?? false),
+            ps: str("ps")
+        )
+    }
+
+    static func build(link: VmessLink, localPort: Int, targetHost: String, targetPort: Int, serverIp: String?) throws -> String {
+        let inbound: [String: Any] = [
+            "tag": "ssh-in",
+            "listen": "127.0.0.1",
+            "port": localPort,
+            "protocol": "dokodemo-door",
+            "settings": [
+                "address": targetHost,
+                "port": targetPort,
+                "network": "tcp",
+                "followRedirect": false,
+            ],
+        ]
+        let user: [String: Any] = ["id": link.id, "alterId": link.alterId, "security": link.security]
+        let vnext: [String: Any] = [
+            "address": serverIp ?? link.address,
+            "port": link.port,
+            "users": [user],
+        ]
+        let outbound: [String: Any] = [
+            "tag": "proxy",
+            "protocol": "vmess",
+            "settings": ["vnext": [vnext]],
+            "streamSettings": streamSettings(link),
+        ]
+        let root: [String: Any] = [
+            "log": ["loglevel": "warning"],
+            "inbounds": [inbound],
+            "outbounds": [outbound],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: root, options: [])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func streamSettings(_ link: VmessLink) -> [String: Any] {
+        var ss: [String: Any] = ["network": link.network]
+        if link.tls {
+            ss["security"] = "tls"
+            ss["tlsSettings"] = [
+                "serverName": link.sni.isEmpty ? link.address : link.sni,
+                "allowInsecure": link.allowInsecure,
+            ]
+        }
+        if link.network.lowercased() == "ws" {
+            var ws: [String: Any] = ["path": link.path.isEmpty ? "/" : link.path]
+            if !link.host.isEmpty { ws["headers"] = ["Host": link.host] }
+            ss["wsSettings"] = ws
+        }
+        return ss
+    }
+
+    private static func decodeBase64(_ s: String) -> Data? {
+        let cleaned = s.replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
+        let padded = cleaned + String(repeating: "=", count: (4 - cleaned.count % 4) % 4)
+        if let data = Data(base64Encoded: padded) { return data }
+        let urlSafe = padded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        return Data(base64Encoded: urlSafe)
+    }
+}
+
+enum XrayError: Error, CustomStringConvertible {
+    case unavailable(String)
+    case badConfig(String)
+    case startFailed(String)
+
+    var description: String {
+        switch self {
+        case .unavailable(let s), .badConfig(let s), .startFailed(let s): return s
+        }
+    }
+}
+
+enum XrayProxy {
+    private static let lock = NSLock()
+    private static var ports: [String: Int] = [:]
+
+    static func tunnel(hostName: String, proxy: ProxyConfig, targetHost: String, targetPort: Int) throws {
+        let key = "\(hostName)→\(targetHost):\(targetPort)"
+        lock.lock()
+        defer { lock.unlock() }
+        if let running = ports[key] {
+            if running == proxy.localPort {
+                XrayDebugLog.append("reuse \(hostName) localPort=\(proxy.localPort)")
+                return
+            }
+            throw XrayError.badConfig("host \(hostName) tunnel 已在 \(running) 运行,当前配置 localPort=\(proxy.localPort)")
+        }
+        if let other = ports.first(where: { $0.value == proxy.localPort && $0.key != key }) {
+            throw XrayError.badConfig("proxy.localPort \(proxy.localPort) 已被 \(other.key) 使用")
+        }
+
+        guard let bridge = XrayBridge.load() else {
+            XrayDebugLog.append("bridge missing \(hostName)")
+            throw XrayError.unavailable("Xraybridge.framework 未集成,SSH-over-443 不可用")
+        }
+        let link = try XrayConfig.parseVmess(proxy.url)
+        let serverIp = resolveAddress(link.address)
+        let config = try XrayConfig.build(link: link, localPort: proxy.localPort, targetHost: targetHost, targetPort: targetPort, serverIp: serverIp)
+        XrayDebugLog.append("start \(hostName) proxy=\(proxy.name) localPort=\(proxy.localPort) vmess=\(link.address):\(link.port) resolved=\(serverIp ?? "-")")
+        try bridge.start(key: key, config: config)
+
+        ports[key] = proxy.localPort
+        // xray-core StartInstance can return a beat before the inbound is fully usable.
+        // Without this, the very first SSH probe after app launch can get ECONNRESET while
+        // the next user-opened terminal succeeds.
+        Thread.sleep(forTimeInterval: 0.5)
+        XrayDebugLog.append("started \(hostName) localPort=\(proxy.localPort)")
+        NSLog("[XrayProxy] start \(key) via \(link.address)\(serverIp.map { "[\($0)]" } ?? ""):\(link.port) → 127.0.0.1:\(proxy.localPort)")
+    }
+
+    static func stopAll() {
+        guard let bridge = XrayBridge.load() else { return }
+        lock.lock()
+        let keys = Array(ports.keys)
+        ports.removeAll()
+        lock.unlock()
+        keys.forEach { try? bridge.stop(key: $0) }
+        if !keys.isEmpty { XrayDebugLog.append("stopped \(keys.count) tunnel(s)") }
+    }
+
+    private static func resolveAddress(_ host: String) -> String? {
+        var hints = addrinfo(ai_flags: AI_ADDRCONFIG, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: IPPROTO_TCP, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let result else { return nil }
+        defer { freeaddrinfo(result) }
+        var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let addr = result.pointee.ai_addr
+        let len = result.pointee.ai_addrlen
+        guard getnameinfo(addr, len, &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
+        return String(cString: buf)
+    }
+}
+
+enum XrayDebugLog {
+    private static let lock = NSLock()
+
+    static func append(_ line: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let url = docs.appendingPathComponent("xray-smoke.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let data = Data("[\(stamp)] \(line)\n".utf8)
+        if FileManager.default.fileExists(atPath: url.path),
+           let fh = try? FileHandle(forWritingTo: url) {
+            defer { try? fh.close() }
+            _ = try? fh.seekToEnd()
+            _ = try? fh.write(contentsOf: data)
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+}
+
+final class XrayBridge {
+    private typealias StartFn = @convention(c) (NSString, NSString, UnsafeMutablePointer<NSError?>?) -> Bool
+    private typealias StopFn = @convention(c) (NSString, UnsafeMutablePointer<NSError?>?) -> Bool
+
+    private let handle: UnsafeMutableRawPointer
+    private let startFn: StartFn
+    private let stopFn: StopFn
+
+    private static var cached: XrayBridge?
+    private static var attempted = false
+
+    static func load() -> XrayBridge? {
+        if let cached { return cached }
+        if attempted { return nil }
+        attempted = true
+        let names = ["Xraybridge", "xraybridge"]
+        let roots = [Bundle.main.privateFrameworksPath, Bundle.main.bundlePath].compactMap { $0 }
+        for root in roots {
+            for name in names {
+                let path = "\(root)/\(name).framework/\(name)"
+                guard FileManager.default.fileExists(atPath: path),
+                      let h = dlopen(path, RTLD_NOW | RTLD_LOCAL) else { continue }
+                if let bridge = XrayBridge(handle: h) {
+                    cached = bridge
+                    return bridge
+                }
+                dlclose(h)
+            }
+        }
+        NSLog("[XrayBridge] xraybridge.framework not found")
+        return nil
+    }
+
+    private init?(handle: UnsafeMutableRawPointer) {
+        guard let startSym = dlsym(handle, "XraybridgeStart"),
+              let stopSym = dlsym(handle, "XraybridgeStop") else { return nil }
+        self.handle = handle
+        self.startFn = unsafeBitCast(startSym, to: StartFn.self)
+        self.stopFn = unsafeBitCast(stopSym, to: StopFn.self)
+    }
+
+    deinit { dlclose(handle) }
+
+    func start(key: String, config: String) throws {
+        var err: NSError?
+        if !startFn(key as NSString, config as NSString, &err) {
+            throw XrayError.startFailed(err?.localizedDescription ?? "xray 启动失败")
+        }
+    }
+
+    func stop(key: String) throws {
+        var err: NSError?
+        if !stopFn(key as NSString, &err) {
+            throw XrayError.startFailed(err?.localizedDescription ?? "xray 停止失败")
         }
     }
 }

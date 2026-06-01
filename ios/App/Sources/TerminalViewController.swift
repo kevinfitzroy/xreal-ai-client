@@ -62,8 +62,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
-    private static let pageUpBytes: [UInt8] = [0x1b, 0x5b, 0x35, 0x7e]
-    private static let pageDownBytes: [UInt8] = [0x1b, 0x5b, 0x36, 0x7e]
     private static let shiftUpBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x41]
     private static let shiftDownBytes: [UInt8] = [0x1b, 0x5b, 0x31, 0x3b, 0x32, 0x42]
 
@@ -353,8 +351,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 return DeckRow(host: h.name, session: p.session, name: p.name, type: p.type,
                                state: state, since: live?.since ?? 0, loading: hostLoading)
             }
-            return DeckSection(hostName: h.name, addr: h.addr, up: hostLoading || !unreachable, rows: rows)
+            return DeckSection(hostName: h.name, addr: h.addr, proxy: hostProxyLabel(h), up: hostLoading || !unreachable, rows: rows)
         }
+    }
+
+    private func hostProxyLabel(_ h: HostConfig) -> String {
+        if h.via == nil { return h.proxy?.name ?? "" }
+        let jumper = hosts.first { $0.name == h.via }
+        return jumper?.proxy?.name ?? h.proxy?.name ?? ""
     }
 
     private func pushList() {
@@ -751,12 +755,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     func termPage(up: Bool) {
         guard view_ == .terminal, voice.currentState == .idle else { return }
-        if activeProjectType == .ssh {
-            ssh?.send(Data(up ? Self.shiftUpBytes : Self.shiftDownBytes))
-        } else {
-            // AI/TUI 类会话使用 alternate screen,本地 scrollback 不可用;发 PageUp/Down 让应用自己滚。
-            ssh?.send(Data(up ? Self.pageUpBytes : Self.pageDownBytes))
-        }
+        // Claude Code 对 PageUp/PageDown 不稳定;当前所有 project 类型统一走 tmux 半页滚。
+        ssh?.send(Data(up ? Self.shiftUpBytes : Self.shiftDownBytes))
     }
 
     @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {

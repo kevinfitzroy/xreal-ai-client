@@ -115,9 +115,11 @@ enum ManifestFetcher {
         if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
             var updated = h
             updated.projects = projects
+            XrayDebugLog.append("manifest \(h.name): projects=\(projects.count) states=\(status.count)")
             NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(status.count) live states")
             return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true)
         }
+        XrayDebugLog.append("manifest \(h.name): missing/bad states=\(status.count)")
         NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
         return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true)
     }
@@ -160,8 +162,11 @@ enum ManifestFetcher {
         do {
             let through = via.map { " via \($0.name)" } ?? ""
             NSLog("[ManifestFetcher] connecting \(h.name)\(through)…")   // visible while a dead host hangs
-            return try await SshConnect.connect(target: h, via: via)
+            let conn = try await SshConnect.connect(target: h, via: via)
+            XrayDebugLog.append("ssh connected \(h.name)\(through)")
+            return conn
         } catch {
+            XrayDebugLog.append("ssh failed \(h.name): \(String(describing: error).prefix(160))")
             NSLog("[ManifestFetcher] connect(\(h.name)) failed: \(error)")
             return nil
         }

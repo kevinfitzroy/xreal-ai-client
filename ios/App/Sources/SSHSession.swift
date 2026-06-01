@@ -141,15 +141,16 @@ final class SSHSession {
 
     /// attach-or-create the project's tmux session under UTF-8, with a non-interactive PATH wide
     /// enough to find tmux. Mirrors Android MainActivity.tmuxAttachCommand **including** the
-    /// half-page paging fallback conf (SPEC §6):iOS native 主路径在 TerminalHostView 拦 Shift+↑/↓;
-    /// AI/TUI 发 PageUp/PageDown 自己滚,shell/ssh 则转 S-Up/S-Down 让 tmux copy-mode 滚。
-    /// scrollback 升到 50000。
+    /// half-page paging fallback conf (SPEC §6):iOS native 在 TerminalHostView 拦 Shift+↑/↓,
+    /// 统一转 S-Up/S-Down 让 tmux copy-mode 滚;Claude Code 的 PageUp/PageDown 路径不稳定。
+    /// scrollback 升到 50000,copy-mode highlight 调淡以减轻 SwiftTerm 重绘白块感。
     /// conf 用 base64 投递,避开 `;`/`"`/`#{}` 被外层 shell 解释。
     /// `session` MUST already be validated `[A-Za-z0-9_.-]` (ProjectConfig.isSessionNameSafe).
     static func tmuxAttachCommand(_ session: String) -> String {
         let conf = [
             "source-file -q ~/.tmux.conf",                                  // -f 跳过默认加载 → 先带回用户配置
             "set -g history-limit 50000",
+            "set -g mode-style 'fg=default,bg=default'",
             "bind -n S-Up \"copy-mode ; send-keys -X halfpage-up\"",
             "bind -n S-Down 'if -F \"#{pane_in_mode}\" \"send-keys -X halfpage-down\"'",
         ].joined(separator: "\n") + "\n"

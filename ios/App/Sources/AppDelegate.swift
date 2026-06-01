@@ -54,4 +54,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             return false
         }
     }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        XrayProxy.stopAll()
+    }
 }

@@ -2,7 +2,7 @@
 
 > 按**优先级分层**跟踪需求,而不是按 phase。判据是:**这条断了,整体流程还能不能打通?**
 > - **P0 核心**:断了 = app 不可用。**已全部打通**(Beam Pro X4100 真机日常用);焦点已移到 P1 收尾 + P2。
-> - **P1 可用性**:当前未完成 P1 = **富媒体预览** + **terminal 触摸热区 / 语音 overlay 交互**。其它未完成项默认降到 P2/P3,不抢主线。
+> - **P1 可用性**:当前未完成 P1 = **富媒体预览**。其它未完成项默认降到 P2/P3,不抢主线。
 > - **P2 体验增强**:不影响主流程,可随时搁置 / 接回。**搁置的必须留接口 + 在本文件记接回清单**。
 >
 > 维护规则:状态变化随手改这里(✅ done / 🚧 进行中 / ⏸️ 搁置 / ⬜ 未开始)。搁置一个功能时,把它的接口点写进 §4「接回清单」。
@@ -37,11 +37,12 @@
 |---|---|---|---|
 | iOS.1 | **终端改原生 SwiftTerm** | ✅(2026-06-01) | 替代 WKWebView+xterm,解键盘死结。键盘全原生正确(字母/Tab/Shift+Tab/方向/Ctrl/DECCKM);F1/F2 + 语音 Enter/Esc 经 swizzle 拦;软键盘抑制 inputView 0 高;tmux 翻页 conf 注入。字体按 Android 方案打包 Sarasa/Meslo,CoreText 注册;SwiftTerm 单字体优先 Sarasa |
 | iOS.2 | **触屏 vkey(无硬件键盘)** | ✅ | 无 8BitDo 时终端挂原生 `TerminalKeyBar`(inputAccessoryView):返回/方向/Enter/Esc/删词/Ctrl-B/模式/Ctrl-C/🎤;横屏 1 行竖屏 2 行;键盘避让(终端缩到 vkey 上);按键震动 + 高亮 |
-| iOS.3 | **终端触摸翻页** | ✅ | 5-unit 热区翻页按 project type 分流:AI/TUI 类发 PageUp/PageDown 给远端 TUI;裸 `ssh` shell 发 S-Up/S-Down 走 tmux copy-mode。触摸翻页加短节流,cue 不再快速闪烁 |
-| iOS.4 | **列表改原生(苹果设计语言)** | 🔄 进行中(已编译,待真机验) | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
+| iOS.3 | **终端触摸翻页** | ✅ | 5-unit 热区翻页统一发 S-Up/S-Down 走 tmux copy-mode;Claude Code 的 PageUp/PageDown 路径不稳定。触摸翻页加短节流,cue 不再快速闪烁;tmux mode-style 调淡以减轻 copy-mode 重绘白块感 |
+| iOS.4 | **列表改原生(苹果设计语言)** | ✅ | WKWebView/index.html 退出 iOS(只留 Android)。`DeckListView`(insetGrouped UITableView + SF Symbols + 系统色状态徽章 + disclosure + 下拉刷新)+ `DeckNavController` 大标题「Deck」。点 cell 进 project、滑动滚动、物理键方向/Enter 导航 |
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
-| iOS.6 | **边缘滑动手势** | 🔄 进行中(已实现并装机,待手势真机确认) | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
-| iOS.7 | **最近终端保活(keep-warm)** | 🔄 进行中(已实现并装机,待手势真机确认) | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
+| iOS.6 | **边缘滑动手势** | ✅ | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
+| iOS.7 | **最近终端保活(keep-warm)** | ✅ | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
+| iOS.8 | **SSH-over-443 / vmess** | ✅ 真机验证 | HostStore 支持 host 内联 `proxy{name,localPort,url}` 并拒绝本地端口冲突;列表 host header 显示 `🔒 proxy`;`SshConnect` 统一处理终端 + manifest/status 轮询,按 proxy/via 归属起 host 级 xray dokodemo-door(override→服务端 `127.0.0.1:22`)并让 Citadel 直连该 host 固定本地口。未 build framework 时带 proxy host fail closed,直连不受影响 |
 
 ---
 
@@ -56,7 +57,7 @@
 | P1.1c | app live-fetch manifest | ✅ 真机验证 | `ManifestFetcher` 经 `HostClient.catFile` 拉 `<basePath>/.xreal/projects.json` → `liveProjects`(findProject 按 **session** 查、seed 兜底)→ `pushHostList` 内容去重防闪烁。**刷新 = 事件驱动零空轮询**:列表首显 / back-to-list / onStart 各拉一次(`fetchExec` 单线程串行 + `fetchGen` 防乱序;拉取失败保留当前列表)。Maestro 改 manifest → 回列表即现 |
 | P1.2 | 真豆包 ASR(替 mock) | ✅ 真机验证 | **真双向流式**(`bigmodel_async` WS,`VolcFrame` 二进制协议+gzip)。按住即连 WS、`AudioRecorder` 边录边吐 200ms 裸 PCM 块(非 Opus)、中间结果实时上屏、松手发负包拿 final。会话式 `Asr` seam(`open/send/finish/cancel`+回调);race 防御=generation counter + `cancelled`/`done`。creds 走 Valet `asr.json`(无 UI)。**热词**:`corpus.context` 内联,`Hotwords.BASE`(Claude Code 控制命令)所有 project 继承 + manifest per-project 合并、按 token 预算 cap。语音键收为单 🎤。`VolcFrame`/`PcmChunker` 有 JVM 单测 |
 | P1.3 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
-| P1.4 | **terminal 触摸热区 + 语音 overlay 点击语义** | 🔄 iOS 已实现并装机,待真机验 | 只按 terminal 核心显示区计算,有 vkey 时先排除 vkey。核心区纵向 5 份:top 2 unit = 上翻页,中间 2 unit = 下翻页,bottom 1 unit 的底部 2/3 = hold-to-talk 语音热区;翻页触发时用半透明区域 overlay 覆盖整个触发区,叠加加大加粗箭头并短暂驻留,让用户看清范围。overlay 出现后翻页自然失效,核心区只剩 3 块:overlay 卡片点击 = Enter 注入识别文本,卡片上方点击 = Esc 取消,卡片下方按压 = 重新录音。契约 = SPEC §6 |
+| P1.4 | **terminal 触摸热区 + 语音 overlay 点击语义** | ✅ iOS 真机验证 | 只按 terminal 核心显示区计算,有 vkey 时先排除 vkey。核心区纵向 5 份:top 2 unit = 上翻页,中间 2 unit = 下翻页,bottom 1 unit 的底部 2/3 = hold-to-talk 语音热区;翻页触发时用半透明区域 overlay 覆盖整个触发区,叠加加大加粗箭头并短暂驻留,让用户看清范围。overlay 出现后翻页自然失效,核心区只剩 3 块:overlay 卡片点击 = Enter 注入识别文本,卡片上方点击 = Esc 取消,卡片下方按压 = 重新录音。契约 = SPEC §6 |
 
 ### Project 创建模型(2026-05-29 收敛 —— Maestro agent 驱动)
 

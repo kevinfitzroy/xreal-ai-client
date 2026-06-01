@@ -15,6 +15,7 @@ struct DeckRow {
 struct DeckSection {
     let hostName: String
     let addr: String
+    let proxy: String
     let up: Bool
     let rows: [DeckRow]
 }
@@ -123,7 +124,8 @@ final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
     func tableView(_ t: UITableView, titleForHeaderInSection s: Int) -> String? {
         let sec = sections[s]
-        return sec.hostName + "  ·  " + sec.addr + (sec.up ? "" : "  ·  离线")
+        let proxy = sec.proxy.isEmpty ? "" : "  ·  🔒 \(sec.proxy)"
+        return sec.hostName + "  ·  " + sec.addr + proxy + (sec.up ? "" : "  ·  离线")
     }
     func tableView(_ t: UITableView, didSelectRowAt ip: IndexPath) {
         t.deselectRow(at: ip, animated: true)

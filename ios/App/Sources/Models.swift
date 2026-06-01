@@ -36,6 +36,13 @@ struct SshConfig {
     let privateKeyPem: String
 }
 
+/// Host-owned tunnel for SSH-over-443 (SPEC §5.1). `url` is a standard `vmess://` share link.
+struct ProxyConfig {
+    let name: String
+    let localPort: Int
+    let url: String
+}
+
 /// One host = SSH params + base path + that host's project list.
 struct HostConfig {
     let name: String
@@ -44,7 +51,9 @@ struct HostConfig {
     var projects: [ProjectConfig]
     /// Maestro work root; manifest at `<basePath>/.xreal/projects.json`. Empty = no live-fetch.
     let basePath: String
-    let via: String?          // multi-hop jump host name (Phase 1: parsed, not used)
+    let via: String?          // multi-hop jump host name
+    /// SSH-over-443 tunnel. If this host has `via`, tunnel ownership follows the via host.
+    let proxy: ProxyConfig?
 }
 
 /// One session's live state (written by Claude Code hooks → status.json). `since` =
@@ -112,6 +121,7 @@ enum DeckJSON {
             return [
                 "name": h.name,
                 "addr": h.addr,
+                "proxy": h.proxy?.name ?? "",
                 // While a host is still loading, don't pre-flag it down — only a resolved,
                 // confirmed-unreachable host shows the red header dot.
                 "up": hostLoading || !unreachable,

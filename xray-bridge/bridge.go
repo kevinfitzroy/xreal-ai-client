@@ -2,10 +2,11 @@
 //
 // 设计原则(对应 SSH-over-443 隧道功能,见仓库 SPEC.md §5.1):
 //   - Go 侧零业务逻辑:vmess:// 解析、xray JSON 配置生成全在 Kotlin/Swift,这里只把一段
-//     完整的 xray JSON 配置喂给官方 core.StartInstance,起一个本地 127.0.0.1 SOCKS inbound。
+//     完整的 xray JSON 配置喂给官方 core.StartInstance,通常起一个本地 127.0.0.1
+//     dokodemo-door inbound(override 到服务端 127.0.0.1:22)。
 //   - go.mod 唯一外部依赖 = 官方 github.com/xtls/xray-core,不引入 libXray / AndroidLibXrayLite。
-//   - 不依赖 VpnService / TUN:只跑 socks inbound,app 侧把自己的 SSH socket 经 SOCKS5 转发。
-//   - 按 key(= proxy 名)管理多实例:一个 proxy 一个独立 SOCKS 端口,互不干扰。
+//   - 不依赖 VpnService / TUN:只跑本地 inbound,app 侧把自己的 SSH socket 接到本地端口。
+//   - 按 key 管理多实例:每条 tunnel 一个本地端口,互不干扰。
 //
 // gomobile bind 后,Kotlin 侧调用面(class xraybridge.Xraybridge):
 //   Xraybridge.start(key, configJson)  // 抛 Exception 即启动失败
@@ -29,7 +30,7 @@ var (
 	instances = map[string]*core.Instance{}
 )
 
-// Start 用一段完整 xray JSON 配置启动名为 key 的实例(应含 listen=127.0.0.1 的 socks inbound +
+// Start 用一段完整 xray JSON 配置启动名为 key 的实例(应含 listen=127.0.0.1 的 inbound +
 // vmess(+tls) outbound)。幂等:同 key 已在跑则直接返回 nil(不重起)。
 // 返回非 nil error → gomobile 在 Kotlin 侧抛 Exception,调用方据此判定"该 host 代理不可用 → 连接失败"。
 func Start(key, configJSON string) error {

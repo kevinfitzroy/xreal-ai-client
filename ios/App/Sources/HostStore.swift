@@ -3,10 +3,10 @@ import Foundation
 /// Reads the Valet-installed `hosts.json` from the app's Documents dir and resolves
 /// each host's private key file. Mirrors Android's SettingsStore.parseHosts.
 ///
-/// staging shape (SPEC §8): `[{ name, addr?, host, port?, user, key, basePath?, via?,
-/// projects:[{session,name,type}] }]`. `key` is a bare filename pointing at a sibling
-/// key file in Documents/ (the iOS dev-injection channel = `simctl get_app_container`
-/// copy, the analog of Android's `adb push`).
+/// staging shape (SPEC §8): legacy top-level host array, or `{hosts}`. SSH-over-443
+/// tunnel config is owned by each host's inline `proxy` object, including a unique
+/// localPort. Each host's `key` is a bare filename pointing at a sibling key file in
+/// Documents/ (the iOS dev-injection channel = AirDrop/Open In import).
 ///
 /// SECURITY (SPEC §8): `key` must be a bare filename (no path traversal); the key file
 /// must contain `PRIVATE KEY` and be ≤8KB. Real IP only lives in `host`, never `addr`.
@@ -29,12 +29,42 @@ enum HostStore {
         let docs = documentsDir
         let file = docs.appendingPathComponent("hosts.json")
         guard let data = try? Data(contentsOf: file),
-              let json = try? JSONSerialization.jsonObject(with: data),
-              let arr = json as? [[String: Any]] else {
+              let root = parseStoredRoot(data) else {
             NSLog("[HostStore] no hosts.json (or invalid) → empty (mock)")
             return []
         }
-        return arr.compactMap { parseHost($0, docsDir: docs) }
+        return parseHosts(root.hosts, docsDir: docs)
+    }
+
+    private struct StoredRoot {
+        let hosts: [[String: Any]]
+    }
+
+    private static func parseStoredRoot(_ data: Data) -> StoredRoot? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        if let arr = json as? [[String: Any]] {
+            return StoredRoot(hosts: arr)
+        }
+        guard let obj = json as? [String: Any] else { return nil }
+        let hosts = obj["hosts"] as? [[String: Any]] ?? []
+        return StoredRoot(hosts: hosts)
+    }
+
+    private static func parseHosts(_ records: [[String: Any]], docsDir: URL) -> [HostConfig] {
+        var usedProxyPorts: [Int: String] = [:]
+        var out: [HostConfig] = []
+        for r in records {
+            guard let h = parseHost(r, docsDir: docsDir) else { continue }
+            if let proxy = h.proxy {
+                if let other = usedProxyPorts[proxy.localPort] {
+                    NSLog("[HostStore] skip host '\(h.name)': proxy localPort \(proxy.localPort) conflicts with '\(other)'")
+                    continue
+                }
+                usedProxyPorts[proxy.localPort] = h.name
+            }
+            out.append(h)
+        }
+        return out
     }
 
     private static func parseHost(_ o: [String: Any], docsDir: URL) -> HostConfig? {
@@ -53,12 +83,35 @@ enum HostStore {
         let addr = (o["addr"] as? String) ?? host   // alias only; real host hidden in UI
         let basePath = (o["basePath"] as? String) ?? ""
         let via = (o["via"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let proxy: ProxyConfig?
+        do {
+            proxy = try parseProxy(o["proxy"], hostName: name)
+        } catch {
+            NSLog("[HostStore] skip host '\(name)': \(error)")
+            return nil
+        }
         let projects = (o["projects"] as? [[String: Any]] ?? []).compactMap(parseProject)
         return HostConfig(
             name: name, addr: addr,
             ssh: SshConfig(host: host, port: port, user: user, privateKeyPem: pem),
-            projects: projects, basePath: basePath, via: via
+            projects: projects, basePath: basePath, via: via, proxy: proxy
         )
+    }
+
+    private static func parseProxy(_ raw: Any?, hostName: String) throws -> ProxyConfig? {
+        guard let raw else { return nil }
+        guard let o = raw as? [String: Any] else {
+            throw ImportError.badProxy("proxy 必须是对象,不是共享 proxy 名")
+        }
+        let name = (o["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "\(hostName)-443"
+        guard let url = o["url"] as? String, !url.isEmpty else {
+            throw ImportError.badProxy("proxy 缺 url")
+        }
+        let localPort = (o["localPort"] as? Int) ?? (o["listenPort"] as? Int) ?? 0
+        guard (1024...65535).contains(localPort) else {
+            throw ImportError.badProxy("proxy.localPort 非法或缺失")
+        }
+        return ProxyConfig(name: name, localPort: localPort, url: url)
     }
 
     static func parseProject(_ p: [String: Any]) -> ProjectConfig? {
@@ -93,13 +146,14 @@ enum HostStore {
     // MARK: - Valet "Open in" import (SPEC §8 real-device channel)
 
     enum ImportError: Error, CustomStringConvertible {
-        case unreadable, badJSON, noHosts, noContent
+        case unreadable, badJSON, noHosts, noContent, badProxy(String)
         var description: String {
             switch self {
             case .unreadable: return "无法读取导入文件"
             case .badJSON:    return "导入文件不是合法 JSON"
             case .noHosts:    return "导入文件没有合法的 host"
             case .noContent:  return "导入文件缺少 host / hosts / asr 任一字段"
+            case .badProxy(let s): return s
             }
         }
     }
@@ -159,16 +213,17 @@ enum HostStore {
             // REPLACE: stage every host, atomically swap the whole hosts.json (Phase-5 behavior).
             let staged = stageHosts(hostsArr, in: docs)
             guard !staged.isEmpty else { throw ImportError.noHosts }
-            let hostsData = try JSONSerialization.data(withJSONObject: staged, options: [])
-            try writeAtomic(hostsData, to: docs.appendingPathComponent("hosts.json"))
+            try validateProxyPorts(staged)
+            try writeStoredHosts(staged, to: docs.appendingPathComponent("hosts.json"))
             mode = .replace; hostCount = staged.count
         } else if let singleHost {
             // APPEND: stage the one host, merge into existing list dedup-by-name (new wins).
             let staged = stageHosts([singleHost], in: docs)
             guard !staged.isEmpty else { throw ImportError.noHosts }
-            let merged = mergeAppend(staged, into: loadBareHosts(in: docs))
-            let hostsData = try JSONSerialization.data(withJSONObject: merged, options: [])
-            try writeAtomic(hostsData, to: docs.appendingPathComponent("hosts.json"))
+            let existing = loadStoredHosts(in: docs)
+            let merged = mergeAppend(staged, into: existing.hosts)
+            try validateProxyPorts(merged)
+            try writeStoredHosts(merged, to: docs.appendingPathComponent("hosts.json"))
             mode = .append; hostCount = staged.count
         }
 
@@ -222,15 +277,12 @@ enum HostStore {
         return staged
     }
 
-    /// The current bare-form hosts.json array (post-staging records, `key` = filename). Absent or
-    /// malformed → []. Used as the merge base for APPEND.
-    private static func loadBareHosts(in docs: URL) -> [[String: Any]] {
+    /// The current stored hosts.json root. Absent or malformed → empty. Used as the merge base for APPEND.
+    private static func loadStoredHosts(in docs: URL) -> StoredRoot {
         let file = docs.appendingPathComponent("hosts.json")
         guard let data = try? Data(contentsOf: file),
-              let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
-            return []
-        }
-        return arr
+              let root = parseStoredRoot(data) else { return StoredRoot(hosts: []) }
+        return root
     }
 
     /// Merge freshly-staged hosts into the existing list, dedup by `name` (a new record overwrites
@@ -246,6 +298,24 @@ enum HostStore {
             }
         }
         return merged
+    }
+
+    private static func validateProxyPorts(_ hosts: [[String: Any]]) throws {
+        var used: [Int: String] = [:]
+        for h in hosts {
+            let name = h["name"] as? String ?? "<unknown>"
+            guard h["proxy"] != nil else { continue }
+            guard let proxy = try parseProxy(h["proxy"], hostName: name) else { continue }
+            if let other = used[proxy.localPort] {
+                throw ImportError.badProxy("proxy.localPort \(proxy.localPort) 同时被 \(other) 和 \(name) 使用")
+            }
+            used[proxy.localPort] = name
+        }
+    }
+
+    private static func writeStoredHosts(_ hosts: [[String: Any]], to target: URL) throws {
+        let data = try JSONSerialization.data(withJSONObject: hosts, options: [])
+        try writeAtomic(data, to: target)
     }
 
     /// Atomic write (tmp → rename) so a crash mid-import can't leave a half-written file.
