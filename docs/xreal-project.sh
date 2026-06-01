@@ -43,6 +43,48 @@ MANIFEST="$BASE/.xreal/projects.json"
 command -v python3 >/dev/null || { echo "需要 python3 来安全地改 manifest" >&2; exit 1; }
 command -v tmux    >/dev/null || { echo "需要 tmux" >&2; exit 1; }
 
+tmux_startup_command() {
+  local startup="$1"
+  local shell_bin shell_name profile_snippet inner
+  shell_bin="$(pick_interactive_shell)"
+  shell_name="$(basename "$shell_bin")"
+  case "$shell_name" in
+    zsh) profile_snippet='[ -r "$HOME/.zprofile" ] && . "$HOME/.zprofile"; ';;
+    bash) profile_snippet='[ -r "$HOME/.profile" ] && . "$HOME/.profile"; ';;
+    *) profile_snippet='[ -r "$HOME/.profile" ] && . "$HOME/.profile"; ';;
+  esac
+  # 用 interactive shell 启动,确保 ~/.bashrc 或 ~/.zshrc 里的模型/API 环境变量生效。
+  # 同时补 source login profile,保留 ~/.local/bin 等 login-shell PATH 习惯。
+  inner="${profile_snippet}${startup}; exec $(printf '%q' "$shell_bin") -i"
+  case "$shell_name" in
+    bash|zsh) printf '%q -ic %q' "$shell_bin" "$inner";;
+    *) printf '%q -c %q' "$shell_bin" "$inner";;
+  esac
+}
+
+pick_interactive_shell() {
+  local login_shell="${SHELL:-}" login_name=""
+  [ -n "$login_shell" ] && login_name="$(basename "$login_shell")"
+  case "$login_name" in
+    zsh)
+      if [ -x "$login_shell" ] && [ -r "$HOME/.zshrc" ]; then printf '%s\n' "$login_shell"; return 0; fi
+      ;;
+    bash)
+      if [ -x "$login_shell" ] && [ -r "$HOME/.bashrc" ]; then printf '%s\n' "$login_shell"; return 0; fi
+      ;;
+  esac
+  if [ -r "$HOME/.zshrc" ] && command -v zsh >/dev/null 2>&1; then command -v zsh; return 0; fi
+  if [ -r "$HOME/.bashrc" ] && command -v bash >/dev/null 2>&1; then command -v bash; return 0; fi
+  case "$login_name" in
+    bash|zsh)
+      if [ -x "$login_shell" ]; then printf '%s\n' "$login_shell"; return 0; fi
+      ;;
+  esac
+  if command -v bash >/dev/null 2>&1; then command -v bash; return 0; fi
+  if command -v zsh >/dev/null 2>&1; then command -v zsh; return 0; fi
+  command -v sh
+}
+
 # 把一条项目记录 upsert 进 manifest(按 session 去重),原子写。参数经环境变量传给 python3 避免拼接注入。
 manifest_upsert() {
   mkdir -p "$BASE/.xreal"
@@ -193,12 +235,11 @@ MD
     echo "tmux session '$session' 已存在,复用(不重起程序)"
   elif [ -n "$startup" ]; then
     # 启动命令作为 pane 命令直接跑(-u 强制 UTF-8)。**不用 send-keys** —— 它会和用户 shell 的
-    # .zshrc/.bashrc 启动竞争,命令可能只被打到 prompt 没执行。命令退出后 `exec bash` 落回交互 shell
+    # .zshrc/.bashrc 启动竞争,命令可能只被打到 prompt 没执行。命令退出后落回同款交互 shell
     # 保持 session 存活(maestro 的 loop 不会退,claude 项目退出后能在 shell 里手动重开)。
-    # 先 source ~/.profile:tmux 起的是非 login shell,PATH 不含 ~/.local/bin
-    # (claude native 安装默认落这里)。.bashrc 的 PATH 行在交互 guard 之后、非交互够不到,
-    # 而 ~/.profile 无条件加 ~/.local/bin → 这样 maestro 保活循环才找得到 claude。
-    tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash'
+    # 这里必须走 interactive shell:很多机器的 ~/.bashrc 顶部会在非交互 shell 里 return,
+    # zsh 用户则通常把环境放在 ~/.zshrc。普通 source rc 文件很容易吃不到或吃错。
+    tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" "$(tmux_startup_command "$startup")"
     echo "建好 '$session' (type=$type) @ $dir  启动: $startup"
   else
     tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir"   # 纯交互 shell(ssh 配角终端);-x/-y 防袖珍尺寸首连重绘
@@ -230,7 +271,7 @@ cmd_rm() {
 }
 
 # 重建 manifest 里所有 tmux session(幂等:已在则跳过)。重启后用,或 @reboot cron 调。
-# 建 session 的逻辑与 cmd_new 一致(UTF-8 / -x -y 防袖珍尺寸 / source ~/.profile 找 claude / startup 来自 manifest)。
+# 建 session 的逻辑与 cmd_new 一致(UTF-8 / -x -y 防袖珍尺寸 / 交互 shell 读取 rc / startup 来自 manifest)。
 # 容错:单个 session 起不来不影响其余(set -e 下用 && / || 兜住)。
 cmd_restore() {
   [ -f "$MANIFEST" ] || { echo "(manifest 不存在,无可恢复)"; return 0; }
@@ -241,8 +282,8 @@ cmd_restore() {
     if tmux has-session -t "$session" 2>/dev/null; then echo "restore: skip '$session'(已在)"; continue; fi
     mkdir -p "$dir" 2>/dev/null || true
     if [ -n "$startup" ]; then
-      # 与 cmd_new 同款:source ~/.profile 拿到 claude 的 PATH;startup 退出后 exec bash 保活
-      tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" '. "$HOME/.profile" 2>/dev/null; '"$startup"'; exec bash' \
+      # 与 cmd_new 同款:interactive shell 读取 ~/.bashrc 或 ~/.zshrc;startup 退出后 exec shell 保活
+      tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" "$(tmux_startup_command "$startup")" \
         && { echo "restore: 起 '$session'(type=$type)"; n=$((n+1)); } || echo "restore: 失败 '$session'" >&2
     else
       tmux -u new -d -x 200 -y 50 -s "$session" -c "$dir" \
