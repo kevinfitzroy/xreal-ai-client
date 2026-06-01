@@ -6,7 +6,8 @@
 
 ## #1 硬件键盘下中文 IME 拦截字母键,无法 raw ASCII 直通(SwiftTerm 终端)
 
-**状态**:未解决(已记录,不 block 核心)。优先级 P2。
+**状态**:**很可能已解决**(`TerminalHostView.textInputMode` override 强制英文输入模式)。真机实测:换该 override 的包后初次"仍弹",但**重进终端 / 字段重新获焦后自行恢复正常、字母直通** —— 推断 iOS 在 `becomeFirstResponder` 时才应用强制输入模式,初次未 re-apply。**待确认长期稳定**(多次进出终端 / 前后台切换 / 重启 app)。
+**残留风险**:override 取的是 `activeInputModes.first{en}`;若某用户**没装**英文硬件输入模式 → 返回 nil 回退中文 → IME 复现。可改成回退到任意非 CJK 模式兜底。
 
 ### 现象
 iOS 客户端终端改用原生 **SwiftTerm** 后,当**硬件键盘当前输入源是中文**时,在终端里敲字母键(`l`/`s`…)会触发**中文拼音 IME 组字**(出候选条 / marked text),而不是把 raw ASCII 直接送进 PTY。需要先在 IME 候选里确认才落字符。
