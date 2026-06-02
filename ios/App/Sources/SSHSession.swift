@@ -34,6 +34,7 @@ final class SSHSession {
     // PTY channel and MUST be retained + closed alongside it (see SshConnect lifecycle note).
     private var jumpClient: SSHClient?
     private var runTask: Task<Void, Never>?
+    private var label = "unbound"
 
     init() {
         var c: AsyncStream<PtyEvent>.Continuation!
@@ -49,6 +50,7 @@ final class SSHSession {
                  onConnected: @escaping () -> Void,
                  onFailure: @escaping (String) -> Void) {
         let startup = Self.tmuxAttachCommand(session)
+        label = "\(h.name)/\(session)\(via.map { " via=\($0.name)" } ?? "")"
         AgentLog.info("terminal", "connect start host=\(h.name) session=\(session) via=\(via?.name ?? "-")")
         runTask = Task {
             // `live` flips once the PTY is up. A throw BEFORE that = a real connect failure
@@ -66,7 +68,7 @@ final class SSHSession {
                 live = true
                 AgentLog.info("terminal", "PTY opening host=\(h.name) session=\(session)")
                 onConnected()
-                try await self.runPTY(client: client, startup: startup, cols: cols, rows: rows)
+                try await self.runPTY(client: client, startup: startup, hostName: h.name, session: session, cols: cols, rows: rows)
             } catch {
                 if !live {
                     AgentLog.error("terminal", "connect failed host=\(h.name) session=\(session): \(String(describing: error).prefix(180))")
@@ -96,7 +98,7 @@ final class SSHSession {
     /// Tear down: finish the stream (→ writer Task ends) and close the client
     /// (→ inbound terminates → the reader loop exits → withPTY returns).
     func close() {
-        AgentLog.debug("terminal", "close requested")
+        AgentLog.debug("terminal", "close requested \(label)")
         eventCont.finish()
         let client = self.client
         let jump = self.jumpClient
@@ -106,7 +108,7 @@ final class SSHSession {
         Task { try? await client?.close(); try? await jump?.close() }
     }
 
-    private func runPTY(client: SSHClient, startup: String, cols: Int, rows: Int) async throws {
+    private func runPTY(client: SSHClient, startup: String, hostName: String, session: String, cols: Int, rows: Int) async throws {
         let req = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: "xterm-256color",
@@ -116,36 +118,91 @@ final class SSHSession {
             terminalPixelHeight: 0,
             terminalModes: SSHTerminalModes([:])
         )
+        let openedAt = Date()
         try await client.withPTY(req) { [weak self] inbound, outbound in
             guard let self else { return }
             // Single consumer of the event stream → single PTY writer.
             let writer = Task {
+                var outboundEvents = 0
+                var outboundBytes = 0
+                let writerStarted = Date()
+                defer {
+                    AgentLog.debug(
+                        "terminal",
+                        "PTY writer ended host=\(hostName) session=\(session) duration=\(Self.seconds(since: writerStarted)) events=\(outboundEvents) bytes=\(outboundBytes)"
+                    )
+                }
                 // First input = the tmux startup line (login shell has narrow PATH;
                 // our own probe showed `tmux=none` over non-interactive exec, so we
                 // export PATH + locale then exec tmux). See tmuxAttachCommand.
-                try? await outbound.write(ByteBuffer(string: startup))
+                do {
+                    try await outbound.write(ByteBuffer(string: startup))
+                    outboundBytes += startup.utf8.count
+                } catch {
+                    AgentLog.warn("terminal", "PTY startup write failed host=\(hostName) session=\(session): \(String(describing: error).prefix(160))")
+                    return
+                }
                 for await ev in self.eventStream {
                     switch ev {
                     case .data(let d):
-                        try? await outbound.write(ByteBuffer(bytes: Array(d)))
+                        do {
+                            try await outbound.write(ByteBuffer(bytes: Array(d)))
+                            outboundEvents += 1
+                            outboundBytes += d.count
+                        } catch {
+                            AgentLog.warn("terminal", "PTY write failed host=\(hostName) session=\(session) bytes=\(d.count) sent=\(outboundBytes): \(String(describing: error).prefix(160))")
+                            return
+                        }
                     case .resize(let cols, let rows):
-                        try? await outbound.changeSize(cols: cols, rows: rows,
-                                                       pixelWidth: 0, pixelHeight: 0)
+                        do {
+                            try await outbound.changeSize(cols: cols, rows: rows,
+                                                          pixelWidth: 0, pixelHeight: 0)
+                        } catch {
+                            AgentLog.warn("terminal", "PTY resize failed host=\(hostName) session=\(session) size=\(cols)x\(rows): \(String(describing: error).prefix(160))")
+                        }
                     }
                 }
             }
             // Pump PTY output → onOutput. Loop keeps closure (and channel) alive.
-            for try await chunk in inbound {
-                switch chunk {
-                case .stdout(let buf), .stderr(let buf):
-                    var b = buf
-                    if let bytes = b.readBytes(length: b.readableBytes) {
-                        self.onOutput?(Data(bytes))
+            var inboundChunks = 0
+            var inboundBytes = 0
+            var lastOutputAt: Date?
+            do {
+                for try await chunk in inbound {
+                    switch chunk {
+                    case .stdout(let buf), .stderr(let buf):
+                        var b = buf
+                        if let bytes = b.readBytes(length: b.readableBytes) {
+                            inboundChunks += 1
+                            inboundBytes += bytes.count
+                            lastOutputAt = Date()
+                            self.onOutput?(Data(bytes))
+                        }
                     }
                 }
+                AgentLog.info(
+                    "terminal",
+                    "PTY inbound ended host=\(hostName) session=\(session) duration=\(Self.seconds(since: openedAt)) chunks=\(inboundChunks) bytes=\(inboundBytes) idle=\(Self.idle(lastOutputAt, openedAt: openedAt))"
+                )
+            } catch {
+                AgentLog.warn(
+                    "terminal",
+                    "PTY inbound error host=\(hostName) session=\(session) duration=\(Self.seconds(since: openedAt)) chunks=\(inboundChunks) bytes=\(inboundBytes) idle=\(Self.idle(lastOutputAt, openedAt: openedAt)): \(String(describing: error).prefix(160))"
+                )
+                writer.cancel()
+                throw error
             }
             writer.cancel()
         }
+    }
+
+    private static func seconds(since date: Date) -> String {
+        String(format: "%.1fs", Date().timeIntervalSince(date))
+    }
+
+    private static func idle(_ lastOutputAt: Date?, openedAt: Date) -> String {
+        guard let lastOutputAt else { return "no-output/\(seconds(since: openedAt))" }
+        return seconds(since: lastOutputAt)
     }
 
     /// attach-or-create the project's tmux session under UTF-8, with a non-interactive PATH wide

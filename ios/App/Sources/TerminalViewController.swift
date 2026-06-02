@@ -259,9 +259,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             // 网络恢复但 SSH 已断 → 尝试重连。
             AgentLog.info("network", "path recovered, try reconnect host=\(warmHost ?? "") session=\(warmSession ?? "")")
             autoReconnectAttempts = 0
-            _ = scheduleProxyReconnect(
+            _ = scheduleAutoReconnect(
                 host: warmHost!, session: warmSession ?? "",
-                name: warmHost!, type: "claude", usesProxy: true
+                name: warmHost!, type: "claude", route: "net-recover"
             )
         }
     }
@@ -579,6 +579,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         activeSessionName = p.session
         tmuxModeLikely = false
         let usesProxy = jump?.proxy != nil || (jump == nil && h.proxy != nil)
+        let reconnectRoute = usesProxy ? "proxy" : (jump != nil ? "via" : "direct")   // 日志/提示用标签;直连也会重连
         let viaNote = jump.map { " ⤳ \($0.name)" } ?? ""
         writeToTerm("连接 \(h.name)\(viaNote) … (\(p.session))\r\n")   // alias, never the real IP
 
@@ -607,7 +608,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.tmuxModeLikely = false
                 self.cancelKeepWarm()
                 if self.view_ == .terminal {
-                    if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
+                    if self.scheduleAutoReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, route: reconnectRoute) { return }
                     self.setChannelStrip(.disconnected, "SSH 通道已断开，返回列表重开此 project")
                     self.writeToTerm("\r\n\u{1b}[33m[连接已断开 — 按返回键回到列表,重开此 project 可重连]\u{1b}[0m\r\n")
                 }
@@ -650,7 +651,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                         self.cancelKeepWarm()
                     }
                     if self.view_ == .terminal {
-                        if self.scheduleProxyReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, usesProxy: usesProxy) { return }
+                        if self.scheduleAutoReconnect(host: h.name, session: p.session, name: p.name, type: p.type.rawValue, route: reconnectRoute) { return }
                         self.setChannelStrip(.disconnected, "SSH 连接失败")
                         self.writeToTerm("\r\nSSH 连接失败: \(err)\r\n")
                     }
@@ -700,13 +701,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func cancelAutoReconnect() { autoReconnectWork?.cancel(); autoReconnectWork = nil }
     private func cancelEchoWatch() { echoWatchWork?.cancel(); echoWatchWork = nil }
     @discardableResult
-    private func scheduleProxyReconnect(host: String, session: String, name: String, type: String, usesProxy: Bool) -> Bool {
+    private func scheduleAutoReconnect(host: String, session: String, name: String, type: String, route: String) -> Bool {
         guard autoReconnectAttempts < Self.maxReconnectAttempts else { return false }
         autoReconnectAttempts += 1
         let attempt = autoReconnectAttempts
         // 指数退避:1s→2s→4s→8s→16s,弱网下给链路恢复留时间,不疯狂重试耗尽电池。
         let delay = pow(2.0, Double(attempt - 1))
-        AgentLog.warn("network", "PTY dropped, auto reconnect \(attempt)/\(Self.maxReconnectAttempts) delay=\(Int(delay))s host=\(host) session=\(session)")
+        AgentLog.warn("network", "\(route) PTY dropped, auto reconnect \(attempt)/\(Self.maxReconnectAttempts) delay=\(Int(delay))s host=\(host) session=\(session)")
         setChannelStrip(.reconnecting, "SSH 通道中断，正在重连 \(attempt)/\(Self.maxReconnectAttempts)…")
         writeToTerm("\r\n\u{1b}[33m[SSH 通道断开,正在自动重连 \(attempt)/\(Self.maxReconnectAttempts)…]\u{1b}[0m\r\n")
         let work = DispatchWorkItem { [weak self] in
