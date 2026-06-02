@@ -2,6 +2,7 @@ import UIKit
 import GameController
 import AVFoundation
 import SwiftTerm
+import Network
 
 /// Core-loop controller. Mirrors Android's MainActivity:
 ///   hosts.json → Agent Station list → openProject → SSH(ed25519) PTY terminal → back.
@@ -77,7 +78,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var warmSession: String?
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
-    private static let maxProxyReconnectAttempts = 2
+    private static let maxReconnectAttempts = 5              // 指数退避:1s→2s→4s→8s→16s,总约31s
     private static let terminalBackgroundColor = UIColor(red: 0x28 / 255.0, green: 0x29 / 255.0, blue: 0x2b / 255.0, alpha: 1)
     private static let terminalForegroundColor = UIColor(red: 0xd6 / 255.0, green: 0xd8 / 255.0, blue: 0xdc / 255.0, alpha: 1)
     private static let channelStripHeight: CGFloat = 18
@@ -240,6 +241,29 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         #if DEBUG
         applyDebugLevers()
         #endif
+
+        // 监听网络路径变化（WiFi↔蜂窝切换、断网→恢复），主动重建 SSH 连接。
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(onNetworkPathChanged(_:)),
+            name: NetworkMonitor.pathChangedNotification,
+            object: nil
+        )
+        NetworkMonitor.shared.start()
+    }
+
+    @objc private func onNetworkPathChanged(_ note: Notification) {
+        guard view_ == .terminal else { return }
+        let available = (note.userInfo?["available"] as? Bool) ?? false
+        if available && ssh == nil && warmHost != nil {
+            // 网络恢复但 SSH 已断 → 尝试重连。
+            AgentLog.info("network", "path recovered, try reconnect host=\(warmHost ?? "") session=\(warmSession ?? "")")
+            autoReconnectAttempts = 0
+            _ = scheduleProxyReconnect(
+                host: warmHost!, session: warmSession ?? "",
+                name: warmHost!, type: "claude", usesProxy: true
+            )
+        }
     }
 
     private func configureTerminalTheme(_ terminalView: TerminalHostView) {
@@ -677,13 +701,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func cancelEchoWatch() { echoWatchWork?.cancel(); echoWatchWork = nil }
     @discardableResult
     private func scheduleProxyReconnect(host: String, session: String, name: String, type: String, usesProxy: Bool) -> Bool {
-        guard usesProxy, autoReconnectAttempts < Self.maxProxyReconnectAttempts else { return false }
+        guard autoReconnectAttempts < Self.maxReconnectAttempts else { return false }
         autoReconnectAttempts += 1
         let attempt = autoReconnectAttempts
-        let delay = 0.8 * Double(attempt)
-        AgentLog.warn("network", "proxy-backed PTY dropped, auto reconnect \(attempt)/\(Self.maxProxyReconnectAttempts) host=\(host) session=\(session)")
-        setChannelStrip(.reconnecting, "SSH 通道中断，正在重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…")
-        writeToTerm("\r\n\u{1b}[33m[xray tunnel 断开,正在自动重连 \(attempt)/\(Self.maxProxyReconnectAttempts)…]\u{1b}[0m\r\n")
+        // 指数退避:1s→2s→4s→8s→16s,弱网下给链路恢复留时间,不疯狂重试耗尽电池。
+        let delay = pow(2.0, Double(attempt - 1))
+        AgentLog.warn("network", "PTY dropped, auto reconnect \(attempt)/\(Self.maxReconnectAttempts) delay=\(Int(delay))s host=\(host) session=\(session)")
+        setChannelStrip(.reconnecting, "SSH 通道中断，正在重连 \(attempt)/\(Self.maxReconnectAttempts)…")
+        writeToTerm("\r\n\u{1b}[33m[SSH 通道断开,正在自动重连 \(attempt)/\(Self.maxReconnectAttempts)…]\u{1b}[0m\r\n")
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.view_ == .terminal else { return }
             self.autoReconnectWork = nil

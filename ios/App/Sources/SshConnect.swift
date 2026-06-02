@@ -61,6 +61,11 @@ enum SshConnect {
             hostKeyValidator: .acceptAnything()   // TOFU later; local rig only (matches existing code)
         )
         s.connectTimeout = .seconds(12)           // mirrors Android CONNECT_TIMEOUT_MS
+        // 弱网稳定性:15s 发一次 SSH keepalive(SSH_MSG_IGNORE),防蜂窝 NAT 清映射。
+        // Android 对应 sshj ServerAliveInterval；Citadel 封装 SwiftNIO SSH 的 keepAlive。
+        s.keepAliveInterval = .seconds(15)
+        // 关闭 Nagle 算法:终端场景是大量小包(按键/重绘),合并延迟会让交互感卡。
+        s.tcpNoDelay = true
         return s
     }
 
