@@ -71,10 +71,18 @@ final class VoiceController: AsrCallback {
         showOverlay("🎤 聆听中…", "")
 
         stream = asr.open(lang: lang, hotwords: hotwords, callback: GenCallback(gen: gen, owner: self))
-        recorder?.start { [weak self] chunk in
+        let recorderStarted = recorder?.start { [weak self] chunk in
             guard let self else { return }
             // 录音线程:仅当代数仍匹配才喂(重按后旧录音的尾块不进新会话)。
             if gen == self.asrGen { self.stream?.send(chunk) }
+        } ?? false
+        guard recorderStarted else {
+            stream?.cancel()
+            showOverlayJS("⚠️ 麦克风启动失败", "请检查麦克风权限后重试")
+            NSLog("[VoiceController] recorder start failed")
+            AgentLog.error("voice", "recorder start failed")
+            resetIdle()
+            return
         }
         NSLog("[VoiceController] STREAMING start lang=\(lang) recorder=\(recorder != nil) hotwords=\(hotwords.count)")
         AgentLog.info("voice", "stream start lang=\(lang) recorder=\(recorder != nil) hotwords=\(hotwords.count)")
@@ -117,7 +125,13 @@ final class VoiceController: AsrCallback {
         guard gen == asrGen else { return }
         NSLog("[VoiceController] ASR error: \(reason)")
         AgentLog.error("voice", "ASR error: \(reason.prefix(180))")
-        resetIdle()
+        showOverlayJS("⚠️ 语音中断", reason.isEmpty ? "请重试" : reason)
+        // 留 2 秒让用户看到错误原因,然后自动收起 overlay。
+        // gen 守卫:期间用户若又按了说话(asrGen 自增),别清掉新会话。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self, gen == self.asrGen else { return }
+            self.resetIdle()
+        }
     }
 
     // AsrCallback 协议要求(不带 gen 的版本不会被直接调用 —— 都经 GenCallback)。

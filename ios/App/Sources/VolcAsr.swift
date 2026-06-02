@@ -123,6 +123,7 @@ final class VolcAsr: Asr {
         private var session: URLSession?     // keeps a STRONG ref to us (delegate) until invalidated
         private var task: URLSessionWebSocketTask!
         private var watchdog: DispatchWorkItem?
+        private var pingWorkItem: DispatchWorkItem?
 
         init(appid: String, token: String, resourceId: String, hotwords: [String], cb: AsrCallback) {
             self.appid = appid; self.token = token; self.resourceId = resourceId
@@ -161,17 +162,22 @@ final class VolcAsr: Asr {
                 if self.finishRequested {
                     self.rawSend(VolcFrame.buildAudio(Data(), last: true))
                 }
+                self.schedulePing()
             }
         }
 
         func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-            // 服务端先关而没发 last 包:已有中间结果当 final。
             queue.async { [weak self] in
                 guard let self, !self.cancelled else { return }
                 NSLog("[VolcAsr] WS closed code=\(closeCode.rawValue) (finishRequested=\(self.finishRequested))")
                 AgentLog.warn("asr", "WS closed code=\(closeCode.rawValue) finishRequested=\(self.finishRequested)")
-                self.resolveFinal()
+                // 松手后才关:正常的 final;录着录着断:报错让用户感知并重录。
+                if self.finishRequested {
+                    self.resolveFinal()
+                } else {
+                    self.resolveError("连接中断，请重试")
+                }
             }
         }
 
@@ -271,9 +277,30 @@ final class VolcAsr: Asr {
         /// 关 WS + invalidate session。URLSession 强引用 delegate(self)直到 invalidate —— 不做
         /// 每次按住说话泄漏一个 VolcStream。invalidate 后 receive/delegate 回调不再来。
         private func teardownTransport() {
+            pingWorkItem?.cancel()
+            pingWorkItem = nil
             task?.cancel(with: .normalClosure, reason: nil)
             session?.finishTasksAndInvalidate()
             session = nil
+        }
+
+        /// 每 10 秒 WS ping 一次,防止中间 NAT/代理静默断开长连接。
+        private func schedulePing() {
+            let item = DispatchWorkItem { [weak self] in
+                guard let self, !self.cancelled, !self.done else { return }
+                self.task.sendPing { err in
+                    if let err {
+                        self.queue.async {
+                            guard !self.cancelled, !self.done else { return }
+                            NSLog("[VolcAsr] ping failed: \(err.localizedDescription)")
+                            self.resolveError("连接中断，请重试")
+                        }
+                    }
+                }
+                self.schedulePing()
+            }
+            pingWorkItem = item
+            queue.asyncAfter(deadline: .now() + 10, execute: item)
         }
 
         private func rawSend(_ data: Data) {
