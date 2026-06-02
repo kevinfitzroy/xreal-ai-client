@@ -28,6 +28,7 @@ final class NetworkMonitor {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let prevAvailable = self.isAvailable
+            let prevExpensive = self.isExpensive
             self.isAvailable = path.status == .satisfied
             self.isExpensive = path.isExpensive
 
@@ -45,10 +46,10 @@ final class NetworkMonitor {
                 self.interfaceKind = "none"
             }
 
-            // 仅当状态实际变化时才通知（降噪）。
-            if self.isAvailable != prevAvailable || path.status == .satisfied {
-                NSLog("[NetworkMonitor] path changed: available=\(self.isAvailable) expensive=\(self.isExpensive) if=\(self.interfaceKind)")
-            }
+            // 仅当 available / expensive 真变化时才 post(降噪)。否则弱网抖动会让 NWPathMonitor
+            // 反复回调同一状态,下游 onNetworkPathChanged 反复重置重连计数 → 击穿上限无限重连(issue #10)。
+            guard self.isAvailable != prevAvailable || self.isExpensive != prevExpensive else { return }
+            NSLog("[NetworkMonitor] path changed: available=\(self.isAvailable) expensive=\(self.isExpensive) if=\(self.interfaceKind)")
             DispatchQueue.main.async {
                 NotificationCenter.default.post(
                     name: Self.pathChangedNotification,
