@@ -300,3 +300,11 @@ HANDOFF.md 也定义了**何时该更新它自己**,保持长期可用。
 │       └── test/kotlin/...                        ← JVM 单测(ManifestFetcher/Hotwords/VolcFrame 等)
 └── scripts/                     ← setup-mac-host.sh、term-relay.py(调试期测试工具,见 §10.6)
 ```
+
+## 语音输入约定(xreal-ai-client)
+
+本会话的用户用 AR 眼镜 + 语音操作。以 `🎤 ` 开头的用户消息 = **语音转写**,可能有同音字 / 断词 / 专名识别错误。
+
+- **按意图理解,主动纠错**:别照字面执行明显是识别错的内容;不确定时先复述你的理解再动手。
+- **专名反复错** → 主动提示用户:"要把『X』加进这个项目的热词表吗?" 用户同意后,告诉 Maestro 把它加进本项目 manifest 的 `hotwords`(或让 Maestro 直接改)。热词表是 **project 级**的,各项目独立。
+- 非 `🎤 ` 开头的消息是键盘输入,正常对待。

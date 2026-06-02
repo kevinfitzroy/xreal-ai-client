@@ -56,7 +56,7 @@
 | P1.1b | Maestro CLAUDE.md + manifest 契约 | ✅ 文档 | `docs/orchestrator-CLAUDE.md` 定义角色 + manifest schema(`<base>/.xreal/projects.json`,Maestro写 app 读)。base path 存 app 配置(Valet 写),不存 manifest(防循环信任) |
 | P1.1c | app live-fetch manifest | ✅ 真机验证 | `ManifestFetcher` 经 `HostClient.catFile` 拉 `<basePath>/.xreal/projects.json` → `liveProjects`(findProject 按 **session** 查、seed 兜底)→ `pushHostList` 内容去重防闪烁。**刷新 = 事件驱动零空轮询**:列表首显 / back-to-list / onStart 各拉一次(`fetchExec` 单线程串行 + `fetchGen` 防乱序;拉取失败保留当前列表)。Maestro 改 manifest → 回列表即现 |
 | P1.2 | 真豆包 ASR(替 mock) | ✅ 真机验证 | **真双向流式**(`bigmodel_async` WS,`VolcFrame` 二进制协议+gzip)。按住即连 WS、`AudioRecorder` 边录边吐 200ms 裸 PCM 块(非 Opus)、中间结果实时上屏、松手发负包拿 final。会话式 `Asr` seam(`open/send/finish/cancel`+回调);race 防御=generation counter + `cancelled`/`done`。creds 走 Valet `asr.json`(无 UI)。**热词**:`corpus.context` 内联,`Hotwords.BASE`(Claude Code 控制命令)所有 project 继承 + manifest per-project 合并、按 token 预算 cap。语音键收为单 🎤。`VolcFrame`/`PcmChunker` 有 JVM 单测 |
-| P1.3 | **富媒体预览(图片 / HTML,host→client 推送)** | ⬜ 未开始 | 见下「§ 富媒体预览设计」。补终端表现单一:host 上 agent 调一个**协商好的 skill/脚本**(`.xreal/xreal-preview`)→ 经 **PTY 流内哨兵**(tmux-passthrough 包裹的 OSC,对用户不可见)触发 client 弹**全屏预览层**;文件**经 SSH :22 `base64` 拉取、本地 WebView 渲染**(复刻 `HostClient.catFile` 模式,**零服务端增量,不引 host web server**)。只看交互:方向键 pan/zoom、ESC/返回退层;HTML 走 **sandbox iframe** 防触达 `TerminalBridge`。跨端契约 = **SPEC §13** |
+| P1.3 | **富媒体预览(agent 产出 URL → 系统浏览器打开)** | ⬜ 未开始 | 见下「§ 富媒体预览设计(2026-06-02 简化)」。**零客户端改动**:host 上起 HTTP server(Valet 装一次),agent 产出图片/HTML 报告时输出完整 URL → 用户手机浏览器打开。app 不做 OSC 解析、不做 overlay、不做文件拉取。**限定**:仅直连公网 host(经 jump/隧道的 host 本期不支持)。⚠️ **前提**:当前 terminal 全屏触摸区被翻页/语音手势吃满,链接无法点击;需在终端加一个 URL 检测 + "在浏览器打开"手势/入口 |
 | P1.4 | **terminal 触摸热区 + 语音 overlay 点击语义** | ✅ iOS 真机验证 | 只按 terminal 核心显示区计算,有 vkey 时先排除 vkey。核心区纵向 5 份:top 2 unit = 上翻页,中间 2 unit = 下翻页,bottom 1 unit 的底部 2/3 = hold-to-talk 语音热区;翻页触发时用半透明区域 overlay 覆盖整个触发区,叠加加大加粗箭头并短暂驻留,让用户看清范围。overlay 出现后翻页自然失效,核心区只剩 3 块:overlay 卡片点击 = Enter 注入识别文本,卡片上方点击 = Esc 取消,卡片下方按压 = 重新录音。契约 = SPEC §6 |
 
 ### Project 创建模型(2026-05-29 收敛 —— Maestro agent 驱动)
@@ -89,49 +89,48 @@
 | P2.9 | session 驻留可配置(abduco/tmux/screen) | ⬜ 未开始(从 P1 降级) | `tmuxAttachCommand` 现在硬编 tmux;agent 类需 tmux(capture-pane),纯 SSH 可 abduco。做成 per-project 配置。不影响当前主流程,暂不抢 P1 |
 | P2.10 | host 分组头展示 | ✅ 已有(从 P1 降级) | index.html `<div class="host">` 按 host 分组。non-core 但有用,先留着;若将来嫌乱可降级 |
 
-### 富媒体预览设计(P1.3 —— 2026-06-01 立项,设计已收敛,未开工)
+### 富媒体预览设计(P1.3 —— 2026-06-02 简化,零客户端改动)
 
-**动机**:终端只能吐字符,表现单一。host 上的 agent 经常产出图片(截图 / 渲染图 / 图表)或 HTML(报告 / diff / 预览),用户在 AR 眼镜下没法离开 app 去开浏览器看。给 app 加一个**只读全屏富媒体预览层**,让 agent 一句话把图/页推到用户眼前。
+**动机不变**:终端只能吐字符。host 上的 agent 经常产出图片(截图/图表)或 HTML(报告/diff/预览)。用户需要看到这些内容。
 
-**两条硬决策(都被既有约束逼定,不是自由选型)**:
+**核心洞察(推翻了 2026-06-01 的设计)**:不需要 app 内预览层。最丰富、最完整的交互体验 = **系统浏览器**。不做 OSC 哨兵 → 文件拉取 → WebView overlay 这一整条链。
 
-1. **传输走 SSH :22,不做 host web server**。用户最初提的"host 上跑个 web 服务器"方案**违反零服务端增量硬约束**(CLAUDE.md §5:不引 ttyd/nginx/任何云端服务)→ 排除。改用已有 SSH 通道:client 开**一条独立短命 exec channel** 跑 `base64 <path>` 把文件字节拉回本地(**与现有 `HostClient.catFile` 拉 manifest/status 完全同模式**),WebView 本地渲染。
-2. **触发走 PTY 流内哨兵(in-band sentinel),不轮询文件**。host→client 唯一的 push 通道 = client 正在读的 PTY 流(client 事件驱动、不空轮询是既定偏好)。skill 往 stdout 打一个**对用户不可见的 OSC 转义序列**,载荷 = `{kind, path}`(**只带 host 上绝对路径引用,不内联字节**——大图 base64 灌进交互 PTY 会被 tmux 截断/卡渲染;引用 + 独立 exec 拉取更稳、能处理大文件)。
+**方案**:
 
-**数据流**:
 ```
-host agent:  .xreal/xreal-preview ./out.png
-   → 判 kind(扩展名 / file --mime)、path 绝对化
-   → 打 tmux-passthrough 包裹的 OSC 哨兵 {kind:"image", path:"/abs/out.png"}  ──PTY──▶
-client xterm.js:  registerOscHandler 解析 → Bridge.openPreview(kind, path)
-   → 原生侧独立 exec channel:  base64 <path>   ──SSH :22──▶  拿字节
-   → window.showPreview(kind, dataUri)  →  全屏 overlay <div>
-       image →  <img> fit-to-screen;方向键 pan(放大后)/ zoom;ESC/返回 关
-       html  →  <iframe sandbox srcdoc>(默认无 allow-scripts → 静态渲染,够"只看")
+host 侧(Valet 装一次):
+  装 nginx/caddy/python-http-server,配 web root(如 <base>/.xreal/www/),开端口(如 8443)
+
+agent 产出文件:
+  cp out.png <base>/.xreal/www/screenshots/
+  → 输出 "截图: https://<host>:8443/screenshots/out.png"
+
+用户在终端里看到 URL → 在浏览器里打开
 ```
 
-**⚠️ 头号技术风险 = tmux 拦截哨兵**:client 读到的是 **tmux 渲染层**,不是程序原始 stdout。tmux 默认**不转发未知 OSC** → 哨兵到不了外层 xterm.js。解法:skill 用 **tmux passthrough** 包裹(`\ePtmux;<ESC-seq>\e\\`)+ client 注入的 tmux conf 加一行 `set -g allow-passthrough on`(**已经在 `MainActivity.tmuxAttachCommand` 用 `-f conf` base64 注入 history-limit/翻页 bindings,加这一行同源、零服务端增量**)。纯 SSH/abduco(无 tmux)时哨兵直达 xterm.js,不用包裹。
+| 层 | 做什么 | 谁做 |
+|---|---|---|
+| HTTP server | 装一次,配 web root + 端口,防火墙开好 | Valet agent(host 接入时) |
+| 文件产出 | agent 把文件 cp/mv 到 web root 下 | project agent |
+| URL 输出 | agent 知道 web root 路径和 base URL,组装完整链接,写入终端 | project agent(CLAUDE.md 交代) |
+| 浏览 | 用户看到链接,在手机浏览器打开 | 用户 |
 
-**服务端侧 = 一个 skill/脚本(零增量)**:`xreal-preview <file>` 纯 bash,放 host 的 `.xreal/`(已授权的唯一例外目录,与 `xreal-project.sh`/`agent-status.sh` 同级);可同时包成 Claude Code skill `/preview <file>` 让 agent 直接调。判 kind + 绝对化 path + 打哨兵,**无 daemon / 无端口 / 无依赖**。
+**app 端改动 = 零**。不需要 OSC 解析、不需要文件拉取、不需要 overlay。
 
-**输入语义(SPEC §6 扩展,层栈 list → terminal → preview)**:
-- **方向键** = pan(放大后)/ zoom,**不透传给 SSH**(预览层吃掉)。
-- **ESC(硬件键)/ F2(8BitDo 返回)** = **关预览层退一层回 terminal**,不直接回 list。即"返回"语义升级成"退出当前最上层"。
-- 物理映射沿用 per-device 表(Beam Pro:方向键 = 8BitDo DPAD;关闭 = F2)。
+**⚠️ 前提条件(当前阻塞)**:Android `index.html` 和 iOS 的终端页**整个触摸区被翻页手势(5-unit 热区)+ 语音 hold-to-talk 吃满**,终端内链接无法被点击。
 
-**安全契约**:
-- 预览 overlay / iframe **绝不能访问 `TerminalBridge`**——HTML 走 `<iframe sandbox>`(默认无 `allow-scripts`、无 `allow-same-origin`),防恶意/失控 HTML 反向触达 SSH 输入或 bridge。
-- 拉取文件**大小上限**(建议图 ≤ 8MB / html ≤ 2MB),超限拒绝。
-- **kind 白名单**:image(png/jpg/webp/gif)、html;其它 kind 拒绝。path 来自 host(同 SSH 用户,可信),但仍 cap size + 白名单兜底。
+- **iOS**:`TerminalViewController` 的 `handleTermPageTap` / `handleTermVoicePress` / `handleTermReturnPan` 瓜分了整个 `term.frame`;SwiftTerm 自身的文本选择手势已被禁掉(`isEnabled = false`)
+- **Android**:终端可视区没有链接点击处理;`index.html` 的键盘事件监听在 terminal 态交给 xterm
 
-**分期**:
-- **v1**:图片(png/jpg/webp/gif)。最小闭环:哨兵 → 拉取 → 全屏渲染 → 方向键 pan → ESC 退。
-- **v2**:静态 HTML(`<iframe sandbox srcdoc>` 无脚本)。**自含单文件**;带相对资源/外链的 HTML 暂不支持(要支持需 tar 目录或内联资源,后置)。
-- **v3(可选)**:带脚本 HTML(图表等)需放开 `allow-scripts`,安全面变大,单独评估。
+**解法(本期做)**:终端态增加一个**链接检测 + 打开入口**——xterm/SwiftTerm 检测到 URL pattern → 提供快捷方式(比如长按 / 底部出现"在浏览器打开"条 / 或 F1 长按触发)。不改变翻页/语音手势的现有行为。
 
-**跨端**:协议(哨兵格式 / kind 枚举 / 拉取约定 / overlay 行为 / 输入语义 / 安全)= **SPEC §13**,Android/iOS 同实现。平台落点:Android = WebView overlay div + xterm.js OSC handler + sshj exec;iOS = WKWebView + 同 `index.html` overlay + Citadel exec channel。
+**限定**:**仅直连公网 host 有效**。经 jump(ProxyJump)的 host 和经 SSH-over-443 隧道(vmess)的 host 本期不支持 —— 手机浏览器无法到达内网 host,也不在 xray 隧道里。
 
-**接口点(开工时挂这些,搁置也留着)**:① `TerminalBridge` 加 `@JavascriptInterface openPreview(kind, path)`;② native 侧复用 `HostClient` 式独立 exec 拉 `base64`;③ `index.html` 加 `window.showPreview(kind, dataUri)` + 全屏 overlay + OSC handler 注册;④ `tmuxAttachCommand` 注入 `set -g allow-passthrough on`;⑤ 输入路由把预览层打开态纳入层栈(方向键/ESC 拦截)。
+**host 侧交付物**:
+- Valet agent 脚本:装 HTTP server(如 `python3 -m http.server` 或 caddy)、配 web root(`<base>/.xreal/www/`)、开端口、防火墙
+- Maestro handoff:告诉每个 project agent web root 路径 + base URL,让它知道"产出文件放到哪、链接怎么拼"
+
+**跨端**:无需 SPEC 契约(无 app 端行为)。host 上的配置在 agent-setup-guide 里记。
 
 ---
 
