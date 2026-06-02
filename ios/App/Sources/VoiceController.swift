@@ -127,13 +127,10 @@ final class VoiceController: AsrCallback {
         AgentLog.error("voice", "ASR error: \(reason.prefix(180))")
         showOverlayJS("⚠️ 语音中断", reason.isEmpty ? "请重试" : reason)
         // 留 2 秒让用户看到错误原因,然后自动收起 overlay。
+        // gen 守卫:期间用户若又按了说话(asrGen 自增),别清掉新会话。
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self, self.state != .idle else { return }
-            self.state = .idle
-            self.currentText = nil
-            self.inputWarning = nil
-            self.stream = nil
-            self.hideOverlayJS()
+            guard let self, gen == self.asrGen else { return }
+            self.resetIdle()
         }
     }
 
