@@ -61,12 +61,13 @@ class SshJump private constructor(
                 dialHost = spec.host; dialPort = spec.port
                 verifier = spec.knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
             }
-            val jc = SSHClient().apply {
+            val jc = SSHClient(keepAliveSshConfig()).apply {
                 connectTimeout = CONNECT_TIMEOUT_MS
                 addHostKeyVerifier(verifier)
                 connect(dialHost, dialPort)
                 authPublickey(spec.user, spec.privateKeyPath)
             }
+            jc.startKeepAlive()   // 跳板外层也配 keepalive,主动探测跳板死亡(#12)
             val ss = ServerSocket().apply {
                 reuseAddress = true
                 bind(InetSocketAddress("127.0.0.1", 0))   // 0 = 系统分配临时端口
