@@ -151,5 +151,9 @@ internal fun keepAliveSshConfig(): Config = DefaultConfig().apply {
 /** 连接成功后启动 keepalive 探测(须在 connect 之后调)。 */
 internal fun SSHClient.startKeepAlive() {
     connection.keepAlive.keepAliveInterval = SSH_KEEPALIVE_INTERVAL_SEC
-    (connection.keepAlive as? KeepAliveRunner)?.maxAliveCount = SSH_KEEPALIVE_MAX_COUNT
+    // maxAliveCount 只在 KeepAliveRunner(= KEEP_ALIVE provider)上有。别用 as? 静默 no-op:若将来升级
+    // sshj 改了内部实现致 cast 失败,maxAliveCount 会退回 sshj 默认、偏离我们要的 45s 判死阈值 → 落 warning 及早发现。
+    val ka = connection.keepAlive
+    if (ka is KeepAliveRunner) ka.maxAliveCount = SSH_KEEPALIVE_MAX_COUNT
+    else AppLog.w("SshConnection", "keepAlive 非 KeepAliveRunner(${ka.javaClass.simpleName}),maxAliveCount 未设")
 }
