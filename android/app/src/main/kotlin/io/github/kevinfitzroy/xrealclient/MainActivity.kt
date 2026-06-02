@@ -10,6 +10,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.util.Base64
 import android.util.Log
@@ -56,6 +58,13 @@ class MainActivity : Activity() {
     // open 序号:快速 open→back→open 时,在途 SSH 连接凭此判断自己是否已 obsolete(advisor 抓的 race)
     @Volatile private var openSeq = 0
 
+    // 自动重连(#13):断连/连接失败 → 指数退避重连;网络恢复也触发一轮。currentOpen 记当前 project(重连参数)。
+    private data class OpenSpec(val host: String, val session: String, val name: String, val type: String)
+    @Volatile private var currentOpen: OpenSpec? = null
+    private var reconnectAttempts = 0
+    private var reconnectRunnable: Runnable? = null
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+
     private var backupVoiceDigit = -1
     private var backupVoiceKey = -1
 
@@ -96,7 +105,10 @@ class MainActivity : Activity() {
         get() = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     @Volatile private var lastNetCap: String? = null
     private val netCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(n: Network) = AppLog.i(TAG, "net AVAILABLE $n")
+        override fun onAvailable(n: Network) {
+            AppLog.i(TAG, "net AVAILABLE $n")
+            runOnUiThread { onNetworkRecovered() }   // 网络恢复 → 若连接已断,触发一轮重连(#13)
+        }
         override fun onLost(n: Network) = AppLog.w(TAG, "net LOST $n (默认网络断 → 在用的 SSH 会被撕掉)")
         override fun onCapabilitiesChanged(n: Network, c: NetworkCapabilities) {
             val sig = "$n vpn=${c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)}" +
@@ -121,7 +133,7 @@ class MainActivity : Activity() {
 
         bridge = TerminalBridge(
             initial = activeChannel,
-            onOpenProject = ::onOpenProject,
+            onOpenProject = { h, s, n, t -> onOpenProject(h, s, n, t) },   // lambda 包装:onOpenProject 带默认参 isReconnect,方法引用类型不匹配
             onVoice = { down, lang ->
                 val kc = if (lang == "en") VoiceDaemon.KEY_F14 else VoiceDaemon.KEY_F13
                 if (down) voiceDaemon.onKeyDown(kc) else voiceDaemon.onKeyUp(kc)
@@ -303,10 +315,12 @@ class MainActivity : Activity() {
      * JS 列表 Enter 进入 project:查到真实 host 配置 → 后台连 SSH(attach 该 project 的 tmux
      * session)→ 热切 channel;查不到(mock 数据)→ 回退干净 LocalEcho 演示。
      */
-    private fun onOpenProject(host: String, session: String, name: String, type: String) {
-        AppLog.i(TAG, "openProject host=$host session=$session name=$name type=$type seq=${openSeq + 1}")
+    private fun onOpenProject(host: String, session: String, name: String, type: String, isReconnect: Boolean = false) {
+        AppLog.i(TAG, "openProject host=$host session=$session name=$name type=$type seq=${openSeq + 1} reconnect=$isReconnect")
         val seq = ++openSeq
         view = View.TERMINAL
+        currentOpen = OpenSpec(host, session, name, type)               // 记当前 project(重连用)
+        if (!isReconnect) { reconnectAttempts = 0; cancelReconnect() }  // 用户主动打开 → 清重连状态
         runOnUiThread {
             webView.evaluateJavascript(
                 "window.showTerminal(${org.json.JSONObject.quote(name)}, ${org.json.JSONObject.quote(type)})", null,
@@ -344,14 +358,17 @@ class MainActivity : Activity() {
                 ssh.connect(80, 24)   // 初始尺寸;showTerminal 的 fit 会触发 onResize 校正
                 AppLog.i(TAG, "ssh connected host=${h.name} session=${p.sessionName} (seq=$seq obsolete=${seq != openSeq})")
                 runOnUiThread {
-                    if (seq == openSeq && view == View.TERMINAL) switchTo(ssh)
-                    else runCatching { ssh.close() }   // 用户已走开 → 关掉,别泄漏连接
+                    if (seq == openSeq && view == View.TERMINAL) {
+                        switchTo(ssh)
+                        reconnectAttempts = 0; cancelReconnect()   // 连上了 → 清重连状态
+                    } else runCatching { ssh.close() }   // 用户已走开 → 关掉,别泄漏连接
                 }
             } catch (e: Exception) {
                 // 异常类名才分得清病因:SocketTimeout/NoRouteToHost=VPN 死,UserAuth=认证,TransportException=host key…
                 AppLog.w(TAG, "ssh connect 失败 host=${h.name}: ${e.javaClass.simpleName}: ${e.message}", e)
                 runOnUiThread {
-                    if (seq == openSeq) {
+                    // 连接失败也走自动重连(host 可能还没恢复);耗尽/已回列表才落 LocalEcho + 报错。
+                    if (seq == openSeq && !scheduleReconnect()) {
                         switchTo(LocalEchoChannel())
                         writeToTerm("\r\nSSH 连接失败: ${e.javaClass.simpleName}: ${e.message}\r\n")
                     }
@@ -363,11 +380,50 @@ class MainActivity : Activity() {
     private fun backToList() {
         AppLog.i(TAG, "backToList (from view=$view)")
         openSeq++   // 让在途的 SSH 连接知道自己已 obsolete(回来后别再错切)
+        cancelReconnect(); reconnectAttempts = 0; currentOpen = null   // 主动回列表 → 清重连状态
         view = View.LIST
         applyProjectHotwords(null)     // 回列表:语音热词回退 BASE
         runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
         switchTo(LocalEchoChannel())   // 断开当前 project 的 SSH(switchTo 关掉旧 channel)
         refreshManifests()   // 回列表即拉一次:刚让 Maestro 建的新项目此刻出现(主刷新时机)
+    }
+
+    /** 调度一次自动重连(指数退避 1→2→4→8→16s)。返回 false=已回列表/无当前 project/已达上限。须主线程调。 */
+    private fun scheduleReconnect(): Boolean {
+        if (view != View.TERMINAL) return false
+        val spec = currentOpen ?: return false
+        if (reconnectAttempts >= MAX_RECONNECT) return false
+        cancelReconnect()   // 防多触发源(reader 断连 + 网络恢复)叠加排程(对齐 iOS #11)
+        reconnectAttempts++
+        val attempt = reconnectAttempts
+        val delayMs = (1L shl (attempt - 1)) * 1000L   // 1→2→4→8→16s:弱网留恢复时间,不疯狂重试耗电
+        AppLog.w(TAG, "auto reconnect $attempt/$MAX_RECONNECT delay=${delayMs / 1000}s host=${spec.host} session=${spec.session}")
+        writeToTerm("\r\n[SSH 通道断开,正在自动重连 $attempt/$MAX_RECONNECT…]\r\n")
+        val r = Runnable {
+            reconnectRunnable = null
+            if (view == View.TERMINAL) onOpenProject(spec.host, spec.session, spec.name, spec.type, isReconnect = true)
+        }
+        reconnectRunnable = r
+        reconnectHandler.postDelayed(r, delayMs)
+        return true
+    }
+
+    private fun cancelReconnect() {
+        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable = null
+    }
+
+    /**
+     * 网络恢复联动:网络回来 + 在终端 + 当前连接已断 + 没有重连在飞 → 给一轮满额重连。
+     * 守卫对齐 iOS #11(避免弱网抖动击穿上限无限重连):有重连在飞时不重复触发、不清零计数。
+     */
+    private fun onNetworkRecovered() {
+        if (view != View.TERMINAL) return
+        if (reconnectRunnable != null) return
+        if (currentOpen == null) return
+        if (activeChannel.isConnected()) return
+        reconnectAttempts = 0
+        scheduleReconnect()
     }
 
     /** 设当前 project 的语音上下文:热词(BASE 继承 + per-project)+ 是否加 🎤 marker(仅 AI-agent 类)。 */
@@ -536,12 +592,16 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 if (gen == readerGen) { dropped = true; AppLog.w(TAG, "pty-reader[$gen] stopped: ${e.javaClass.simpleName}: ${e.message}") }
             }
-            // 真断连(当前 reader,非切 project 被换掉)→ 终端给可见提示,不再静默停帧。keepalive 探测到
-            // 半开死连接会主动 disconnect → read 在此退出。自动重连见 #13。
+            // 真断连(当前 reader,非切 project 被换掉)→ 自动重连(指数退避);耗尽/已回列表才给可见提示。
+            // keepalive 探测到半开死连接会主动 disconnect → read 在此退出。
             if (dropped && gen == readerGen) {
-                val notice = "\r\n\u001b[33m[连接已断开 — 按返回键回列表重开此 project]\u001b[0m\r\n"
-                val nb64 = Base64.encodeToString(notice.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$nb64')", null) }
+                runOnUiThread {
+                    if (!scheduleReconnect()) {   // 断连 → 自动重连;耗尽/已回列表才提示返回
+                        val notice = "\r\n\u001b[33m[连接已断开 — 按返回键回列表重开此 project]\u001b[0m\r\n"
+                        val nb64 = Base64.encodeToString(notice.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                        webView.evaluateJavascript("window.writeToTerm('$nb64')", null)
+                    }
+                }
             }
         }
     }
@@ -564,6 +624,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val MAX_RECONNECT = 5   // 指数退避 1→2→4→8→16s,总约 31s
         private const val REQ_MIC = 0x101
         // F15(API 34 起 KEYCODE_F15=328,裸 int):终端→返回列表的专用功能键。
         // 用它代替语义不定的 BACK —— 8BitDo 的 "BACK" 标签发什么键码由固件决定,F15 是确定的。
