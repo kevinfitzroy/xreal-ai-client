@@ -243,13 +243,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         #endif
 
         // 监听网络路径变化（WiFi↔蜂窝切换、断网→恢复），主动重建 SSH 连接。
+        // monitor 本身由 AppDelegate 启动(app 级生命周期);这里只注册监听。
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(onNetworkPathChanged(_:)),
             name: NetworkMonitor.pathChangedNotification,
             object: nil
         )
-        NetworkMonitor.shared.start()
     }
 
     @objc private func onNetworkPathChanged(_ note: Notification) {

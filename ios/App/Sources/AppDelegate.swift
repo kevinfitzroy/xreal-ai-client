@@ -20,6 +20,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         window.rootViewController = nav
         window.makeKeyAndVisible()
         self.window = window
+        NetworkMonitor.shared.start()   // app 级网络监控,单一启动点(幂等)
         AgentLog.info("app", "launch")
         return true
     }

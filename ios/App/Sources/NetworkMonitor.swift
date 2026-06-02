@@ -17,10 +17,14 @@ final class NetworkMonitor {
     private(set) var isExpensive = false
     /// 当前接口类型描述（调试用）。
     private(set) var interfaceKind: String = "unknown"
+    private var started = false
 
     private init() {}
 
+    /// 幂等:重复调用是 no-op(NWPathMonitor.start 不能调两次)。由 AppDelegate 启动时调一次。
     func start() {
+        guard !started else { return }
+        started = true
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let prevAvailable = self.isAvailable
@@ -58,6 +62,8 @@ final class NetworkMonitor {
     }
 
     func stop() {
+        guard started else { return }
+        started = false
         monitor.cancel()
         NSLog("[NetworkMonitor] stopped")
     }
