@@ -319,8 +319,9 @@ class MainActivity : Activity() {
         AppLog.i(TAG, "openProject host=$host session=$session name=$name type=$type seq=${openSeq + 1} reconnect=$isReconnect")
         val seq = ++openSeq
         view = View.TERMINAL
-        currentOpen = OpenSpec(host, session, name, type)               // 记当前 project(重连用)
-        if (!isReconnect) { reconnectAttempts = 0; cancelReconnect() }  // 用户主动打开 → 清重连状态
+        currentOpen = OpenSpec(host, session, name, type)   // @Volatile:openProject 在 WebView IO 线程(非 main)
+        // reconnect 状态机只在 main 跑(@JavascriptInterface 的 openProject/goHome 都在 IO 线程)→ 重置回 main
+        if (!isReconnect) runOnUiThread { reconnectAttempts = 0; cancelReconnect() }
         runOnUiThread {
             webView.evaluateJavascript(
                 "window.showTerminal(${org.json.JSONObject.quote(name)}, ${org.json.JSONObject.quote(type)})", null,
@@ -380,7 +381,8 @@ class MainActivity : Activity() {
     private fun backToList() {
         AppLog.i(TAG, "backToList (from view=$view)")
         openSeq++   // 让在途的 SSH 连接知道自己已 obsolete(回来后别再错切)
-        cancelReconnect(); reconnectAttempts = 0; currentOpen = null   // 主动回列表 → 清重连状态
+        currentOpen = null   // @Volatile(backToList 可从 IO 线程 onGoHome 进)
+        runOnUiThread { cancelReconnect(); reconnectAttempts = 0 }   // reconnect 状态机只在 main 跑
         view = View.LIST
         applyProjectHotwords(null)     // 回列表:语音热词回退 BASE
         runOnUiThread { webView.evaluateJavascript("window.showList()", null) }
@@ -421,7 +423,9 @@ class MainActivity : Activity() {
         if (view != View.TERMINAL) return
         if (reconnectRunnable != null) return
         if (currentOpen == null) return
-        if (activeChannel.isConnected()) return
+        // LocalEcho(重连耗尽后的 fallback)isConnected() 恒 true → 必须排除,否则耗尽后网络恢复
+        // (出地铁隧道等,>31s 必耗尽)永不再重连。只有真 SSH 连接还活着才跳过。
+        if (activeChannel !is LocalEchoChannel && activeChannel.isConnected()) return
         reconnectAttempts = 0
         scheduleReconnect()
     }
