@@ -255,8 +255,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     @objc private func onNetworkPathChanged(_ note: Notification) {
         guard view_ == .terminal else { return }
         let available = (note.userInfo?["available"] as? Bool) ?? false
-        if available && ssh == nil && warmHost != nil {
-            // 网络恢复但 SSH 已断 → 尝试重连。
+        // autoReconnectWork == nil:已有重连在飞时别重复触发,否则弱网抖动反复清零计数 → 击穿上限(issue #10)。
+        if available && ssh == nil && warmHost != nil && autoReconnectWork == nil {
+            // 网络恢复但 SSH 已断、且当前没有重连排程中 → 给一轮满额重连预算。
             AgentLog.info("network", "path recovered, try reconnect host=\(warmHost ?? "") session=\(warmSession ?? "")")
             autoReconnectAttempts = 0
             _ = scheduleAutoReconnect(
@@ -703,6 +704,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     @discardableResult
     private func scheduleAutoReconnect(host: String, session: String, name: String, type: String, route: String) -> Bool {
         guard autoReconnectAttempts < Self.maxReconnectAttempts else { return false }
+        cancelAutoReconnect()   // 防御:同时只允许一个重连 work 在飞,避免多触发源(网络回调 + PTY drop)叠加排程
         autoReconnectAttempts += 1
         let attempt = autoReconnectAttempts
         // 指数退避:1s→2s→4s→8s→16s,弱网下给链路恢复留时间,不疯狂重试耗尽电池。
