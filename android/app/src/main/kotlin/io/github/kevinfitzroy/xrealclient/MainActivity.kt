@@ -524,16 +524,24 @@ class MainActivity : Activity() {
         val gen = ++readerGen
         thread(start = true, name = "pty-reader-$gen", isDaemon = true) {
             val buf = ByteArray(4096)
+            var dropped = false
             try {
                 val ins = ch.inputStream()
                 while (gen == readerGen) {
                     val n = ins.read(buf)
-                    if (n <= 0) break
+                    if (n <= 0) { dropped = true; break }
                     val b64 = Base64.encodeToString(buf, 0, n, Base64.NO_WRAP)
                     runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$b64')", null) }
                 }
             } catch (e: Exception) {
-                if (gen == readerGen) AppLog.w(TAG, "pty-reader[$gen] stopped: ${e.javaClass.simpleName}: ${e.message}")
+                if (gen == readerGen) { dropped = true; AppLog.w(TAG, "pty-reader[$gen] stopped: ${e.javaClass.simpleName}: ${e.message}") }
+            }
+            // 真断连(当前 reader,非切 project 被换掉)→ 终端给可见提示,不再静默停帧。keepalive 探测到
+            // 半开死连接会主动 disconnect → read 在此退出。自动重连见 #13。
+            if (dropped && gen == readerGen) {
+                val notice = "\r\n\u001b[33m[连接已断开 — 按返回键回列表重开此 project]\u001b[0m\r\n"
+                val nb64 = Base64.encodeToString(notice.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                runOnUiThread { webView.evaluateJavascript("window.writeToTerm('$nb64')", null) }
             }
         }
     }

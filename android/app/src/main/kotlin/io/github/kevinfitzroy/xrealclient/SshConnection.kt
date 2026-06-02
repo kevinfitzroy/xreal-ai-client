@@ -1,8 +1,12 @@
 package io.github.kevinfitzroy.xrealclient
 
+import net.schmizz.sshj.Config
+import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.SessionChannel
+import net.schmizz.keepalive.KeepAliveProvider
+import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import java.io.File
@@ -69,7 +73,7 @@ class SshConnection(
             verifier = knownHostsFile?.let { TofuKnownHosts(it) } ?: PromiscuousVerifier()
         }
 
-        val c = SSHClient().apply {
+        val c = SSHClient(keepAliveSshConfig()).apply {
             // connect 超时:VPN 掉线时 socket 连接会长时间挂死(ssh-connect 线程静默卡住,日志只剩"连接…"
             // 后再无下文)。给个上限 → 快速抛 SocketTimeout,onOpenProject 能捕获 + 落日志。
             connectTimeout = CONNECT_TIMEOUT_MS
@@ -77,6 +81,7 @@ class SshConnection(
             connect(connectHost, connectPort)
             authPublickey(user, privateKeyPath)
         }
+        c.startKeepAlive()   // 连接后启动 keepalive 探测(防半开连接静默卡死,#12)
         AppLog.i(TAG, "tcp+auth ok${if (jump != null) " via jump ${jump.host}" else ""} (user=$user pty=${cols}x${rows})")
         val s = c.startSession().apply {
             allocatePTY("xterm-256color", cols, rows, 0, 0, emptyMap())
@@ -126,4 +131,29 @@ class SshConnection(
         const val TAG = "SshConnection"
         const val CONNECT_TIMEOUT_MS = 12_000
     }
+}
+
+// ── sshj keepalive(防半开连接静默卡死,issue #12)─────────────────────────────────
+// 终端是长连接,会长时间正常 idle(用户不操作 + 服务端无输出)。所以故意**不设 socket read
+// timeout** —— 激进 read timeout 会误杀活连接。改用 KEEP_ALIVE keepalive:发 keepalive@openssh.com
+// 并等回复,能区分「idle 但活着」(对端回复)和「半开死连接」(Mac 休眠/NAT 清映射,对端不回复),
+// 连续 SSH_KEEPALIVE_MAX_COUNT 次无应答 → sshj 主动 disconnect → PTY reader 的 read() 返回 →
+// 不再永久 hang。(HEARTBEAT 模式只发 SSH_MSG_IGNORE 不验回复,检测不了半开连接,故不用。)
+
+private const val SSH_KEEPALIVE_INTERVAL_SEC = 15
+private const val SSH_KEEPALIVE_MAX_COUNT = 3      // 15s × 3 = 45s 无应答判死,主动断开
+
+/** 配好 KEEP_ALIVE provider 的 sshj Config(SshConnection + SshJump 共用)。 */
+internal fun keepAliveSshConfig(): Config = DefaultConfig().apply {
+    keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
+}
+
+/** 连接成功后启动 keepalive 探测(须在 connect 之后调)。 */
+internal fun SSHClient.startKeepAlive() {
+    connection.keepAlive.keepAliveInterval = SSH_KEEPALIVE_INTERVAL_SEC
+    // maxAliveCount 只在 KeepAliveRunner(= KEEP_ALIVE provider)上有。别用 as? 静默 no-op:若将来升级
+    // sshj 改了内部实现致 cast 失败,maxAliveCount 会退回 sshj 默认、偏离我们要的 45s 判死阈值 → 落 warning 及早发现。
+    val ka = connection.keepAlive
+    if (ka is KeepAliveRunner) ka.maxAliveCount = SSH_KEEPALIVE_MAX_COUNT
+    else AppLog.w("SshConnection", "keepAlive 非 KeepAliveRunner(${ka.javaClass.simpleName}),maxAliveCount 未设")
 }
