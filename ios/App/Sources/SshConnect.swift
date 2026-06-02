@@ -61,6 +61,8 @@ enum SshConnect {
             hostKeyValidator: .acceptAnything()   // TOFU later; local rig only (matches existing code)
         )
         s.connectTimeout = .seconds(12)           // mirrors Android CONNECT_TIMEOUT_MS
+        // 注:keepalive / tcpNoDelay 在 Citadel 0.12.1 的 SSHClientSettings 上不存在(只有 connectTimeout),
+        // 弱网保活改由 app 层负责 —— NetworkMonitor 感知链路变化 + 主动重连(见 TerminalViewController)。
         return s
     }
 
