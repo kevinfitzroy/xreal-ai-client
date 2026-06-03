@@ -2,19 +2,20 @@ import UIKit
 
 /// 触屏虚拟键盘的动作。文本输入靠语音/硬件键,这里只放终端控制键。
 enum TerminalKeyAction {
-    case up, down, left, right, enter, esc, shiftTab, ctrlC, ctrlB, delWord
+    case up, down, left, right, enter, esc, shiftTab, ctrlC, ctrlB, delWord, paste
 }
 
 /// 触屏虚拟键盘(原生),**无硬件键盘时**挂为 SwiftTerm 的 `inputAccessoryView`。
 ///
 /// 横屏单行:
-/// esc left up down right delete-word ctrl-b shift-tab ctrl-c enter enter
+/// esc paste left up down right delete-word ctrl-b shift-tab ctrl-c enter enter
 ///
 /// 竖屏双行:
-/// esc up   empty delete-word ctrl-b enter
+/// esc up   paste delete-word ctrl-b enter
 /// left down right shift-tab   ctrl-c enter
 ///
 /// Enter 在单行占 2 格,双行占最右侧整列。返回靠手势,语音靠 terminal 底部热区,不再占 vkey。
+/// paste(第一排第三格,原空缺)= 文字/图片粘贴,实际动作在 VC.handleKeyBarAction。
 final class TerminalKeyBar: UIInputView {
     var onAction: ((TerminalKeyAction) -> Void)?
 
@@ -59,7 +60,7 @@ final class TerminalKeyBar: UIInputView {
         backgroundColor = UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1)
 
         for spec in Self.keySpecs {
-            let b = makeButton(symbol: spec.symbol, sub: spec.sub, tap: spec.action)
+            let b = makeButton(symbol: spec.symbol, sub: spec.sub, image: spec.image, tap: spec.action)
             buttons[spec.action] = b
             addSubview(b)
         }
@@ -93,15 +94,15 @@ final class TerminalKeyBar: UIInputView {
     private func layoutSingleRow() {
         buttons.values.forEach { $0.isHidden = false }
         configureEnter(compact: true)
-        let actions: [TerminalKeyAction] = [.esc, .left, .up, .down, .right, .delWord, .ctrlB, .shiftTab, .ctrlC]
+        let actions: [TerminalKeyAction] = [.esc, .paste, .left, .up, .down, .right, .delWord, .ctrlB, .shiftTab, .ctrlC]
         let content = contentRect(rows: 1)
-        let cols: CGFloat = 11
+        let cols: CGFloat = 12
         let cellW = (content.width - Self.hSpacing * (cols - 1)) / cols
         let y = content.minY
         for (i, action) in actions.enumerated() {
             place(action, x: content.minX + CGFloat(i) * (cellW + Self.hSpacing), y: y, w: cellW, h: Self.rowHeight)
         }
-        place(.enter, x: content.minX + 9 * (cellW + Self.hSpacing), y: y, w: cellW * 2 + Self.hSpacing, h: Self.rowHeight)
+        place(.enter, x: content.minX + 10 * (cellW + Self.hSpacing), y: y, w: cellW * 2 + Self.hSpacing, h: Self.rowHeight)
     }
 
     private func layoutDoubleRow() {
@@ -115,7 +116,7 @@ final class TerminalKeyBar: UIInputView {
 
         place(.esc,      x: colX(0, cellW, in: content), y: y1, w: cellW, h: Self.rowHeight)
         place(.up,       x: colX(1, cellW, in: content), y: y1, w: cellW, h: Self.rowHeight)
-        // col 2 is intentionally empty.
+        place(.paste,    x: colX(2, cellW, in: content), y: y1, w: cellW, h: Self.rowHeight)
         place(.delWord,  x: colX(3, cellW, in: content), y: y1, w: cellW, h: Self.rowHeight)
         place(.ctrlB,    x: colX(4, cellW, in: content), y: y1, w: cellW, h: Self.rowHeight)
 
@@ -143,17 +144,18 @@ final class TerminalKeyBar: UIInputView {
         buttons[action]?.frame = CGRect(x: x, y: y, width: max(0, w), height: max(0, h))
     }
 
-    private static let keySpecs: [(symbol: String, sub: String, action: TerminalKeyAction)] = [
-        ("⎋", "Esc", .esc),
-        ("←", "", .left),
-        ("↑", "", .up),
-        ("↓", "", .down),
-        ("→", "", .right),
-        ("⌫", "删词", .delWord),
-        ("^B", "Ctrl-B", .ctrlB),
-        ("⇧⇥", "模式", .shiftTab),
-        ("^C", "中断", .ctrlC),
-        ("↵", "Enter", .enter),
+    private static let keySpecs: [(symbol: String, sub: String, image: String?, action: TerminalKeyAction)] = [
+        ("⎋", "Esc", nil, .esc),
+        ("", "Paste", "doc.on.clipboard", .paste),   // 文字/图片粘贴;图标在上 + 标签在下,同其它键风格
+        ("←", "", nil, .left),
+        ("↑", "", nil, .up),
+        ("↓", "", nil, .down),
+        ("→", "", nil, .right),
+        ("⌫", "Del Word", nil, .delWord),
+        ("^B", "Ctrl-B", nil, .ctrlB),
+        ("⇧⇥", "Mode", nil, .shiftTab),
+        ("^C", "Break", nil, .ctrlC),
+        ("↵", "Enter", nil, .enter),
     ]
 
     private func configureEnter(compact: Bool) {
@@ -178,8 +180,8 @@ final class TerminalKeyBar: UIInputView {
         b.configuration = cfg
     }
 
-    private func makeButton(symbol: String, sub: String, tap action: TerminalKeyAction) -> UIButton {
-        let b = styledButton(symbol: symbol, sub: sub)
+    private func makeButton(symbol: String, sub: String, image: String?, tap action: TerminalKeyAction) -> UIButton {
+        let b = styledButton(symbol: symbol, sub: sub, image: image)
         if action == .esc {
             b.configurationUpdateHandler = { [weak self] btn in self?.applyEscConfiguration(btn) }
         } else {
@@ -248,21 +250,37 @@ final class TerminalKeyBar: UIInputView {
     }
 
     /// index.html `.kc` 风格:大符号(kl)+ 小副标题(ks)。Configuration 的 title/subtitle 两级。
-    private func styledButton(symbol: String, sub: String) -> UIButton {
+    /// `image`(SF Symbol 名)非空 → 图标键:图标在上 + 文字小标签在下,走 **image + title**
+    /// (不用 subtitle —— 小键里 image+subtitle 会因空 title 退化叠在一起;粘贴键用此分支)。
+    private func styledButton(symbol: String, sub: String, image: String? = nil) -> UIButton {
         let b = UIButton(type: .system)
         var cfg = UIButton.Configuration.plain()
         cfg.background.backgroundColor = UIColor(white: 1, alpha: 0.12)
         cfg.background.cornerRadius = 7
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
-        var title = AttributedString(symbol)
-        title.font = .systemFont(ofSize: symbol.count > 1 ? 14 : 19, weight: .bold)
-        cfg.attributedTitle = title
-        if !sub.isEmpty {
-            var subt = AttributedString(sub)
-            subt.font = .systemFont(ofSize: 8, weight: .regular)
-            cfg.attributedSubtitle = subt
-            cfg.titleAlignment = .center
-            cfg.titlePadding = 1
+        cfg.titleAlignment = .center
+        if let image, let icon = UIImage(systemName: image) {
+            cfg.image = icon
+            cfg.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+            cfg.imagePlacement = .top
+            cfg.imagePadding = 2
+            // 小图标压不到底,整组居中会把标签顶高 → 加大顶部 inset 把内容下推,使标签落到与其它键小字同一线。
+            cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 2, bottom: 1, trailing: 2)
+            if !sub.isEmpty {
+                var t = AttributedString(sub)
+                t.font = .systemFont(ofSize: 8, weight: .regular)
+                cfg.attributedTitle = t
+            }
+        } else {
+            var title = AttributedString(symbol)
+            title.font = .systemFont(ofSize: symbol.count > 1 ? 14 : 19, weight: .bold)
+            cfg.attributedTitle = title
+            if !sub.isEmpty {
+                var subt = AttributedString(sub)
+                subt.font = .systemFont(ofSize: 8, weight: .regular)
+                cfg.attributedSubtitle = subt
+                cfg.titlePadding = 1
+            }
         }
         b.configuration = cfg
         b.tintColor = UIColor(white: 0.92, alpha: 1)

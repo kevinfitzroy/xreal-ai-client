@@ -122,6 +122,33 @@ final class SSHSession {
         }
     }
 
+    /// 经 SFTP 把本地字节写到远端临时文件,**复用既有连接**(同 execCapture 用独立 channel,不新建 SSH;
+    /// 经 via 跳板时也跟着隧道走)。给"粘贴图片"用:远端落盘后把绝对路径插进终端,Claude Code 按路径读图。
+    /// 远端固定目录 `/tmp/xreal-paste/`(已存在则忽略 mkdir)。返回远端绝对路径;未连接/失败 → nil。
+    func uploadToRemoteTemp(_ data: Data, filename: String) async -> String? {
+        guard let client = self.client else { return nil }
+        let dir = "/tmp/xreal-paste"
+        let remotePath = "\(dir)/\(filename)"
+        do {
+            let sftp = try await client.openSFTP()
+            do {
+                try? await sftp.createDirectory(atPath: dir)   // 已存在 → 忽略错误
+                let file = try await sftp.openFile(filePath: remotePath, flags: [.write, .create, .truncate])
+                try await file.write(ByteBuffer(bytes: Array(data)))
+                try await file.close()
+                try await sftp.close()
+                AgentLog.info("terminal", "sftp upload ok path=\(remotePath) bytes=\(data.count)")
+                return remotePath
+            } catch {
+                try? await sftp.close()
+                throw error
+            }
+        } catch {
+            AgentLog.warn("terminal", "sftp upload failed path=\(remotePath): \(String(describing: error).prefix(140))")
+            return nil
+        }
+    }
+
     private func runPTY(client: SSHClient, startup: String, hostName: String, session: String, cols: Int, rows: Int) async throws {
         let req = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,

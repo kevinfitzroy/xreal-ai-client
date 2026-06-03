@@ -229,6 +229,8 @@ terminal 核心显示区纵向分成 **5 unit**:
 
 **ESC 安全态视觉提示(可选,客户端落点):** 终端里 ESC 在 copy-mode 下只退出滚动(安全),在 Claude Code 普通态下会打断 agent(易误触)。客户端**可**在虚拟键盘的 ESC 键上反映 copy-mode 状态——处于 copy-mode 时把 ESC 染成“安全色”(如绿底)+ 改副标题(如“退出滚动”),提示此刻按它是安全且应当的操作。状态源沿用上面的 copy-mode 判定:进入(客户端自己发翻页键)即乐观置位;仅在 copy-mode 期间用既有连接(非新建 SSH)轮询 `#{pane_in_mode}` 确认外部退出(硬件 `q`/打字),非 copy-mode 时零开销。iOS 已实现(`TerminalKeyBar.escCopyModeSafe` + `TerminalViewController` 轮询);Android 默认硬件键盘、虚拟键盘极少用,未实现。
 
+**粘贴键(文字 + 图片,可选,客户端落点):** 虚拟键盘可提供一个「粘贴」键,把系统剪贴板内容送进终端。**文字**:直写 PTY;若终端开了 bracketed paste mode(Claude Code 等会开)则用 `ESC[200~ … ESC[201~` 包裹,保证多行不被逐行回车提前提交,否则裸发。**图片**:终端是字节流,无法把图片直接塞进 PTY,也**不能**靠系统剪贴板(iPhone 剪贴板 ≠ 远端机器剪贴板)——做法是把图片经 **SFTP 复用现有 SSH 连接**上传到远端临时文件(经 `via` 跳板时跟隧道走),落盘后把**远端绝对路径**(如 `/tmp/xreal-paste/paste-<ts>.png`)+ 一个空格插进终端(不回车,用户可再补语音/文字后自行 Enter)。Claude Code 对 `.png/.jpg/.jpeg/.gif/.webp` **裸绝对路径**自动识别为视觉图片(实测 claude 2.1.161;`@路径` 反而只当文件引用、不作视觉附件,故用裸路径)。约束:Claude Code 单图上限约 5MB → 客户端上传前按长边降采样(如 2000px)并在 PNG 过大时回退 JPEG。iOS 已实现(`TerminalKeyBar` 粘贴键 + `TerminalViewController.handlePasteAction` + `SSHSession.uploadToRemoteTemp`);Android 默认硬件键盘,未实现。
+
 **SSH 通道异常提示:** 终端态可在最底部叠加一条很薄的本地 status strip(视觉上覆盖 tmux status line)。正常隐藏;若 PTY 明确断开/重连中/用户输入后长时间无回显,用红/橙/紫等颜色提示“断开、无回显、重连中”。该提示是客户端本地 UI,不要依赖远端 tmux 还能响应,因为真正断线时远端状态栏已经无法被更新。
 
 **语音 overlay 点击语义:** overlay 的布局和点击分区同样只覆盖 terminal 核心显示区,不能覆盖 vkey。overlay 必须避开 bottom 语音热区,至少不能遮盖 bottom 1 unit 的底部 2/3。overlay 出现后,terminal 翻页热区自然失效,terminal 核心区触摸只剩三块:

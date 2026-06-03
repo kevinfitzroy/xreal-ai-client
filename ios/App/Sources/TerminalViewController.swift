@@ -1437,11 +1437,87 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         case .ctrlC:    sendToActivePTY(Data([0x03]))
         case .ctrlB:    sendToActivePTY(Data([0x02]), expectOutput: false)
         case .delWord:  sendToActivePTY(Data([0x17]))
+        case .paste:    handlePasteAction()
         }
     }
     private func arrowBytes(_ final: UInt8) -> [UInt8] {
         let app = term.getTerminal().applicationCursor
         return [0x1b, app ? 0x4f : 0x5b, final]
+    }
+
+    // MARK: - 粘贴(文字直写 PTY;图片经 SFTP 传远端再插路径)
+    /// 剪贴板有图 → 走图片上传;否则有文字 → 直接粘贴文字。两者皆空 = 无操作(已震动反馈)。
+    private func handlePasteAction() {
+        let pb = UIPasteboard.general
+        if pb.hasImages, let img = pb.image, let payload = imageDataForPaste(img) {
+            pasteImage(payload.data, ext: payload.ext)
+        } else if let s = pb.string, !s.isEmpty {
+            pasteText(s)
+        } else {
+            AgentLog.debug("ui", "paste: clipboard empty/unsupported")
+        }
+    }
+
+    /// 文字粘贴:对齐 SwiftTerm 自身 paste —— 终端开了 bracketed paste(Claude Code 等)就包 start/end,
+    /// 内容原样发(多行不会被逐行回车提前提交);否则裸发。空字符串忽略。
+    private func pasteText(_ s: String) {
+        guard !s.isEmpty else { return }
+        var bytes = Array(s.utf8)
+        if term.getTerminal().bracketedPasteMode {
+            bytes = EscapeSequences.bracketedPasteStart + bytes + EscapeSequences.bracketedPasteEnd
+        }
+        sendToActivePTY(Data(bytes))
+    }
+
+    /// 截图等无损优先 PNG;PNG 超 ~4.5MB(Claude Code 单图上限 5MB,留余量)或失败 → 回退 JPEG。
+    /// 扩展名随实际格式(Claude Code 按 .png/.jpg/.jpeg/.gif/.webp 扩展名识别为视觉图片)。
+    /// 相册原图可能很大,先按长边 2000px 降采样(Claude 视觉本就 ~1568px 重采样,过大无益且易超限)。
+    private func imageDataForPaste(_ img: UIImage) -> (data: Data, ext: String)? {
+        let scaled = Self.downscaledForVision(img)
+        if let p = scaled.pngData(), p.count <= 4_500_000 { return (p, "png") }
+        if let j = scaled.jpegData(compressionQuality: 0.82) { return (j, "jpg") }
+        if let p = scaled.pngData() { return (p, "png") }   // JPEG 也失败时的兜底
+        return nil
+    }
+
+    /// 长边 > maxSide 像素才降采样;否则原样返回(截图通常已小于阈值,保持无损)。
+    private static func downscaledForVision(_ img: UIImage) -> UIImage {
+        let maxSide: CGFloat = 2000
+        let pxW = img.size.width * img.scale, pxH = img.size.height * img.scale
+        let longest = max(pxW, pxH)
+        guard longest > maxSide, longest > 0 else { return img }
+        let ratio = maxSide / longest
+        let target = CGSize(width: (pxW * ratio).rounded(), height: (pxH * ratio).rounded())
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = 1   // 1x 渲染 → 点尺寸即像素尺寸,编码出的就是 target 像素
+        return UIGraphicsImageRenderer(size: target, format: fmt).image { _ in
+            img.draw(in: CGRect(origin: .zero, size: target))
+        }
+    }
+
+    /// 图片粘贴:SFTP 上传远端临时文件(复用现有连接),成功后把远端绝对路径 + 空格插进终端
+    /// (不回车 —— 用户可再补语音/文字说明后自行 Enter,Claude Code 据路径读图)。
+    private func pasteImage(_ data: Data, ext: String) {
+        guard let ssh else {
+            setChannelStrip(.disconnected, "SSH 通道已断开，返回列表重开此 project")
+            return
+        }
+        let stamp = Int(Date().timeIntervalSince1970 * 1000)
+        let name = "paste-\(stamp).\(ext)"
+        setChannelStrip(.checking, "粘贴图片上传中…(\(data.count / 1024)KB)")
+        let gen = sessionGen
+        Task {
+            let path = await ssh.uploadToRemoteTemp(data, filename: name)
+            await MainActor.run {
+                guard self.view_ == .terminal, self.sessionGen == gen, self.ssh != nil else { return }
+                if let path {
+                    self.setChannelStrip(.hidden)
+                    self.pasteText(path + " ")
+                } else {
+                    self.setChannelStrip(.disconnected, "图片粘贴失败，请重试")
+                }
+            }
+        }
     }
 
     // MARK: - 物理键 action(两条路由共用,幂等)
