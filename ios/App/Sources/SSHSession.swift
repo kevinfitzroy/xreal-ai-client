@@ -108,6 +108,20 @@ final class SSHSession {
         Task { try? await client?.close(); try? await jump?.close() }
     }
 
+    /// 一次性 exec 抓取:在**已有** PTY 连接上开一条侧 exec channel 跑 `command`,读全部 stdout 返回。
+    /// 给 LLM 纠错抓 tmux 终端上下文用(`tmux capture-pane`)。复用连接,不新建 SSH(Citadel 同连接支持
+    /// 多 channel,与 PTY 主通道独立)。未连接/失败 → nil(纠错侧据此省略终端上下文段,不报错)。
+    func execCapture(_ command: String) async -> String? {
+        guard let client = self.client else { return nil }
+        do {
+            var buf = try await client.executeCommand(command)
+            return buf.readString(length: buf.readableBytes)
+        } catch {
+            AgentLog.warn("terminal", "execCapture failed: \(String(describing: error).prefix(120))")
+            return nil
+        }
+    }
+
     private func runPTY(client: SSHClient, startup: String, hostName: String, session: String, cols: Int, rows: Int) async throws {
         let req = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
@@ -212,6 +226,14 @@ final class SSHSession {
     /// scrollback 升到 50000,copy-mode highlight 调淡以减轻 SwiftTerm 重绘白块感。
     /// conf 用 base64 投递,避开 `;`/`"`/`#{}` 被外层 shell 解释。
     /// `session` MUST already be validated `[A-Za-z0-9_.-]` (ProjectConfig.isSessionNameSafe).
+    /// LLM 纠错抓终端上下文:capture-pane 当前 session 活动 pane 可见 + 近 40 行回溯(纯文本,-p)。
+    /// PATH 前缀同 tmuxAttachCommand(非交互 exec PATH 太窄找不到 tmux);失败 2>/dev/null → execCapture 得空串。
+    /// `session` 须已校验 `[A-Za-z0-9_.-]`(ProjectConfig.isSessionNameSafe)。
+    static func tmuxCaptureCommand(_ session: String) -> String {
+        "export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; "
+            + "tmux capture-pane -p -S -40 -t '\(session)' 2>/dev/null"
+    }
+
     static func tmuxAttachCommand(_ session: String) -> String {
         let conf = [
             "source-file -q ~/.tmux.conf",                                  // -f 跳过默认加载 → 先带回用户配置
