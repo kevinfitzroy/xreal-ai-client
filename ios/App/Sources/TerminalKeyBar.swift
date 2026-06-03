@@ -18,6 +18,15 @@ enum TerminalKeyAction {
 final class TerminalKeyBar: UIInputView {
     var onAction: ((TerminalKeyAction) -> Void)?
 
+    /// 由 VC 按 tmux copy-mode 状态驱动:true → ESC 键变"安全绿" + 副标题"退出滚动"
+    /// (提示此刻按 ESC 只退出翻页滚动,不会打断 Claude),减少误触 ESC 的心理负担。
+    var escCopyModeSafe: Bool = false {
+        didSet {
+            guard oldValue != escCopyModeSafe else { return }
+            buttons[.esc]?.setNeedsUpdateConfiguration()
+        }
+    }
+
     private static let rowHeight: CGFloat = 44
     private static let rowSpacing: CGFloat = 5
     private static let hSpacing: CGFloat = 5
@@ -171,10 +180,14 @@ final class TerminalKeyBar: UIInputView {
 
     private func makeButton(symbol: String, sub: String, tap action: TerminalKeyAction) -> UIButton {
         let b = styledButton(symbol: symbol, sub: sub)
-        b.configurationUpdateHandler = { btn in
-            var c = btn.configuration
-            c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
-            btn.configuration = c
+        if action == .esc {
+            b.configurationUpdateHandler = { [weak self] btn in self?.applyEscConfiguration(btn) }
+        } else {
+            b.configurationUpdateHandler = { btn in
+                var c = btn.configuration
+                c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
+                btn.configuration = c
+            }
         }
         if action == .delWord {
             b.addTarget(self, action: #selector(repeatableButtonDown(_:)), for: .touchDown)
@@ -183,6 +196,26 @@ final class TerminalKeyBar: UIInputView {
             b.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
         }
         return b
+    }
+
+    /// ESC 键配色:copy-mode 安全态 = 绿底 + 副标题"退出滚动";常态 = 中性灰 + "Esc"。
+    /// 每次 setNeedsUpdateConfiguration / 高亮变化都会重跑,据 [escCopyModeSafe] 二选一。
+    private func applyEscConfiguration(_ btn: UIButton) {
+        var c = btn.configuration
+        if escCopyModeSafe {
+            c?.background.backgroundColor = btn.isHighlighted
+                ? UIColor(red: 0.26, green: 0.66, blue: 0.44, alpha: 1)
+                : UIColor(red: 0.17, green: 0.52, blue: 0.34, alpha: 1)
+            var sub = AttributedString("退出滚动")
+            sub.font = .systemFont(ofSize: 7, weight: .semibold)
+            c?.attributedSubtitle = sub
+        } else {
+            c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
+            var sub = AttributedString("Esc")
+            sub.font = .systemFont(ofSize: 8, weight: .regular)
+            c?.attributedSubtitle = sub
+        }
+        btn.configuration = c
     }
 
     @objc private func repeatableButtonDown(_ sender: UIButton) {

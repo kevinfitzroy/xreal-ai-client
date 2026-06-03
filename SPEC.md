@@ -218,13 +218,16 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 
 terminal 核心显示区纵向分成 **5 unit**:
 
-- **top 2 unit**:触摸 = 翻页上(等价 Shift+↑ 的语义)。触发时用柔和半透明 overlay 覆盖整个 top 2 unit,叠加加大加粗的向上箭头,短暂驻留后淡出。
-- **middle 2 unit**:触摸 = 翻页下(等价 Shift+↓ 的语义)。触发时用同样的半透明 overlay 覆盖整个 middle 2 unit,叠加加大加粗的向下箭头,短暂驻留后淡出。
-- **bottom 1 unit**:仅其**底部 2/3** 是语音 hold-to-talk 热区(即整体高度约 `13/15` 以下):按住=开始录音,松开=结束。bottom 1 unit 顶部 1/3 留空,避免误触。
+- **翻页上**:核心区**上半屏(0 – 0.5)** 触摸 = 翻页上(等价 Shift+↑ 的语义)。触发时用柔和半透明 overlay 覆盖该区,叠加加大加粗的向上箭头,短暂驻留后淡出。
+- **翻页下**:核心区**中段(0.5 – 0.8)** 触摸 = 翻页下(等价 Shift+↓ 的语义)。触发时用同样的半透明 overlay 覆盖该区,叠加加大加粗的向下箭头,短暂驻留后淡出。
+- **语音热区**:核心区**底部约 2/15(`13/15` 以下)** 是语音 hold-to-talk 热区:按住=开始录音,松开=结束。其上方(0.8 – `13/15`)留空缓冲,避免误触翻页/语音。
+- **上/下分界落在正中线(0.5)**:早期为 0.4(把核心区按 2/2/1 unit 等分),实测向下翻页区压到中线以上、视觉上挤占了向上翻页区(用户反馈)→ 分界下移到 0.5,让上半屏整体=翻页上(向上翻是高频操作:回看历史)。翻页提示 overlay 的覆盖范围与触发区严格对齐(同一分界常量)。
 
 与物理键 Shift+↑/↓ **同语义**,具体实现按平台选择。Android 当前由 tmux 的 `S-Up`/`S-Down` 绑定接住做半页滚;iOS 原生 SwiftTerm 拦截后同样发 S-Up/S-Down 给 tmux binding。Claude Code 的 PageUp/PageDown 路径在 tmux/PTY 组合里不稳定,所以当前已知 project 类型统一用 tmux scrollback;客户端注入的 tmux conf 可调淡 copy-mode highlight,降低 repaint 白块感。给无物理翻页键的纯触屏场景一个一致翻页入口。**预览层(§13)打开时不触发**(改 pan/zoom)。iOS 已实现 5-unit 热区(`TerminalViewController`),并对触摸翻页做短节流以避免 cue 高频闪烁;Android 锁横屏 + 物理键为主,按需补。
 
 **tmux copy-mode 输入提醒:** 语音触发时,客户端可用独立短命 SSH exec 查询 `tmux display-message -p -t <session> '#{pane_in_mode}'`。若当前 pane 在 copy-mode,**不要自动发送 `Esc`**(用户可能误触语音,自动退出会打断阅读位置),只在语音 overlay 上提示“先按 Esc 退出翻页模式”。此时确认注入应被拦住或提醒,避免文本被 tmux 吞掉;用户按 Esc 后再重新语音输入。该查询只发生在语音触发等高价值时刻,不做常驻轮询。
+
+**ESC 安全态视觉提示(可选,客户端落点):** 终端里 ESC 在 copy-mode 下只退出滚动(安全),在 Claude Code 普通态下会打断 agent(易误触)。客户端**可**在虚拟键盘的 ESC 键上反映 copy-mode 状态——处于 copy-mode 时把 ESC 染成“安全色”(如绿底)+ 改副标题(如“退出滚动”),提示此刻按它是安全且应当的操作。状态源沿用上面的 copy-mode 判定:进入(客户端自己发翻页键)即乐观置位;仅在 copy-mode 期间用既有连接(非新建 SSH)轮询 `#{pane_in_mode}` 确认外部退出(硬件 `q`/打字),非 copy-mode 时零开销。iOS 已实现(`TerminalKeyBar.escCopyModeSafe` + `TerminalViewController` 轮询);Android 默认硬件键盘、虚拟键盘极少用,未实现。
 
 **SSH 通道异常提示:** 终端态可在最底部叠加一条很薄的本地 status strip(视觉上覆盖 tmux status line)。正常隐藏;若 PTY 明确断开/重连中/用户输入后长时间无回显,用红/橙/紫等颜色提示“断开、无回显、重连中”。该提示是客户端本地 UI,不要依赖远端 tmux 还能响应,因为真正断线时远端状态栏已经无法被更新。
 

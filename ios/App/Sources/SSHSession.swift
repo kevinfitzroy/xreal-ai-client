@@ -234,6 +234,13 @@ final class SSHSession {
             + "tmux capture-pane -p -S -40 -t '\(session)' 2>/dev/null"
     }
 
+    /// 廉价探测当前 session 活动 pane 是否处于 copy-mode(翻页/复制),输出 "1"/"0"/空(无 tmux)。
+    /// 走 execCapture 复用既有连接,**不新建 SSH**(与 TmuxModeProbe 不同),适合 ESC 安全态的轮询确认。
+    static func tmuxPaneInModeCommand(_ session: String) -> String {
+        "export PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; "
+            + "tmux display-message -p -t '\(session)' '#{pane_in_mode}' 2>/dev/null"
+    }
+
     static func tmuxAttachCommand(_ session: String) -> String {
         let conf = [
             "source-file -q ~/.tmux.conf",                                  // -f 跳过默认加载 → 先带回用户配置

@@ -43,7 +43,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var activeHostConfig: HostConfig?
     private var activeViaConfig: HostConfig?
     private var activeSessionName: String?
-    private var tmuxModeLikely = false
+    /// 自认为处于 tmux copy-mode(翻页/复制)。单一状态源:同时驱动语音警告 + ESC 键安全态配色 + 轮询确认。
+    /// 设 true(进 copy-mode)→ ESC 变安全绿 + 起轮询;设 false(退出)→ 复原 + 停轮询。所有现有赋值点自动联动。
+    private var tmuxModeLikely = false {
+        didSet {
+            guard oldValue != tmuxModeLikely else { return }
+            keyBar?.escCopyModeSafe = tmuxModeLikely
+            if tmuxModeLikely { startCopyModePoll() } else { stopCopyModePoll() }
+        }
+    }
+    private var copyModePollTimer: Timer?
     private var suppressTermAccessory = false
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
@@ -1129,7 +1138,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         )
     }
 
-    /// terminal 触摸分区:上 2/5 → 翻页上;中 2/5 → 翻页下;底部热区由 `handleTermVoicePress` 接管。
+    /// terminal 触摸分区:上半屏(0–0.5)→ 翻页上;中段(0.5–0.8)→ 翻页下;底部热区由 `handleTermVoicePress` 接管。
     @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
         guard view_ == .terminal else { return }
         let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
@@ -1150,6 +1159,41 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         tmuxModeLikely = true
     }
 
+    private static let copyModePollInterval: TimeInterval = 1.5
+
+    /// 仅在自认为 copy-mode 时启动:轮询确认是否已被**外部**退出(硬件 `q` / 直接打字),
+    /// app 自己发的 ESC/翻页已在赋值点同步,不靠轮询。非 copy-mode 时零开销(由 tmuxModeLikely.didSet 停掉)。
+    private func startCopyModePoll() {
+        stopCopyModePoll()
+        let t = Timer(timeInterval: Self.copyModePollInterval, repeats: true) { [weak self] _ in
+            self?.pollPaneInModeOnce()
+        }
+        copyModePollTimer = t
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    private func stopCopyModePoll() {
+        copyModePollTimer?.invalidate()
+        copyModePollTimer = nil
+    }
+
+    /// 用既有连接(execCapture,不新建 SSH)读 `#{pane_in_mode}`:"1"=仍在 → 保持;"0"/空(无 tmux)=已退出 → 复原;
+    /// nil(连接/exec 瞬时失败)→ 不翻转,避免抖动。sessionGen/session 校验防迟到结果污染新会话。
+    private func pollPaneInModeOnce() {
+        guard tmuxModeLikely, let ssh = ssh, let session = activeSessionName else { stopCopyModePoll(); return }
+        let gen = sessionGen
+        Task {
+            let out = await ssh.execCapture(SSHSession.tmuxPaneInModeCommand(session))
+            await MainActor.run {
+                guard self.sessionGen == gen, self.activeSessionName == session, self.tmuxModeLikely else { return }
+                guard let out = out else { return }   // 瞬时失败:保持现状,下个周期再试
+                if out.trimmingCharacters(in: .whitespacesAndNewlines) != "1" {
+                    self.tmuxModeLikely = false        // "0"/空 → 已退出 copy-mode,ESC 复原 + 停轮询
+                }
+            }
+        }
+    }
+
     @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {
         switch g.state {
         case .began:
@@ -1161,11 +1205,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
+    /// 上/下翻页分界:落在终端核心区的**正中线**(0.5)。原为 0.4 偏高,导致向下翻页区压到中线以上、
+    /// 视觉上"吃掉"了向上翻页区(用户反馈)。向下翻页区下边界保持 0.8,其下留缓冲再接语音热区。
+    private static let pageSplitFraction: CGFloat = 0.5
+    private static let pageDownEndFraction: CGFloat = 4.0 / 5.0
+
     private func terminalTouchZone(at p: CGPoint, height: CGFloat) -> TerminalTouchZone {
         // `height` 来自 term.bounds.height,也就是已经排除 vkey 后的 terminal 核心高度。
         guard height > 0 else { return .none }
-        if p.y < height * 2 / 5 { return .pageUp }
-        if p.y < height * 4 / 5 { return .pageDown }
+        if p.y < height * Self.pageSplitFraction { return .pageUp }
+        if p.y < height * Self.pageDownEndFraction { return .pageDown }
         if p.y >= height * 13 / 15 { return .voice }
         return .none
     }
@@ -1182,8 +1231,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     private func showPageCue(up: Bool) {
-        let zoneY = term.frame.minY + (up ? 0 : term.bounds.height * 2 / 5)
-        let zoneFrame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: term.bounds.height * 2 / 5)
+        let split = term.bounds.height * Self.pageSplitFraction
+        let zoneY = term.frame.minY + (up ? 0 : split)
+        let zoneH = up ? split : term.bounds.height * Self.pageDownEndFraction - split
+        let zoneFrame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: zoneH)
         let config = UIImage.SymbolConfiguration(pointSize: 58, weight: .semibold)
         pageCueView.image = UIImage(systemName: up ? "arrow.up" : "arrow.down", withConfiguration: config)
         pageCueView.tintColor = UIColor.white.withAlphaComponent(0.64)
