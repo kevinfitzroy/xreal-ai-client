@@ -12,6 +12,15 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private let card = UIView()
     private var cardBottomConstraint: NSLayoutConstraint!
 
+    // 纠错中(issue #16):状态行转圈动画 + 原文灰显 + 提示改"稍候"。spinner 由 overlay 自管,状态机不变。
+    private var spinnerTimer: Timer?
+    private var spinnerIndex = 0
+    private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private let textColorNormal = UIColor(red: 0.58, green: 0.88, blue: 0.70, alpha: 1)   // #94e0b2
+    private let textColorDimmed = UIColor(white: 0.5, alpha: 1)                            // 待替换 → 灰显
+    private static let hintNormal = "Enter 发送 · Esc 撤销"
+    private static let hintCorrecting = "稍候…别急着按 Enter"
+
     var onTapZone: ((TapZone) -> Void)?
     var onVoicePress: ((Bool) -> Void)?
     var reservedBottomInset: CGFloat = 0 {
@@ -35,13 +44,13 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
 
         textLabel.translatesAutoresizingMaskIntoConstraints = false
         textLabel.font = .systemFont(ofSize: 15)
-        textLabel.textColor = UIColor(red: 0.58, green: 0.88, blue: 0.70, alpha: 1)   // #94e0b2
+        textLabel.textColor = textColorNormal
         textLabel.numberOfLines = 0
 
         hintLabel.translatesAutoresizingMaskIntoConstraints = false
         hintLabel.font = .systemFont(ofSize: 12)
         hintLabel.textColor = UIColor(white: 0.53, alpha: 1)
-        hintLabel.text = "Enter 发送 · Esc 撤销"
+        hintLabel.text = Self.hintNormal
 
         let stack = UIStackView(arrangedSubviews: [statusLabel, textLabel, hintLabel])
         stack.axis = .vertical
@@ -77,7 +86,11 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
 
     /// 显示/更新浮层(主线程调用)。status 如 "🎤 聆听中…"/"识别中…"/"🎤 已识别";text = 当前识别文本。
+    /// 任何普通态都会**复位**纠错中样式(停 spinner、文本回绿、提示回默认)。
     func show(status: String, text: String) {
+        stopSpinner()
+        textLabel.textColor = textColorNormal
+        hintLabel.text = Self.hintNormal
         statusLabel.text = status
         textLabel.text = text
         textLabel.isHidden = text.isEmpty
@@ -85,9 +98,40 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         isUserInteractionEnabled = true
     }
 
+    /// 纠错中态(issue #16):状态行转圈("✨ AI 纠错中 ⠋")+ 原文灰显(待替换)+ 提示"稍候…别急着按 Enter"。
+    /// 纠完由 [show] 复位回普通态。
+    func showCorrecting(text: String) {
+        textLabel.textColor = textColorDimmed
+        hintLabel.text = Self.hintCorrecting
+        textLabel.text = text
+        textLabel.isHidden = text.isEmpty
+        isHidden = false
+        isUserInteractionEnabled = true
+        startSpinner()
+    }
+
     func hide() {
+        stopSpinner()
         isHidden = true
         isUserInteractionEnabled = false
+    }
+
+    private func startSpinner() {
+        stopSpinner()
+        spinnerIndex = 0
+        statusLabel.text = "✨ AI 纠错中 " + Self.spinnerFrames[0]
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.spinnerIndex = (self.spinnerIndex + 1) % Self.spinnerFrames.count
+            self.statusLabel.text = "✨ AI 纠错中 " + Self.spinnerFrames[self.spinnerIndex]
+        }
+        RunLoop.main.add(t, forMode: .common)   // .common:滚动/手势跟踪时也持续转
+        spinnerTimer = t
+    }
+
+    private func stopSpinner() {
+        spinnerTimer?.invalidate()
+        spinnerTimer = nil
     }
 
     private func updateCardBottom() {

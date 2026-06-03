@@ -17,10 +17,22 @@ object Hotwords {
         "resume", "continue", "clear", "model",
         "review", "plan", "skill", "init", "memory",
         "commit", "ultrathink",
+        // 会话/复用工具 + 常说的模型名(ASR 最易听错的专名:tmux→"提max",Opus/Sonnet/Haiku/DeepSeek)
+        "tmux",
+        "Opus", "Sonnet", "Haiku", "DeepSeek",
     )
 
-    /** [BASE] + per-project,大小写不敏感去重(保留首次出现的原形)。 */
+    /**
+     * **LLM 纠错专用大词表**(issue #16):不进 ASR(豆包 corpus 有 ~200 字预算上限),只喂给 LLM 纠错 prompt
+     * —— LLM 能吃下大得多的词表,覆盖一大片 ASR 易错的英文技术专名。按领域分桶维护见 [HotwordDomains]。
+     */
+    val GLOSSARY: List<String> get() = HotwordDomains.all
+
+    /** [BASE] + per-project,大小写不敏感去重(保留首次出现的原形)。**ASR 用**(随后 [cap] 截到预算)。 */
     fun merge(project: List<String>): List<String> = dedup(BASE + project)
+
+    /** **LLM 纠错用**:在 ASR 热词([merge] 结果)之后追加 [GLOSSARY](项目词在前更显著),去重不截断。 */
+    fun forCorrection(asrHotwords: List<String>): List<String> = dedup(asrHotwords + GLOSSARY)
 
     /**
      * 按字符数≈token 截断到预算。双向流式优化版内联热词上限 ~100 token,这里保守按 ~200 字符

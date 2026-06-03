@@ -119,6 +119,10 @@
   #voice-overlay { position:absolute; bottom:24px; left:50%; transform:translateX(-50%); background:rgba(20,22,30,.95); backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); padding:16px 24px; border-radius:12px; color:#e6e6e6; min-width:360px; max-width:80vw; box-shadow:0 10px 40px rgba(0,0,0,.5); display:none; z-index:100; font-size:14px; }
   #overlay-text { margin-top:8px; color:#94e0b2; word-break:break-word; }
   #overlay-hint { margin-top:12px; font-size:12px; color:#888; }
+  /* 纠错中(issue #16):状态行转圈 spinner + 原文灰显(待替换)。普通态由 showOverlay 复位 */
+  #overlay-status .spin { display:inline-block; width:11px; height:11px; margin-left:6px; vertical-align:-1px; border:2px solid rgba(255,255,255,.25); border-top-color:#94e0b2; border-radius:50%; animation:ov-spin .7s linear infinite; }
+  @keyframes ov-spin { to { transform:rotate(360deg); } }
+  #voice-overlay.correcting #overlay-text { color:#888; }
 
   /* ============ 自绘虚拟键盘(v3:一行,列表+终端共用,固定高度)============ */
   /* 键盘条 = body flex 子元素(非 fixed)→ 占据布局高度,#views 自动缩,overlay/scroll 永不被压 */
@@ -346,7 +350,9 @@
   window.writeToTerm=function(b64){ if(!term)return; const bin=atob(b64); const u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); term.write(u); };
   // 热切 channel 后由 Kotlin 调:把当前 xterm 尺寸重新推给新通道(否则刚连上的 SSH PTY 停在初始 80x24)
   window.syncSize=function(){ if(!term)return; try{ fitAddon.fit(); }catch(e){} if(window.Bridge&&window.Bridge.onResize) window.Bridge.onResize(term.cols, term.rows); };
-  window.showOverlay=function(s,t){ document.getElementById('overlay-status').innerText=s||''; document.getElementById('overlay-text').innerText=t||''; document.getElementById('voice-overlay').style.display='block'; };
+  window.showOverlay=function(s,t){ var o=document.getElementById('voice-overlay'); o.classList.remove('correcting'); document.getElementById('overlay-status').innerText=s||''; document.getElementById('overlay-text').innerText=t||''; document.getElementById('overlay-hint').innerText='Enter 发送 · Esc 撤销'; o.style.display='block'; };
+  /* 纠错中(issue #16):状态行转圈(纯 CSS .spin 动画)+ 原文灰显(.correcting)+ 提示改"稍候"。普通态由 showOverlay 复位 */
+  window.showOverlayCorrecting=function(t){ var o=document.getElementById('voice-overlay'); document.getElementById('overlay-status').innerHTML='✨ AI 纠错中 <span class="spin"></span>'; document.getElementById('overlay-text').innerText=t||''; document.getElementById('overlay-hint').innerText='稍候…别急着按 Enter'; o.classList.add('correcting'); o.style.display='block'; };
   window.hideOverlay=function(){ document.getElementById('voice-overlay').style.display='none'; };
 
   /* 方向键导航:按卡片**真实像素位置**找该方向最近的一张(列表是多列网格 + 每 host 各自一块网格 +

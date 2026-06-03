@@ -21,8 +21,9 @@ final class VoiceController: AsrCallback {
     /// 注入文本到 SSH(VC 提供:转发到当前 SSHSession.send,单写者纪律由 SSHSession 保证)。
     /// nil = 当前无活动 PTY(列表态),注入 no-op。
     var inject: ((Data) -> Void)?
-    /// 调 index.html overlay(VC 提供:eval window.showOverlay / hideOverlay)。
+    /// 调 overlay(VC 提供)。普通态 showOverlay;纠错态 showCorrecting(自带 spinner 动画);收起 hideOverlay。
     private let showOverlayJS: (_ status: String, _ text: String) -> Void
+    private let showCorrectingJS: (_ text: String) -> Void
     private let hideOverlayJS: () -> Void
 
     /// runtime swap:ASR 实现(有凭证 → VolcAsr,否则 MockAsr)。
@@ -58,9 +59,11 @@ final class VoiceController: AsrCallback {
 
     init(asr: Asr,
          showOverlay: @escaping (_ status: String, _ text: String) -> Void,
+         showCorrecting: @escaping (_ text: String) -> Void,
          hideOverlay: @escaping () -> Void) {
         self.asr = asr
         self.showOverlayJS = showOverlay
+        self.showCorrectingJS = showCorrecting
         self.hideOverlayJS = hideOverlay
     }
 
@@ -139,12 +142,13 @@ final class VoiceController: AsrCallback {
         // 纠错开启:进 correcting,后台抓 tmux 上下文 + 跑 LLM,完成回 preview(失败回退原文)。
         // gen 守卫:期间用户重按/Esc 会 ++asrGen,迟到的纠错结果被丢弃。
         state = .correcting
-        showOverlay("✨ 纠错中…", text)
+        showCorrectingJS(text)   // 转圈动画 + 原文灰显 + "稍候"提示(overlay 自管 spinner)
         // 在 main 先把上下文快照成不可变值(Task 内不碰 self,只在末尾 hop 回 main 用 gen 守卫)。
         let ctxSource = terminalContext
         let snapshot = VoiceContext(
             projectName: projectName, sessionType: sessionType, isAiAgent: voiceMarkerEnabled,
-            hotwords: hotwords, lang: lang, terminalTail: nil, recentCommands: recentCommands
+            hotwords: Hotwords.forCorrection(hotwords),   // ASR 热词 + LLM 大词表;ASR 路径仍用小表
+            lang: lang, terminalTail: nil, recentCommands: recentCommands
         )
         Task { [weak self] in
             let tail = await ctxSource?()
@@ -257,7 +261,7 @@ final class VoiceController: AsrCallback {
         case .asrPending:
             showOverlay("识别中…", currentText ?? "")
         case .correcting:
-            showOverlay("✨ 纠错中…", currentText ?? "")
+            showCorrectingJS(currentText ?? "")
         case .preview:
             showOverlay("🎤 已识别", currentText ?? "")
         }

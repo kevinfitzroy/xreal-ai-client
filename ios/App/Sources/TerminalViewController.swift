@@ -1424,6 +1424,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voice = VoiceController(
             asr: asr,
             showOverlay: { [weak self] status, text in self?.voiceOverlay.show(status: status, text: text) },
+            showCorrecting: { [weak self] text in self?.voiceOverlay.showCorrecting(text: text) },
             hideOverlay: { [weak self] in self?.voiceOverlay.hide() }
         )
         voice.inject = { [weak self] data in self?.sendToActivePTY(data) }

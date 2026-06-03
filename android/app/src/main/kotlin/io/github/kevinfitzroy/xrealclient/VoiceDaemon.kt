@@ -126,7 +126,7 @@ class VoiceDaemon(
         // 纠错开启:进 CORRECTING,后台抓 tmux 上下文 + 跑 LLM,完成回 PREVIEW(失败回退原文)。
         // gen 守卫:期间用户重按/Esc 会 ++asrGen,迟到的纠错结果被丢弃。
         state = State.CORRECTING
-        showOverlay("✨ 纠错中…", text)
+        showOverlayCorrecting(text)   // 转圈动画 + 原文灰显 + "稍候"提示(overlay 自管 CSS spinner)
         correctExec.execute {
             val ctx = buildContext()
             val corrected = runCatching { corrector.correct(text, ctx) }.getOrDefault(text)
@@ -153,7 +153,7 @@ class VoiceDaemon(
             projectName = projectName,
             sessionType = sessionType,
             isAiAgent = voiceMarkerEnabled,   // = AI-agent 类(applyProjectHotwords 同源设)
-            hotwords = hotwords,
+            hotwords = Hotwords.forCorrection(hotwords),   // ASR 热词 + LLM 大词表(GLOSSARY);ASR 路径仍用小表
             lang = lang,
             terminalTail = tail?.takeIf { it.isNotBlank() },
             recentCommands = recentCommands.toList(),
@@ -217,6 +217,12 @@ class VoiceDaemon(
         val s = JSONObject.quote(status)
         val t = JSONObject.quote(text)
         mainHandler.post { webView.evaluateJavascript("window.showOverlay($s, $t)", null) }
+    }
+
+    /** 纠错中专用 overlay(✨ 转圈 + 原文灰显 + "稍候"提示;CSS 动画由 index.html 自管)。 */
+    private fun showOverlayCorrecting(text: String) {
+        val t = JSONObject.quote(text)
+        mainHandler.post { webView.evaluateJavascript("window.showOverlayCorrecting($t)", null) }
     }
 
     private fun hideOverlay() {
