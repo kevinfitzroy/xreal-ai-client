@@ -209,7 +209,8 @@ enum HostStore {
         let singleHost = root["host"] as? [String: Any]   // OBJECT = single-host wrapper
         let hostsArr   = root["hosts"] as? [[String: Any]]
         let asrObj     = root["asr"] as? [String: Any]
-        guard singleHost != nil || hostsArr != nil || asrObj != nil else {
+        let correctionObj = root["correction"] as? [String: Any]   // LLM 纠错配置(SPEC §7.1),独立可选
+        guard singleHost != nil || hostsArr != nil || asrObj != nil || correctionObj != nil else {
             throw ImportError.noContent
         }
 
@@ -248,9 +249,22 @@ enum HostStore {
             }
         }
 
+        // Optional LLM correction config (SPEC §7.1; {enabled,endpoint,apiKey,model,timeoutMs,disableThinking}),
+        // same channel/shape discipline as asr. Independent of host disposition.
+        var correctionImported = false
+        if let correctionObj {
+            if let cData = try? JSONSerialization.data(withJSONObject: correctionObj, options: []),
+               cData.count <= 4096 {
+                try? writeAtomic(cData, to: docs.appendingPathComponent("correction.json"))
+                correctionImported = true
+            } else {
+                NSLog("[HostStore] import: correction block present but invalid/too-large → skipped")
+            }
+        }
+
         let modeStr = mode == .replace ? "replace" : (mode == .append ? "append" : "asr-only")
-        NSLog("[HostStore] import OK [\(modeStr)]: \(hostCount) host(s)\(asrImported ? " + ASR creds" : "") → private store")
-        AgentLog.info("config", "import OK mode=\(modeStr) hosts=\(hostCount) asr=\(asrImported)")
+        NSLog("[HostStore] import OK [\(modeStr)]: \(hostCount) host(s)\(asrImported ? " + ASR creds" : "")\(correctionImported ? " + correction" : "") → private store")
+        AgentLog.info("config", "import OK mode=\(modeStr) hosts=\(hostCount) asr=\(asrImported) correction=\(correctionImported)")
         return ImportResult(mode: mode, hosts: hostCount, asr: asrImported)
     }
 

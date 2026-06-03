@@ -16,7 +16,7 @@ import Foundation
 /// 触发(SPA 语音键)。所有方法在主线程调用(bridge 回调 + UI eval 都在 main)。
 final class VoiceController: AsrCallback {
 
-    enum State { case idle, streaming, asrPending, preview }
+    enum State { case idle, streaming, asrPending, correcting, preview }
 
     /// 注入文本到 SSH(VC 提供:转发到当前 SSHSession.send,单写者纪律由 SSHSession 保证)。
     /// nil = 当前无活动 PTY(列表态),注入 no-op。
@@ -32,12 +32,26 @@ final class VoiceController: AsrCallback {
     /// 注入时是否加 🎤 前缀。仅 AI-agent 类 project 开;裸 SSH **必须** false(前缀打进 bash 是废命令)。
     var voiceMarkerEnabled = false
 
+    // ── LLM 上下文纠错(issue #16)。corrector==nil → 纠错关闭,行为同改造前 ──────────────────
+    /// 纠错引擎(未配置 = nil → 跳过纠错直接 preview)。VC 启动按 CorrectionConfig 注入。
+    var corrector: VoiceCorrector?
+    /// 终端背景来源(tmux capture-pane,async)。VC 在连上真 SSH 时注入;无连接/列表态 = nil。
+    var terminalContext: (() async -> String?)?
+    /// 当前 project 显示名 / session 类型,喂给纠错 prompt(applyVoiceContext 设)。
+    var projectName = ""
+    var sessionType = "ssh"
+
     private var state: State = .idle
     private var currentText: String?
     private var inputWarning: String?
     private var stream: AsrStream?
+    /// 当前会话语种(voiceDown 设),纠错 prompt 用(提示别跨语种乱译)。
+    private var lang = "zh"
+    /// 最近已确认注入的语音指令(最新在 first,上限 RECENT_MAX),给纠错 prompt 连续指令上下文。
+    private var recentCommands: [String] = []
     /// 会话代数:每次 down/esc ++,回调凭捕获的 gen 比对,过滤上一会话的迟到回调。
     private var asrGen = 0
+    private static let recentMax = 5
 
     /// 录音 —— nil = 无麦克风权限(VC 在授权后注入)。
     var recorder: AudioCapture?
@@ -61,6 +75,7 @@ final class VoiceController: AsrCallback {
     // MARK: - 语音键(SPA Bridge.voiceDown/voiceUp)
 
     func voiceDown(lang: String) {
+        self.lang = lang
         asrGen += 1
         let gen = asrGen
         stream?.cancel()
@@ -110,15 +125,49 @@ final class VoiceController: AsrCallback {
     fileprivate func onFinal(gen: Int, _ text: String) {
         guard gen == asrGen else { return }
         guard state == .streaming || state == .asrPending else { return }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            resetIdle()
-        } else {
-            currentText = text
-            state = .preview
-            showOverlay("🎤 已识别", text)
-        }
         NSLog("[VoiceController] FINAL chars=\(text.count)")   // 只打字数,不打内容
         AgentLog.info("voice", "final chars=\(text.count)")
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { resetIdle(); return }
+        currentText = text
+
+        guard let corrector = self.corrector else {   // 纠错关闭:直接预览(改造前行为)
+            state = .preview
+            showOverlay("🎤 已识别", text)
+            return
+        }
+
+        // 纠错开启:进 correcting,后台抓 tmux 上下文 + 跑 LLM,完成回 preview(失败回退原文)。
+        // gen 守卫:期间用户重按/Esc 会 ++asrGen,迟到的纠错结果被丢弃。
+        state = .correcting
+        showOverlay("✨ 纠错中…", text)
+        // 在 main 先把上下文快照成不可变值(Task 内不碰 self,只在末尾 hop 回 main 用 gen 守卫)。
+        let ctxSource = terminalContext
+        let snapshot = VoiceContext(
+            projectName: projectName, sessionType: sessionType, isAiAgent: voiceMarkerEnabled,
+            hotwords: hotwords, lang: lang, terminalTail: nil, recentCommands: recentCommands
+        )
+        Task { [weak self] in
+            let tail = await ctxSource?()
+            var ctx = snapshot
+            if let tail, !tail.isEmpty {
+                ctx = VoiceContext(projectName: snapshot.projectName, sessionType: snapshot.sessionType,
+                                   isAiAgent: snapshot.isAiAgent, hotwords: snapshot.hotwords,
+                                   lang: snapshot.lang, terminalTail: tail, recentCommands: snapshot.recentCommands)
+            }
+            let corrected = await corrector.correct(text, ctx: ctx)
+            await MainActor.run {
+                guard let self, gen == self.asrGen, self.state == .correcting else { return }   // 已取消/被新会话取代
+                self.currentText = corrected
+                self.state = .preview
+                self.showOverlay(corrected != text ? "✨ 已纠错" : "🎤 已识别", corrected)
+            }
+        }
+    }
+
+    /// 预热纠错连接(进 project 时 VC 调):后台建好到 LLM 的连接,首次纠错不付握手。
+    func prewarmCorrector() {
+        guard let corrector = self.corrector else { return }
+        Task { await corrector.prewarm() }
     }
 
     fileprivate func onError(gen: Int, _ reason: String) {
@@ -143,6 +192,8 @@ final class VoiceController: AsrCallback {
 
     /// @return true = overlay 接管 Enter(写文本);false = 透传(正常 CR)。
     func onEnter() -> Bool {
+        // 纠错进行中按 Enter:拦截但不动作(别让这个 CR 漏进 shell);等纠错完成进 preview 再按。
+        if state == .correcting { return true }
         guard state == .preview else { return false }
         if inputWarning != nil {
             renderCurrentOverlay()
@@ -152,9 +203,15 @@ final class VoiceController: AsrCallback {
         guard let text = currentText else { resetIdle(); return false }
         let payload = voiceMarkerEnabled ? VoiceController.voiceMarker + text : text
         inject?(Data(payload.utf8))   // 不 auto-\n:语音误识安全网,再按 Enter 才执行
+        recordRecent(text)            // 进纠错 prompt 的"最近指令"上下文
         AgentLog.info("voice", "inject preview chars=\(text.count) marker=\(voiceMarkerEnabled)")
         resetIdle()
         return true
+    }
+
+    private func recordRecent(_ text: String) {
+        recentCommands.insert(text, at: 0)
+        if recentCommands.count > Self.recentMax { recentCommands.removeLast(recentCommands.count - Self.recentMax) }
     }
 
     /// @return true = 拦截(取消会话/preview);false = 透传。
@@ -199,6 +256,8 @@ final class VoiceController: AsrCallback {
             showOverlay("🎤 聆听中…", currentText ?? "")
         case .asrPending:
             showOverlay("识别中…", currentText ?? "")
+        case .correcting:
+            showOverlay("✨ 纠错中…", currentText ?? "")
         case .preview:
             showOverlay("🎤 已识别", currentText ?? "")
         }

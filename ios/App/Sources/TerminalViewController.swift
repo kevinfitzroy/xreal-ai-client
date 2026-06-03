@@ -624,6 +624,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                         s.close(); return
                     }
                     self.ssh = s   // 绑上;若用户连接途中已 back(view_ == .list)= 保活,session 照样绑上
+                    // 纠错的 tmux 背景来源:在**已有**连接上抓 capture-pane(复用连接;弱引用 s 防泄漏)。
+                    let captureSession = p.session
+                    self.voice.terminalContext = { [weak s] in
+                        await s?.execCapture(SSHSession.tmuxCaptureCommand(captureSession))
+                    }
+                    self.voice.prewarmCorrector()   // 进 project 即预热 LLM 连接,首次纠错不付握手
                     self.outputSeq = 0
                     self.cancelEchoWatch()
                     self.setChannelStrip(.hidden)
@@ -1422,6 +1428,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         )
         voice.inject = { [weak self] data in self?.sendToActivePTY(data) }
         voice.recorder = AudioCapture()   // 同步建好,否则首次 voiceDown recorder 还 nil
+
+        // LLM 上下文纠错(issue #16):配了 correction.json 才接,否则纠错关闭(= 改造前行为)。
+        if let cc = CorrectionConfig.load(), let corrector = OpenAiCompatCorrector(config: cc) {
+            voice.corrector = corrector
+            NSLog("[VC] voice correction = \(cc.model)")   // 不打 key
+            AgentLog.info("voice", "correction = \(cc.model)")
+        } else {
+            NSLog("[VC] voice correction = off (no correction.json)")
+        }
     }
 
     private func warnIfTmuxCopyModeForVoice() {
@@ -1462,12 +1477,17 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     private func applyVoiceContext(_ project: ProjectConfig?) {
         activeProjectType = project?.type
+        voice.terminalContext = nil   // 纠错的 tmux 背景来源:连上后由 onConnected 设;切 project/回列表先清
         if let project {
             voice.hotwords = Hotwords.merge(project.hotwords)
             voice.voiceMarkerEnabled = project.type.isAiAgent
+            voice.projectName = project.name
+            voice.sessionType = project.type.rawValue
         } else {
             voice.hotwords = Hotwords.base
             voice.voiceMarkerEnabled = false
+            voice.projectName = ""
+            voice.sessionType = "ssh"
         }
     }
 
