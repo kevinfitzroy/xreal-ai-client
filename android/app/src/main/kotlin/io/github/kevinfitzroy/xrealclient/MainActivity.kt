@@ -216,8 +216,8 @@ class MainActivity : Activity() {
         // LLM 上下文纠错(issue #16):配了 correction.json 才接,否则纠错关闭(= 改造前行为)。
         settings.loadCorrection().let { corr ->
             if (corr.isConfigured()) {
-                voiceDaemon.corrector = OpenAiCompatCorrector(corr.endpoint, corr.apiKey, corr.model, corr.timeoutMs)
-                AppLog.i(TAG, "voice correction = ${corr.model} @ ${corr.endpoint.substringAfter("//").substringBefore("/")}")  // 不打 key
+                voiceDaemon.corrector = OpenAiCompatCorrector(corr.endpoint, corr.apiKey, corr.model, corr.timeoutMs, corr.disableThinking)
+                AppLog.i(TAG, "voice correction = ${corr.model} @ ${corr.endpoint.substringAfter("//").substringBefore("/")} (thinking=${!corr.disableThinking})")  // 不打 key
             }
         }
 

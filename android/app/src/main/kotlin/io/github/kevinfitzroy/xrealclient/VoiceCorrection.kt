@@ -109,6 +109,9 @@ object VoiceCorrectionPrompt {
  * - 短超时([timeoutMs],默认 3s):语音输入路径不能被纠错拖死。超时/任何错误 → 回退原文。
  * - temperature=0 + 低 max_tokens:确定性 + 防 LLM 跑题长篇。
  * - **跑题守卫**:纠正结果异常变长(远超原文)视为 LLM 没听话 → 回退原文。
+ * - [disableThinking]:DeepSeek v4(deepseek-v4-flash/pro)**默认 thinking 模式**,会先推理再答 →
+ *   延迟过高,纠错这种轻任务不需要。置 true 时 payload 加 `thinking:{type:disabled}` 走 non-thinking(快)。
+ *   非 DeepSeek 的 OpenAI 端点不识别此字段 → 由配置置 false 关掉。
  *
  * apiKey 不打日志。endpoint 是完整 URL(含 `/chat/completions`)。
  */
@@ -117,6 +120,7 @@ class OpenAiCompatCorrector(
     private val apiKey: String,
     private val model: String,
     private val timeoutMs: Long = 3000,
+    private val disableThinking: Boolean = true,
 ) : VoiceCorrector {
 
     private val http = OkHttpClient.Builder()
@@ -132,6 +136,7 @@ class OpenAiCompatCorrector(
             put("temperature", 0)
             put("max_tokens", 256)
             put("stream", false)
+            if (disableThinking) put("thinking", JSONObject().put("type", "disabled"))   // DeepSeek v4 → non-thinking
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", msgs.system))
                 put(JSONObject().put("role", "user").put("content", msgs.user))

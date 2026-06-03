@@ -44,7 +44,9 @@ data class CorrectionConfig(
     val endpoint: String = "",       // 完整 URL,含 /chat/completions
     val apiKey: String = "",
     val model: String = "",
-    val timeoutMs: Long = 3000,
+    val timeoutMs: Long = 5000,
+    /** DeepSeek v4 默认 thinking 模式 → 纠错走 non-thinking(快)。非 DeepSeek 端点置 false。 */
+    val disableThinking: Boolean = true,
 ) {
     fun isConfigured(): Boolean =
         enabled && endpoint.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
@@ -118,11 +120,12 @@ class SettingsStore(ctx: Context) {
             val o = org.json.JSONObject(f.readText())
             CorrectionConfig(
                 enabled = o.optBoolean("enabled", true),   // 配了文件默认开,除非显式 false
-                // endpoint/model 默认 DeepSeek(项目默认引擎,见 #16)→ correction.json 最简只需 {apiKey}
+                // endpoint/model 默认 DeepSeek v4 flash(项目默认引擎,见 #16)→ correction.json 最简只需 {apiKey}
                 endpoint = o.optString("endpoint", "https://api.deepseek.com/chat/completions"),
                 apiKey = o.optString("apiKey"),
-                model = o.optString("model", "deepseek-chat"),
+                model = o.optString("model", "deepseek-v4-flash"),
                 timeoutMs = o.optLong("timeoutMs", 5000L),
+                disableThinking = o.optBoolean("disableThinking", true),   // v4 默认 thinking → 关掉走 non-thinking
             )
         }.getOrElse {
             android.util.Log.w("SettingsStore", "私有 correction.json 解析失败 → 纠错关闭: ${it.message}")
