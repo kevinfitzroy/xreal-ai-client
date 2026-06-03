@@ -172,7 +172,9 @@ class VoiceDaemon(
         if (state == State.CORRECTING) return true
         if (state != State.PREVIEW) return false
         val text = currentText ?: run { resetIdle(); return false }
-        val payload = if (voiceMarkerEnabled) VOICE_MARKER + text else text
+        // 首字符是 ! / 时不加 🎤:! = 直接执行 bash,/ = Claude Code 内置命令;加了前缀这俩都会被当成普通文本而非命令。
+        val isCommand = text.firstOrNull().let { it == '!' || it == '/' }
+        val payload = if (voiceMarkerEnabled && !isCommand) VOICE_MARKER + text else text
         try {
             channel.write(payload.toByteArray(Charsets.UTF_8))   // 原子 write+flush(串行化,见 PtyChannel)
             recordRecent(text)   // 进纠错 prompt 的"最近指令"上下文

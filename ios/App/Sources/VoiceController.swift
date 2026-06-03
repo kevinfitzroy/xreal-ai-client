@@ -205,7 +205,9 @@ final class VoiceController: AsrCallback {
             return true
         }
         guard let text = currentText else { resetIdle(); return false }
-        let payload = voiceMarkerEnabled ? VoiceController.voiceMarker + text : text
+        // 首字符是 ! / 时不加 🎤:! = 直接执行 bash,/ = Claude Code 内置命令;加了前缀这俩都会被当成普通文本而非命令。
+        let isCommand = text.first == "!" || text.first == "/"
+        let payload = (voiceMarkerEnabled && !isCommand) ? VoiceController.voiceMarker + text : text
         inject?(Data(payload.utf8))   // 不 auto-\n:语音误识安全网,再按 Enter 才执行
         recordRecent(text)            // 进纠错 prompt 的"最近指令"上下文
         AgentLog.info("voice", "inject preview chars=\(text.count) marker=\(voiceMarkerEnabled)")

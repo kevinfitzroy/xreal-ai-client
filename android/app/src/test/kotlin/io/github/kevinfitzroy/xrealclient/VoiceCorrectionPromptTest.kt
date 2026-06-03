@@ -18,11 +18,22 @@ class VoiceCorrectionPromptTest {
         recentCommands: List<String> = emptyList(),
     ) = VoiceContext(projectName, sessionType, isAiAgent, hotwords, lang, terminalTail, recentCommands)
 
-    @Test fun `system prompt 强调只纠错不执行 + 保守`() {
+    @Test fun `system prompt 强调只纠错 不改写 不揣摩意图 + 保守`() {
         val s = VoiceCorrectionPrompt.SYSTEM
         assertTrue(s.contains("纠错"))
         assertTrue(s.contains("绝不执行"))
-        assertTrue(s.contains("原样"))   // 保守:拿不准原样返回
+        assertTrue(s.contains("不改写"))     // 只纠正不改写
+        assertTrue(s.contains("揣摩"))       // 不揣摩意图
+        assertTrue(s.contains("原样"))       // 保守:拿不准原样返回
+    }
+
+    @Test fun `AI agent 会话才追加 Claude Code 内置命令例外`() {
+        val ai = VoiceCorrectionPrompt.build("做一次上下文压缩", ctx(isAiAgent = true))
+        assertTrue(ai.system.contains("/compact"))      // 例外在场
+        assertTrue(ai.system.contains("内置命令"))
+        val shell = VoiceCorrectionPrompt.build("做一次上下文压缩", ctx(isAiAgent = false, sessionType = "ssh"))
+        assertFalse(shell.system.contains("/compact"))  // 裸 shell 不给例外(/compact 是废命令)
+        assertFalse(shell.system.contains("内置命令"))
     }
 
     @Test fun `user 段含项目 语言 热词 且原文必现`() {
