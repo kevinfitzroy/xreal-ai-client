@@ -47,6 +47,8 @@ fun interface TerminalContextSource {
 /** 纠错引擎抽象。**阻塞调用,放后台线程**;任何失败/超时必须回退 [raw](契约:绝不丢字、绝不臆改成空)。 */
 interface VoiceCorrector {
     fun correct(raw: String, ctx: VoiceContext): String
+    /** 预热:提前建好到 LLM 的连接,让第一次纠错不付 TLS 握手。后台调,忽略结果。默认 no-op。 */
+    fun prewarm() {}
 }
 
 /**
@@ -162,6 +164,16 @@ class OpenAiCompatCorrector(
             AppLog.w(TAG, "correct failed: ${it.javaClass.simpleName} ${it.message} → 回退原文")
             raw
         }
+    }
+
+    /** 进 OkHttp 连接池建好 TLS 连接(GET /models,廉价、不耗 token);忽略任何结果。 */
+    override fun prewarm() {
+        val base = runCatching { java.net.URL(endpoint) }.getOrNull() ?: return
+        val warm = Request.Builder()
+            .url("${base.protocol}://${base.host}/models")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .get().build()
+        runCatching { http.newCall(warm).execute().use { } }
     }
 
     private fun parseContent(body: String): String = runCatching {

@@ -504,6 +504,7 @@ class MainActivity : Activity() {
         voiceDaemon.contextSource = (newChannel as? SshConnection)?.let { ssh ->
             currentOpen?.session?.let { sess -> TerminalContextSource { ssh.execCapture(tmuxCaptureCommand(sess)) } }
         }
+        if (newChannel is SshConnection) voiceDaemon.prewarmCorrector()   // 进 project 即预热 LLM 连接,首次纠错不付握手
         startReaderFor(newChannel)
         if (old !== newChannel) runCatching { old.close() }
         // 关键:把当前 xterm 尺寸重推给新通道。showTerminal 的 fit→onResize 早在 SSH 连上前就

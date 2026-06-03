@@ -140,6 +140,12 @@ class VoiceDaemon(
         }
     }
 
+    /** 预热纠错连接(进 project 时由 MainActivity 调):后台建好到 LLM 的 TLS 连接,首次纠错不付握手。 */
+    fun prewarmCorrector() {
+        val c = corrector ?: return
+        correctExec.execute { runCatching { c.prewarm() } }
+    }
+
     /** 组装纠错背景信息(在 voice-correct 后台线程调:含 tmux SSH 抓取)。 */
     private fun buildContext(): VoiceContext {
         val tail = runCatching { contextSource?.snapshot() }.getOrNull()
