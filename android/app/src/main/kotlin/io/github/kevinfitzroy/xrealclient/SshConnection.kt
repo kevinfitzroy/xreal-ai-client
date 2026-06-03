@@ -12,6 +12,7 @@ import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 import java.io.File
 import java.io.InputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * 单 SSH 连接 + PTY + 自定义启动命令(默认 abduco session)。
@@ -114,6 +115,26 @@ class SshConnection(
 
     override fun isConnected(): Boolean = client?.isConnected == true
 
+    /**
+     * 一次性 exec 抓取:在同一 SSH 连接上开一条**侧 channel** 跑 [command],读全部 stdout 返回。
+     * 给 LLM 纠错抓 tmux 终端上下文用(`tmux capture-pane`)。
+     *
+     * **阻塞** —— 放后台线程调(voice-correct);不影响 PTY 主通道(sshj 支持同连接多 channel,
+     * 各 channel 独立)。未连接/失败/超时 → 返回 null(纠错侧据此省略终端上下文段,不报错)。
+     */
+    fun execCapture(command: String): String? {
+        val c = client ?: return null
+        if (!c.isConnected) return null
+        return runCatching {
+            c.startSession().use { s ->
+                val cmd = s.exec(command)
+                val out = cmd.inputStream.readBytes().toString(Charsets.UTF_8)   // 读到 EOF(命令退出);capture-pane 秒退
+                cmd.join(CAPTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                out
+            }
+        }.getOrElse { AppLog.w(TAG, "execCapture failed: ${it.javaClass.simpleName} ${it.message}"); null }
+    }
+
     override fun close() {
         AppLog.i(TAG, "close()")
         ioExec.shutdownNow()
@@ -130,6 +151,7 @@ class SshConnection(
     private companion object {
         const val TAG = "SshConnection"
         const val CONNECT_TIMEOUT_MS = 12_000
+        const val CAPTURE_TIMEOUT_MS = 4_000L   // tmux capture-pane 侧 channel 上限
     }
 }
 

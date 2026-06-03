@@ -35,6 +35,21 @@ data class AsrConfig(
     }
 }
 
+/**
+ * 语音转写 LLM 上下文纠错配置(issue #16)。OpenAI 兼容 Chat Completions(DeepSeek/GPT-4o-mini/兼容网关)。
+ * 经代客安装(§8 同 ASR 通道)进私有 [SettingsStore.PRIVATE_CORRECTION],**无设置 UI**。未配置 → 纠错关闭(= 现状行为)。
+ */
+data class CorrectionConfig(
+    val enabled: Boolean = false,
+    val endpoint: String = "",       // 完整 URL,含 /chat/completions
+    val apiKey: String = "",
+    val model: String = "",
+    val timeoutMs: Long = 3000,
+) {
+    fun isConfigured(): Boolean =
+        enabled && endpoint.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()
+}
+
 class SettingsStore(ctx: Context) {
 
     private val prefs: SharedPreferences =
@@ -90,6 +105,29 @@ class SettingsStore(ctx: Context) {
             resourceId = prefs.getString(K_ASR_RESOURCE_ID, AsrConfig.DEFAULT_RESOURCE_ID)
                 ?: AsrConfig.DEFAULT_RESOURCE_ID,
         )
+    }
+
+    /**
+     * LLM 纠错配置(issue #16)。来源:Valet 导入到私有 [PRIVATE_CORRECTION] 的 correction.json(无 UI 通道,与 asr.json 同构)。
+     * 文件不存在/解析失败/缺字段 → 返回 disabled(纠错关闭,回退现状行为)。假设 [importStagingIfPresent] 已先跑(MainActivity 顺序保证)。
+     */
+    fun loadCorrection(): CorrectionConfig {
+        val f = java.io.File(filesDir, PRIVATE_CORRECTION)
+        if (!f.exists()) return CorrectionConfig()
+        return runCatching {
+            val o = org.json.JSONObject(f.readText())
+            CorrectionConfig(
+                enabled = o.optBoolean("enabled", true),   // 配了文件默认开,除非显式 false
+                // endpoint/model 默认 DeepSeek(项目默认引擎,见 #16)→ correction.json 最简只需 {apiKey}
+                endpoint = o.optString("endpoint", "https://api.deepseek.com/chat/completions"),
+                apiKey = o.optString("apiKey"),
+                model = o.optString("model", "deepseek-chat"),
+                timeoutMs = o.optLong("timeoutMs", 5000L),
+            )
+        }.getOrElse {
+            android.util.Log.w("SettingsStore", "私有 correction.json 解析失败 → 纠错关闭: ${it.message}")
+            CorrectionConfig()
+        }
     }
 
     /**
@@ -212,7 +250,8 @@ class SettingsStore(ctx: Context) {
         val staging = java.io.File(STAGING_DIR)
         val stagedHosts = java.io.File(staging, "hosts.json")
         val stagedAsr = java.io.File(staging, "asr.json")
-        if (!stagedHosts.exists() && !stagedAsr.exists()) return
+        val stagedCorrection = java.io.File(staging, "correction.json")
+        if (!stagedHosts.exists() && !stagedAsr.exists() && !stagedCorrection.exists()) return
 
         // 清理上次崩溃残留的半成品(原子写的 .tmp)
         val keysDir = java.io.File(filesDir, "keys").apply { mkdirs() }
@@ -262,11 +301,22 @@ class SettingsStore(ctx: Context) {
             asrImported = true
         }
 
+        // 纠错配置:校验 JSON 合法后原子落私有存储(无 UI 通道,与 asr.json 同构)。
+        var correctionImported = false
+        if (stagedCorrection.exists()) {
+            val raw = stagedCorrection.readText()
+            require(stagedCorrection.length() in 1..4096) { "correction.json 过大" }
+            org.json.JSONObject(raw)   // 解析失败即抛,不落坏文件
+            writeAtomic(java.io.File(filesDir, PRIVATE_CORRECTION), raw)
+            correctionImported = true
+        }
+
         // best-effort 清 staging;app 通常无权删 /data/local/tmp(SELinux)→ 权威清理由 Valet 做。
         val wiped = staging.deleteRecursively() && !staging.exists()
         android.util.Log.i(
             "SettingsStore",
-            "Valet 导入完成:$hostCount host" + (if (asrImported) " + ASR 凭证" else "") + " → 私有存储" +
+            "Valet 导入完成:$hostCount host" + (if (asrImported) " + ASR 凭证" else "") +
+                (if (correctionImported) " + 纠错配置" else "") + " → 私有存储" +
                 if (wiped) ",staging 已清" else "(staging 残留,需 Valet 清:adb shell rm -rf $STAGING_DIR)",
         )
     }
@@ -306,6 +356,8 @@ class SettingsStore(ctx: Context) {
         const val PRIVATE_HOSTS = "hosts.json"
         /** Valet 导入的 ASR 凭证(app 私有目录)。 */
         const val PRIVATE_ASR = "asr.json"
+        /** Valet 导入的 LLM 纠错配置(app 私有目录,issue #16)。 */
+        const val PRIVATE_CORRECTION = "correction.json"
         /** legacy 过渡期 host 配置(dev rig 用;adb push,reboot 清零,重跑 scripts/setup-mac-host.sh)。 */
         const val HOSTS_JSON = "/data/local/tmp/xreal_hosts.json"
         /** legacy 顶层 `proxies` 表无 localPort 时按序合成固定口的基址(目标契约是 host 内联 proxy.localPort)。 */

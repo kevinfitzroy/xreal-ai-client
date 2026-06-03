@@ -213,6 +213,14 @@ class MainActivity : Activity() {
             }
         }
 
+        // LLM 上下文纠错(issue #16):配了 correction.json 才接,否则纠错关闭(= 改造前行为)。
+        settings.loadCorrection().let { corr ->
+            if (corr.isConfigured()) {
+                voiceDaemon.corrector = OpenAiCompatCorrector(corr.endpoint, corr.apiKey, corr.model, corr.timeoutMs)
+                AppLog.i(TAG, "voice correction = ${corr.model} @ ${corr.endpoint.substringAfter("//").substringBefore("/")}")  // 不打 key
+            }
+        }
+
         if (hosts.isNotEmpty()) {
             // 核心流程:真实 host/project 静态枚举(onPageFinished 推)。Enter→findProject 靠它开真终端。
             // loading=true:首屏徽章先转圈;manifest 拉到后 refreshManifests 推 loading=false 的真状态。
@@ -430,10 +438,13 @@ class MainActivity : Activity() {
         scheduleReconnect()
     }
 
-    /** 设当前 project 的语音上下文:热词(BASE 继承 + per-project)+ 是否加 🎤 marker(仅 AI-agent 类)。 */
+    /** 设当前 project 的语音上下文:热词(BASE 继承 + per-project)+ 是否加 🎤 marker(仅 AI-agent 类)
+     *  + 纠错 prompt 的项目元数据(名/类型)。 */
     private fun applyProjectHotwords(p: ProjectConfig?) {
         voiceDaemon.hotwords = if (p == null) Hotwords.BASE else Hotwords.merge(p.hotwords)
         voiceDaemon.voiceMarkerEnabled = p?.type?.isAiAgent() ?: false
+        voiceDaemon.projectName = p?.displayName ?: ""
+        voiceDaemon.sessionType = p?.type?.jsKey() ?: "ssh"
         Log.d(TAG, "voice ctx: hotwords=${voiceDaemon.hotwords.size} marker=${voiceDaemon.voiceMarkerEnabled} (project=${p?.sessionName ?: "none"})")
     }
 
@@ -471,6 +482,12 @@ class MainActivity : Activity() {
             "exec tmux -u -f $c new -A -s '$session'"        // cold-start:server 出生即带 conf(50000 + bindings)
     }
 
+    /** LLM 纠错抓终端上下文:capture-pane 当前 session 活动 pane 的可见 + 近 40 行回溯(纯文本,-p)。
+     *  PATH 前缀同 [tmuxAttachCommand](非交互 exec PATH 太窄找不到 tmux);失败 2>/dev/null → execCapture 得空串。 */
+    private fun tmuxCaptureCommand(session: String): String =
+        "export PATH=\"\$PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin\"; " +
+            "tmux capture-pane -p -S -40 -t '$session' 2>/dev/null"
+
     private fun materializeKey(h: HostConfig): java.io.File =
         java.io.File(filesDir, "term_${h.name}.pem").apply {
             writeText(h.ssh.privateKeyPem); setReadable(false, false); setReadable(true, true)
@@ -483,6 +500,10 @@ class MainActivity : Activity() {
         activeChannel = newChannel
         bridge.channel = newChannel
         voiceDaemon.channel = newChannel
+        // 纠错的 tmux 背景来源:仅真 SSH 连接可抓(LocalEcho/无连接 = null,纠错侧自动省略终端上下文)。
+        voiceDaemon.contextSource = (newChannel as? SshConnection)?.let { ssh ->
+            currentOpen?.session?.let { sess -> TerminalContextSource { ssh.execCapture(tmuxCaptureCommand(sess)) } }
+        }
         startReaderFor(newChannel)
         if (old !== newChannel) runCatching { old.close() }
         // 关键:把当前 xterm 尺寸重推给新通道。showTerminal 的 fit→onResize 早在 SSH 连上前就

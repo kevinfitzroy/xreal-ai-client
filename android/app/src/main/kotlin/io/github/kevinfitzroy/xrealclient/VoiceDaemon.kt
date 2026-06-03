@@ -5,6 +5,8 @@ import android.os.Looper
 import android.util.Log
 import android.webkit.WebView
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentLinkedDeque
+import java.util.concurrent.Executors
 
 /**
  * 语音输入状态机(真流式):按住说话,边录边传,识别结果实时上屏。
@@ -42,11 +44,26 @@ class VoiceDaemon(
      */
     @Volatile var voiceMarkerEnabled: Boolean = false
 
-    enum class State { IDLE, STREAMING, ASR_PENDING, PREVIEW }
+    // ── LLM 上下文纠错(issue #16)。corrector==null → 纠错关闭,行为同改造前 ───────────────────
+    /** 纠错引擎(未配置 = null → 跳过纠错直接 PREVIEW)。MainActivity 启动按 [CorrectionConfig] 注入。 */
+    @Volatile var corrector: VoiceCorrector? = null
+    /** 终端背景来源(tmux capture-pane)。MainActivity 在 [switchTo] 按是否真 SSH 注入;LocalEcho=null。 */
+    @Volatile var contextSource: TerminalContextSource? = null
+    /** 当前 project 显示名 / session 类型,喂给纠错 prompt(applyProjectHotwords 设)。 */
+    @Volatile var projectName: String = ""
+    @Volatile var sessionType: String = "ssh"
+
+    enum class State { IDLE, STREAMING, ASR_PENDING, CORRECTING, PREVIEW }
 
     @Volatile private var state: State = State.IDLE
     @Volatile private var currentText: String? = null
     @Volatile private var stream: AsrStream? = null
+    /** 当前会话语种(onKeyDown 设),纠错 prompt 用(提示别跨语种乱译)。 */
+    @Volatile private var lang: String = "zh"
+    /** 最近已确认注入的语音指令(最新在 first),给纠错 prompt 连续指令上下文。 */
+    private val recentCommands = ConcurrentLinkedDeque<String>()
+    /** 纠错跑在单独后台线程:含 tmux 抓取(SSH I/O)+ LLM HTTP,绝不在回调/主线程跑。 */
+    private val correctExec = Executors.newSingleThreadExecutor { r -> Thread(r, "voice-correct").apply { isDaemon = true } }
     /** 会话代数:每次 onKeyDown/onEsc ++,回调凭捕获的 gen 比对,过滤上一个会话的迟到回调。 */
     @Volatile private var asrGen = 0
 
@@ -55,6 +72,7 @@ class VoiceDaemon(
     fun onKeyDown(keyCode: Int) {
         if (keyCode != KEY_F13 && keyCode != KEY_F14) return
         val lang = if (keyCode == KEY_F13) "zh" else "en"
+        this.lang = lang
 
         asrGen++
         val gen = asrGen
@@ -94,14 +112,46 @@ class VoiceDaemon(
     private fun onAsrFinal(gen: Int, text: String) {
         if (gen != asrGen) return
         if (state != State.STREAMING && state != State.ASR_PENDING) return
-        if (text.isBlank()) {
-            resetIdle()
-        } else {
-            currentText = text
+        Log.d(TAG, "FINAL text='$text'")
+        if (text.isBlank()) { resetIdle(); return }
+        currentText = text
+
+        val corrector = this.corrector
+        if (corrector == null) {           // 纠错关闭:直接预览(改造前行为)
             state = State.PREVIEW
             showOverlay("🎤 已识别", text)
+            return
         }
-        Log.d(TAG, "FINAL text='$text'")
+
+        // 纠错开启:进 CORRECTING,后台抓 tmux 上下文 + 跑 LLM,完成回 PREVIEW(失败回退原文)。
+        // gen 守卫:期间用户重按/Esc 会 ++asrGen,迟到的纠错结果被丢弃。
+        state = State.CORRECTING
+        showOverlay("✨ 纠错中…", text)
+        correctExec.execute {
+            val ctx = buildContext()
+            val corrected = runCatching { corrector.correct(text, ctx) }.getOrDefault(text)
+            mainHandler.post {
+                if (gen != asrGen || state != State.CORRECTING) return@post   // 已取消/被新会话取代
+                currentText = corrected
+                state = State.PREVIEW
+                val tag = if (corrected != text) "✨ 已纠错" else "🎤 已识别"
+                showOverlay(tag, corrected)
+            }
+        }
+    }
+
+    /** 组装纠错背景信息(在 voice-correct 后台线程调:含 tmux SSH 抓取)。 */
+    private fun buildContext(): VoiceContext {
+        val tail = runCatching { contextSource?.snapshot() }.getOrNull()
+        return VoiceContext(
+            projectName = projectName,
+            sessionType = sessionType,
+            isAiAgent = voiceMarkerEnabled,   // = AI-agent 类(applyProjectHotwords 同源设)
+            hotwords = hotwords,
+            lang = lang,
+            terminalTail = tail?.takeIf { it.isNotBlank() },
+            recentCommands = recentCommands.toList(),
+        )
     }
 
     private fun onAsrError(gen: Int, reason: String) {
@@ -112,16 +162,24 @@ class VoiceDaemon(
 
     /** @return true = overlay 接管 Enter(写文本);false = 透传到 WebView/xterm */
     fun onEnter(): Boolean {
+        // 纠错进行中按 Enter:拦截但不动作(别让这个 CR 漏进 shell);等纠错完成进 PREVIEW 再按。
+        if (state == State.CORRECTING) return true
         if (state != State.PREVIEW) return false
         val text = currentText ?: run { resetIdle(); return false }
         val payload = if (voiceMarkerEnabled) VOICE_MARKER + text else text
         try {
             channel.write(payload.toByteArray(Charsets.UTF_8))   // 原子 write+flush(串行化,见 PtyChannel)
+            recordRecent(text)   // 进纠错 prompt 的"最近指令"上下文
         } catch (e: Exception) {
             AppLog.w(TAG, "write injected text failed: ${e.javaClass.simpleName}: ${e.message}")
         }
         resetIdle()
         return true
+    }
+
+    private fun recordRecent(text: String) {
+        recentCommands.addFirst(text)
+        while (recentCommands.size > RECENT_MAX) recentCommands.removeLast()
     }
 
     /** @return true = 拦截(取消会话/preview);false = 透传 */
@@ -165,6 +223,8 @@ class VoiceDaemon(
         const val KEY_F14 = 327
         /** 注入 AI-agent 会话时的语音前缀。与 sub-project CLAUDE.md 的约定一致(见 orchestrator-CLAUDE.md)。 */
         const val VOICE_MARKER = "🎤 "
+        /** 喂给纠错 prompt 的"最近语音指令"条数上限。 */
+        private const val RECENT_MAX = 5
     }
 }
 
