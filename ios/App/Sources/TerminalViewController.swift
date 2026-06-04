@@ -19,6 +19,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     // 原生列表(替代 WKWebView/index.html)。
     private let deckList = DeckListView(frame: .zero)
+    // 群控 Home(四页布局最左:logs ← home ← list → terminal;SPEC §14 展示面)。落地页。
+    private let homePanel = HomePanelView(frame: .zero)
     // 列表页右滑进入的运行日志容器。
     private let logPanel = LogPanelView(frame: .zero)
     // 原生终端(SwiftTerm):终端态渲染 + 键盘;列表态隐藏。
@@ -61,10 +63,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
-    private weak var listLogPan: UIPanGestureRecognizer?
+    private weak var listLogPan: UIPanGestureRecognizer?   // 现管 home↔logs(原 list↔logs)
+    private weak var homePan: UIPanGestureRecognizer?      // list↔home
     private var logDragging = false
+    private var homeDragging = false
 
-    private enum ViewState { case list, terminal, logs }
+    private enum ViewState { case home, list, terminal, logs }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
     private var view_ = ViewState.list
@@ -129,6 +133,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             deckList.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             deckList.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        // 群控 Home:frame 布局(同 logPanel,由 layoutHomePanel 管);z 序在 deckList 之上、logPanel 之下。
+        homePanel.onSelect = { [weak self] r in
+            self?.onOpenProject(host: r.host, session: r.session, name: r.name, type: r.type.rawValue)
+        }
+        homePanel.isHidden = true
+        view.addSubview(homePanel)
         logPanel.onClose = { [weak self] in self?.hideLogPanel(animated: true) }
         logPanel.isHidden = true
         view.addSubview(logPanel)
@@ -246,6 +256,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         logPan.cancelsTouchesInView = false
         view.addGestureRecognizer(logPan)
         self.listLogPan = logPan
+        // 四页链:home 居 logs 与 list 之间。homePan 管 list↔home;logPan 改管 home↔logs。
+        let homePan = UIPanGestureRecognizer(target: self, action: #selector(handleHomeListPan(_:)))
+        homePan.delegate = self
+        homePan.cancelsTouchesInView = false
+        view.addGestureRecognizer(homePan)
+        self.homePan = homePan
+        // 落地页 = 群控 Home(四页布局)。
+        landOnHome()
 
         #if DEBUG
         applyDebugLevers()
@@ -370,7 +388,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
-    /// 列表页右滑 → 日志容器;日志容器左滑 → 回列表。
+    /// 四页链之 home↔logs:home 右滑 → 日志容器;日志容器左滑 → 回 home。
     @objc private func handleListLogPan(_ g: UIPanGestureRecognizer) {
         let tx = g.translation(in: view).x
         let vx = g.velocity(in: view).x
@@ -378,16 +396,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let threshold = min(140, width * 0.28)
 
         switch (view_, g.state) {
-        case (.list, .began):
+        case (.home, .began):
             prepareLogPanelFromLeft()
-        case (.list, .changed):
+        case (.home, .changed):
             guard logDragging else { return }
             slideLogPanel(toX: min(0, -width + max(0, tx)))
-        case (.list, .ended):
+        case (.home, .ended):
             guard logDragging else { return }
             let shouldCommit = tx > threshold || vx > 650
             shouldCommit ? showLogPanel(animated: true, alreadyPrepared: true) : cancelLogSlide(toX: -width, hideAfter: true)
-        case (.list, .cancelled), (.list, .failed):
+        case (.home, .cancelled), (.home, .failed):
             if logDragging { cancelLogSlide(toX: -width, hideAfter: true) }
 
         case (.logs, .began):
@@ -403,6 +421,44 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             shouldClose ? hideLogPanel(animated: true) : showLogPanel(animated: true, alreadyPrepared: true)
         case (.logs, .cancelled), (.logs, .failed):
             if logDragging { showLogPanel(animated: true, alreadyPrepared: true) }
+        default:
+            break
+        }
+    }
+
+    /// 四页链之 list↔home:列表右滑 → Home;Home 左滑 → 回列表。
+    @objc private func handleHomeListPan(_ g: UIPanGestureRecognizer) {
+        let tx = g.translation(in: view).x
+        let vx = g.velocity(in: view).x
+        let width = max(view.bounds.width, 1)
+        let threshold = min(140, width * 0.28)
+
+        switch (view_, g.state) {
+        case (.list, .began):
+            prepareHomePanelFromLeft()
+        case (.list, .changed):
+            guard homeDragging else { return }
+            slideHomePanel(toX: min(0, -width + max(0, tx)))
+        case (.list, .ended):
+            guard homeDragging else { return }
+            let shouldCommit = tx > threshold || vx > 650
+            shouldCommit ? showHomePanel(animated: true, alreadyPrepared: true) : cancelHomeSlide(toX: -width, hideAfter: true)
+        case (.list, .cancelled), (.list, .failed):
+            if homeDragging { cancelHomeSlide(toX: -width, hideAfter: true) }
+
+        case (.home, .began):
+            homeDragging = true
+            homePanel.isHidden = false
+            view.bringSubviewToFront(homePanel)
+        case (.home, .changed):
+            guard homeDragging else { return }
+            slideHomePanel(toX: max(-width, min(0, tx)))
+        case (.home, .ended):
+            guard homeDragging else { return }
+            let shouldClose = -tx > threshold || vx < -650
+            shouldClose ? hideHomePanel(animated: true) : showHomePanel(animated: true, alreadyPrepared: true)
+        case (.home, .cancelled), (.home, .failed):
+            if homeDragging { showHomePanel(animated: true, alreadyPrepared: true) }
         default:
             break
         }
@@ -456,11 +512,23 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 && abs(v.x) > abs(v.y) * 1.05
         }
         if let listLogPan, gestureRecognizer === listLogPan {
+            // home↔logs:home 右滑开 logs;logs 左滑回 home。
+            let v = pan.velocity(in: view)
+            if view_ == .home {
+                return v.x > 60 && abs(v.x) > abs(v.y) * 1.05
+            }
+            if view_ == .logs {
+                return v.x < -60 && abs(v.x) > abs(v.y) * 1.05
+            }
+            return false
+        }
+        if let homePan, gestureRecognizer === homePan {
+            // list↔home:list 右滑开 home;home 左滑回 list。
             let v = pan.velocity(in: view)
             if view_ == .list {
                 return v.x > 60 && abs(v.x) > abs(v.y) * 1.05
             }
-            if view_ == .logs {
+            if view_ == .home {
                 return v.x < -60 && abs(v.x) > abs(v.y) * 1.05
             }
             return false
@@ -473,12 +541,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if let termReturnPan, gestureRecognizer === termReturnPan || otherGestureRecognizer === termReturnPan { return true }
         if let listResumePan, gestureRecognizer === listResumePan || otherGestureRecognizer === listResumePan { return true }
         if let listLogPan, gestureRecognizer === listLogPan || otherGestureRecognizer === listLogPan { return true }
+        if let homePan, gestureRecognizer === homePan || otherGestureRecognizer === homePan { return true }
         return false
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        if view_ == .list { becomeFirstResponder() }   // 列表态 VC 收硬件键 → 列表导航
+        if view_ == .list || view_ == .home { becomeFirstResponder() }   // 列表/Home 态 VC 收硬件键
         // 根 VC 无可 pop,关掉 nav 的左缘返回手势 → 左缘留给我们的"终端回列表"(iOS.6)。
         navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
@@ -487,6 +556,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         super.viewDidLayoutSubviews()
         layoutTerm()
         layoutLogPanel()
+        layoutHomePanel()
     }
 
     // MARK: - 列表数据:hosts + 状态 → [DeckSection](SPEC §3 状态映射,对齐 DeckJSON 逻辑)
@@ -542,6 +612,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 }
                 self.hosts = self.hosts.map { $0.name == r.host.name ? r.host : $0 }
                 self.pushList()
+                self.pushHome()
             }
             await MainActor.run {
                 guard gen == self.fetchGen else { return }
@@ -550,6 +621,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.reachable = result.reachable
                 self.probedHosts = Set(result.hosts.map { $0.name })
                 self.pushList()
+                self.pushHome()
                 AgentLog.info("manifest", "refresh done reachable=\(result.reachable.count)/\(result.hosts.count)")
                 #if DEBUG
                 self.maybeAutoOpen()
@@ -849,6 +921,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func showTerminalView(clear: Bool = true) {
         logPanel.isHidden = true
         logDragging = false
+        homePanel.isHidden = true
+        homeDragging = false
         if clear { term.feed(text: "\u{1b}c") }   // 新连接 RIS 全复位;保活滑回**不清屏**(保留原内容)
         suppressTermAccessory = false
         primeTermAccessoryForTerminal()
@@ -874,6 +948,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         pageCueView.isHidden = true
         logPanel.isHidden = true
         logDragging = false
+        homePanel.isHidden = true
+        homeDragging = false
+        layoutHomePanel()
         suppressTermAccessory = true
         updateTermAccessory()
         _ = term.resignFirstResponder()
@@ -926,10 +1003,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: finish)
     }
 
+    /// logs 在 home 左侧 → 关 logs 退回 **home**(不是 list)。home 面板本就在 x=0 后面,只需把 logs 滑走。
     private func hideLogPanel(animated: Bool) {
-        view_ = .list
-        navigationItem.title = "Agent Station"
-        navigationItem.largeTitleDisplayMode = .always
+        view_ = .home
+        navigationItem.title = "群控"
+        navigationItem.largeTitleDisplayMode = .never
+        homePanel.render(buildHomeModel())
+        homePanel.isHidden = false
+        layoutHomePanel()   // view_==.home → x=0,露在 logPanel 之下
         let finish = {
             self.logDragging = false
             self.slideLogPanel(toX: -self.view.bounds.width)
@@ -937,7 +1018,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let completion: (Bool) -> Void = { _ in
             self.logPanel.isHidden = true
             self.layoutLogPanel()
-            self.pushList()
         }
         guard animated else {
             finish()
@@ -955,6 +1035,113 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             if hideAfter { self.logPanel.isHidden = true }
             self.layoutLogPanel()
         }
+    }
+
+    // MARK: - 群控 Home(四页布局落地页;SPEC §14 展示面。机制同 logPanel)
+    /// home 在 logs 与 list 之间:home 盖 list,logs 盖 home。home 处于 x=0 当 view 为 .home 或 .logs。
+    private func layoutHomePanel() {
+        guard !homeDragging else { return }
+        let x: CGFloat = (view_ == .home || view_ == .logs) ? 0 : -view.bounds.width
+        homePanel.frame = view.bounds.offsetBy(dx: x, dy: 0)
+    }
+    private func slideHomePanel(toX x: CGFloat) {
+        homePanel.frame = view.bounds.offsetBy(dx: x, dy: 0)
+    }
+    private func prepareHomePanelFromLeft() {
+        homeDragging = true
+        homePanel.render(buildHomeModel())
+        homePanel.isHidden = false
+        slideHomePanel(toX: -view.bounds.width)
+        view.bringSubviewToFront(homePanel)
+    }
+    private func showHomePanel(animated: Bool, alreadyPrepared: Bool = false) {
+        if !alreadyPrepared { prepareHomePanelFromLeft() }
+        view_ = .home
+        navigationItem.title = "群控"
+        navigationItem.largeTitleDisplayMode = .never
+        navigationController?.setNavigationBarHidden(false, animated: false)
+        homePanel.render(buildHomeModel())
+        homePanel.isHidden = false
+        view.bringSubviewToFront(homePanel)
+        _ = becomeFirstResponder()
+        let finish = {
+            self.homeDragging = false
+            self.slideHomePanel(toX: 0)
+        }
+        guard animated else { finish(); return }
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: finish)
+    }
+    /// home 在 list 左侧 → 关 home 退回 **list**(home 滑走,露出后面的 list)。
+    private func hideHomePanel(animated: Bool) {
+        view_ = .list
+        navigationItem.title = "Agent Station"
+        navigationItem.largeTitleDisplayMode = .always
+        _ = becomeFirstResponder()
+        pushList()
+        let finish = {
+            self.homeDragging = false
+            self.slideHomePanel(toX: -self.view.bounds.width)
+        }
+        let completion: (Bool) -> Void = { _ in
+            self.homePanel.isHidden = true
+            self.layoutHomePanel()
+        }
+        guard animated else { finish(); completion(true); return }
+        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: finish, completion: completion)
+    }
+    private func cancelHomeSlide(toX x: CGFloat, hideAfter: Bool = false) {
+        UIView.animate(withDuration: 0.20, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.slideHomePanel(toX: x)
+        } completion: { _ in
+            self.homeDragging = false
+            if hideAfter { self.homePanel.isHidden = true }
+            self.layoutHomePanel()
+        }
+    }
+
+    /// 启动落地在 Home(四页布局)。list 已是默认可见 anchor,home 盖其上。
+    private func landOnHome() {
+        view_ = .home
+        navigationItem.title = "群控"
+        navigationItem.largeTitleDisplayMode = .never
+        navigationController?.setNavigationBarHidden(false, animated: false)
+        homePanel.render(buildHomeModel())
+        homePanel.isHidden = false
+        layoutHomePanel()
+        view.bringSubviewToFront(homePanel)
+        setNeedsStatusBarAppearanceUpdate()
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+
+    /// 跨 host 聚合「需要你关注」(waiting/needs-permission)。SPEC §14.4 降级形态:无语义"为什么",
+    /// 仅用 hooks 状态(§3)。§14 巡检后端落地后,把 why/urgency 灌进 HomeRow 即可。
+    private func buildHomeModel() -> HomePanelView.Model {
+        var attention: [HomePanelView.HomeRow] = []
+        var working = 0
+        let probing = (reachable == nil)
+        for h in hosts {
+            let hostStatus = statusByHost[h.name] ?? [:]
+            let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
+            let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
+            for p in h.projects {
+                guard !hostLoading, !unreachable else { continue }
+                let live = hostStatus[p.session]
+                let state = live?.state ?? "unknown"
+                if state == "working" { working += 1 }
+                if state == "waiting" || state == "needs-permission" {
+                    attention.append(.init(host: h.name, session: p.session, name: p.name,
+                                           type: p.type, state: state, since: live?.since ?? 0))
+                }
+            }
+        }
+        // 等得最久的在前(since 小=早);since==0(无)排末尾。
+        attention.sort { ($0.since == 0 ? Int.max : $0.since) < ($1.since == 0 ? Int.max : $1.since) }
+        return .init(attention: attention, working: working, hostCount: hosts.count, probing: probing)
+    }
+
+    /// home 数据刷新(随 manifest/status 更新)。off-screen 也刷,保证滑入即新。
+    private func pushHome() {
+        homePanel.render(buildHomeModel())
     }
 
     private var shouldShowTermAccessory: Bool { GCKeyboard.coalesced == nil }
@@ -1260,7 +1447,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            if self.view_ == .list, !self.hosts.isEmpty { self.refreshManifests() }
+            if (self.view_ == .list || self.view_ == .home), !self.hosts.isEmpty { self.refreshManifests() }
         }
     }
 
@@ -1646,7 +1833,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     private var didAutoOpen = false
     private func maybeAutoOpen() {
-        guard !didAutoOpen, view_ == .list else { return }
+        guard !didAutoOpen, view_ == .list || view_ == .home else { return }
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-autoOpenSession"), i + 1 < args.count else { return }
         let session = args[i + 1]
