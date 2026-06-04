@@ -121,6 +121,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var triageItems: [TriageItem]? = nil   // 最近一轮 digest;nil = 尚未巡检(Home 用 hooks 降级)
     private var triageTimer: Timer?
     private static let triageIntervalSeconds: TimeInterval = 25
+    private var lastNeedsYouKeys: Set<String> = []   // 上轮「需要你」的 host\u{1}session,用于检测"新出现"
+    private var triageBaselineSet = false             // 首轮只建基线,不弹 banner(防启动刷屏)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -1181,7 +1183,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         triageTimer = t
     }
     private func triageTick() {
-        guard view_ == .home || view_ == .list else { return }
+        // home/list/terminal 都跑:终端态也巡检 → 你埋头在某 agent 时,别的 agent 卡住能 banner 提醒。
+        guard view_ == .home || view_ == .list || view_ == .terminal else { return }
         guard hosts.contains(where: { !$0.basePath.isEmpty }) else { return }
         runTriageRound()
     }
@@ -1198,6 +1201,49 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             self.triageItems = round.items
             self.pushList()
             self.pushHome()
+            // app 内通知:本轮"新出现"的「需要你」→ 顶部 banner。Home 态不弹(列表已列着);首轮只建基线。
+            let keys = Set(round.items.map { $0.host + "\u{1}" + $0.session })
+            let newKeys = keys.subtracting(self.lastNeedsYouKeys)
+            self.lastNeedsYouKeys = keys
+            if self.triageBaselineSet, self.view_ != .home, !newKeys.isEmpty {
+                self.showAttentionBanner(round.items.filter { newKeys.contains($0.host + "\u{1}" + $0.session) })
+            }
+            self.triageBaselineSet = true
+        }
+    }
+
+    /// app 内通知(SPEC §14 送达面的最简版)。顶部胶囊 banner,提醒有新 agent 需要你处理。
+    /// (系统级 push / 后台通知是更大的活,押后;这里只在 app 前台时弹。)
+    private func showAttentionBanner(_ items: [TriageItem]) {
+        guard !items.isEmpty else { return }
+        let high = items.contains { $0.urgency == "high" }
+        let text: String
+        if items.count == 1 {
+            let it = items[0]
+            text = "🔔 \(it.name) 需要你" + (it.why.isEmpty ? "" : "\n\(it.why)")
+        } else {
+            text = "🔔 \(items.count) 个 agent 需要你处理"
+        }
+        let lbl = PaddingLabel()
+        lbl.text = text
+        lbl.font = .systemFont(ofSize: 14, weight: .semibold)
+        lbl.textColor = .white
+        lbl.backgroundColor = (high ? UIColor.systemRed : UIColor.systemOrange).withAlphaComponent(0.96)
+        lbl.layer.cornerRadius = 12; lbl.clipsToBounds = true
+        lbl.numberOfLines = 0; lbl.textAlignment = .center
+        lbl.alpha = 0
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(lbl)
+        view.bringSubviewToFront(lbl)
+        NSLayoutConstraint.activate([
+            lbl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            lbl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            lbl.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            lbl.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+        ])
+        UINotificationFeedbackGenerator().notificationOccurred(high ? .warning : .success)
+        UIView.animate(withDuration: 0.25, animations: { lbl.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.5, delay: 3.8, options: []) { lbl.alpha = 0 } completion: { _ in lbl.removeFromSuperview() }
         }
     }
 
