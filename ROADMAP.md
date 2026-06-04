@@ -82,6 +82,7 @@
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
 | iOS.6 | **边缘滑动手势** | ✅ | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
 | iOS.7 | **最近终端保活(keep-warm)** | ✅ | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
+| iOS.9 | **四页布局 + 群控 Home 落地页**(P0.8 展示面,**仅 iOS**) | 🚧 骨架(2026-06-04) | 三页→四页:日志 ← **Home** ← 列表 → 终端(线性 slide pager,镜像既有 logPanel 机制)。`HomePanelView` 跨 host 聚合「需要你关注」(waiting/needs-permission,§14.4 降级形态,数据来自现有 hooks 状态)。落地 = Home。**已验**:模拟器编译 + 落地 Home 截图。**待真机/触屏验**:四页滑动手势 + Home 点 session 开 project。**待接**:§14 巡检后端灌 why/urgency + 通知(P2.4) |
 | iOS.8 | **SSH-over-443 / vmess** | ✅ 真机验证 | HostStore 支持 host 内联 `proxy{name,localPort,url}` 并拒绝本地端口冲突;列表 host header 显示 `🔒 proxy`;`SshConnect` 统一处理终端 + manifest/status 轮询,按 proxy/via 归属起 host 级 xray dokodemo-door(override→服务端 `127.0.0.1:22`)并让 Citadel 直连该 host 固定本地口。未 build framework 时带 proxy host fail closed,直连不受影响 |
 
 ---
