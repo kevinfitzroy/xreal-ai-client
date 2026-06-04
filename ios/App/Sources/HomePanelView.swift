@@ -26,7 +26,8 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     /// Home 视图模型(VC 从 hosts + statusByHost 算好喂进来)。
     struct Model {
         let attention: [HomeRow]   // 需要你关注(已按 urgency/since 排序)
-        let working: Int           // 工作中的 agent 数
+        let working: Int           // 工作中的 agent 数(pill)
+        let offline: Int           // 离线/已断开的 agent 数(pill)
         let hostCount: Int
         let probing: Bool          // 仍在首轮探测(还没有任何状态)
         let judgeActive: Bool      // §14 判官是否就绪(配了 DeepSeek key)→ 语义分诊;否则 hooks 降级
@@ -36,6 +37,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     private let headlineLabel = UILabel()
     private let subLabel = UILabel()
+    private let pillStack = UIStackView()   // 彩色计数胶囊行(工作中/离线)
     private let noteLabel = UILabel()
     private let table = UITableView(frame: .zero, style: .insetGrouped)
     private let emptyLabel = UILabel()
@@ -59,10 +61,15 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         noteLabel.numberOfLines = 0
         noteLabel.adjustsFontForContentSizeCategory = true
 
-        let header = UIStackView(arrangedSubviews: [headlineLabel, subLabel, noteLabel])
+        pillStack.axis = .horizontal
+        pillStack.spacing = 8
+        pillStack.alignment = .center
+
+        let header = UIStackView(arrangedSubviews: [headlineLabel, subLabel, pillStack, noteLabel])
         header.axis = .vertical
         header.spacing = 4
         header.setCustomSpacing(8, after: subLabel)
+        header.setCustomSpacing(10, after: pillStack)
         header.translatesAutoresizingMaskIntoConstraints = false
 
         table.translatesAutoresizingMaskIntoConstraints = false
@@ -111,16 +118,23 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         if m.hostCount == 0 {
             headlineLabel.text = "暂无 host"
             subLabel.text = "AirDrop 一个 .xrhosts 配置导入"
+            subLabel.isHidden = false
+            pillStack.isHidden = true
             emptyLabel.isHidden = true
             noteLabel.isHidden = true
         } else if m.probing && n == 0 {
             headlineLabel.text = "正在巡检…"
             subLabel.text = "拉取各 host 状态中"
+            subLabel.isHidden = false
+            pillStack.isHidden = true
             emptyLabel.isHidden = true
             noteLabel.isHidden = false
         } else {
             headlineLabel.text = n == 0 ? "一切就绪" : "\(n) 个 agent 需要你"
-            subLabel.text = "\(m.working) 工作中  ·  \(m.hostCount) host\(m.hostCount == 1 ? "" : "s")"
+            subLabel.isHidden = true
+            // 大标题已 own「N 需要你」;pill 补「工作中/离线」的彩色计数。都为 0 则不显示这行。
+            rebuildPills(working: m.working, offline: m.offline)
+            pillStack.isHidden = (m.working == 0 && m.offline == 0)
             emptyLabel.isHidden = (n != 0)
             emptyLabel.text = "暂无需要你处理的 agent\n所有 agent 在工作或空闲中"
             noteLabel.isHidden = false
@@ -130,6 +144,25 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
             ? "由 DeepSeek V4 Pro 巡检分诊(SPEC §14)"
             : "未配置巡检判官 · 暂按运行状态聚合 · 配置 DeepSeek key 启用语义分诊"
         table.reloadData()
+    }
+
+    private func rebuildPills(working: Int, offline: Int) {
+        pillStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if working > 0 { pillStack.addArrangedSubview(makeChip("● \(working) 工作中", color: .systemGreen)) }
+        if offline > 0 { pillStack.addArrangedSubview(makeChip("● \(offline) 离线", color: .systemGray)) }
+        pillStack.addArrangedSubview(UIView())   // 末尾弹性占位 → 胶囊靠左
+    }
+
+    private func makeChip(_ text: String, color: UIColor) -> UIView {
+        let l = Chip()
+        l.text = text
+        l.font = .systemFont(ofSize: 13, weight: .semibold)
+        l.textColor = color
+        l.backgroundColor = color.withAlphaComponent(0.16)
+        l.layer.cornerRadius = 13
+        l.clipsToBounds = true
+        l.setContentHuggingPriority(.required, for: .horizontal)
+        return l
     }
 
     // MARK: - UITableView
@@ -184,5 +217,15 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         if secs < 3600 { return "\(secs / 60)m" }
         if secs < 86400 { return "\(secs / 3600)h" }
         return "\(secs / 86400)d"
+    }
+}
+
+/// 紧凑内边距的胶囊标签(pill 用;比 toast 的 PaddingLabel 更小)。
+private final class Chip: UILabel {
+    private let inset = UIEdgeInsets(top: 5, left: 11, bottom: 5, right: 11)
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: inset)) }
+    override var intrinsicContentSize: CGSize {
+        let s = super.intrinsicContentSize
+        return CGSize(width: s.width + inset.left + inset.right, height: s.height + inset.top + inset.bottom)
     }
 }

@@ -1128,12 +1128,20 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func buildHomeModel() -> HomePanelView.Model {
         let probing = (reachable == nil)
         var working = 0
+        var offline = 0
         for h in hosts {
             let st = statusByHost[h.name] ?? [:]
             let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
             let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
-            guard !hostLoading, !unreachable else { continue }
-            for p in h.projects where (st[p.session]?.state ?? "") == "working" { working += 1 }
+            if hostLoading { continue }
+            if unreachable { offline += h.projects.count; continue }   // 整 host 不可达 → 其 project 全离线
+            for p in h.projects {
+                switch st[p.session]?.state {
+                case "working":      working += 1
+                case "disconnected": offline += 1
+                default:             break
+                }
+            }
         }
         let attention: [HomePanelView.HomeRow]
         if let items = triageItems {
@@ -1144,7 +1152,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         } else {
             attention = hooksAttention()
         }
-        return .init(attention: attention, working: working, hostCount: hosts.count,
+        return .init(attention: attention, working: working, offline: offline, hostCount: hosts.count,
                      probing: probing, judgeActive: fleetTriage.hasJudge)
     }
 
