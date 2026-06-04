@@ -1,7 +1,7 @@
 # ROADMAP — 分级需求跟踪
 
 > 按**优先级分层**跟踪需求,而不是按 phase。判据是:**这条断了,整体流程还能不能打通?**
-> - **P0 核心**:断了 = app 不可用。最小闭环 P0.1–P0.7 **已全部打通**(Beam Pro X4100 真机日常用);**2026-06-04 新增 P0.8(舰队巡检分诊 + 通知)立为 P0,⬜ 未开始 = 当前焦点**。
+> - **P0 核心**:断了 = app 不可用。最小闭环 P0.1–P0.7 **已全部打通**(Beam Pro X4100 真机日常用);**2026-06-04 新增 P0.8(舰队巡检分诊 + 通知)立为 P0;🚧 iOS 全链路已落地(深色 Home + 判官 + pill + banner)、真机 0.4.0 在测 = 当前焦点**。
 > - **P1 可用性**:当前未完成 P1 = **富媒体预览**。其它未完成项默认降到 P2/P3,不抢主线。
 > - **P2 体验增强**:不影响主流程,可随时搁置 / 接回。**搁置的必须留接口 + 在本文件记接回清单**。
 >
@@ -55,7 +55,7 @@
 - **巡检别拖累 client**:periodic SSH capture + 模型调用要节流 + 闸门收窄(只看 waiting),别每秒全量扫;复用已有的逐 host 连接,别每轮新建。
 - **隐私**:pane 内容(可能含代码/敏感串)会送到 client 用的 LLM(DeepSeek)—— 与 voice-correction 把 ASR 文本送 DeepSeek 同一姿态,但 pane 内容更敏感,记一笔(将来可选 on-device / 可 per-project 关)。
 - **去重防反复打扰**:每 session 记上次判过的 tail 指纹,同一 waiting prompt 不每轮重报。
-- **判官保守起步**:误报(没事也喊你)比漏报更伤信任;判官 prompt 先窄、"拿不准就上报",跑顺再收。
+- **判官口径(2026-06-04 user 定,已落地,SPEC §14.3)**:`waiting`/空闲是**常态**(干完一轮停着等下一步),**不报**;只报"进行中 + 把球踢回给你要抉择"(1/2/3 选项、确认、权限、必答问题)。判别用 **baseline 对比**——给判官 [上次所见](用户上次离开该 agent 时抓的画面)+ [当前],只报相对上次所见**新冒出来的**决策;忽略计时/token/spinner 等装饰噪音(LLM 语义判)。**拿不准 → 不报**(宁可漏掉常态,不误报)。
 
 **交付物**:
 | 层 | 做什么 | 谁做 |
@@ -82,7 +82,7 @@
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
 | iOS.6 | **边缘滑动手势** | ✅ | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
 | iOS.7 | **最近终端保活(keep-warm)** | ✅ | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
-| iOS.9 | **四页布局 + 群控 Home + §14 巡检后端**(P0.8 展示面+大脑,**仅 iOS**) | 🚧 后端落地(2026-06-04) | 三页→四页:日志 ← **Home** ← 列表 → 终端(线性 slide pager,镜像既有 logPanel)。`HomePanelView` 显示跨 host「需要你关注」(name + **why** + host·session·时长 + urgency 色)。**§14 巡检后端**:`FleetTriage`(25s timer,前台+home/list 自门)→ `ManifestFetcher.fetch(captureWaiting:)` 同连接抓 pane → `FleetJudge`(**deepseek-v4-pro**)判 → 跨 host 聚合 → Home;tail 指纹去重;无 key/失败 → §14.4 降级(waiting=需要你,无 why)。**已验**:模拟器编译 + 落地 Home + 空 host 不崩。**待真机验**:配 host + DeepSeek key 后真巡检判准、四页滑动手势、Home 点开 project。**待接**:顶部 pill + 系统通知(P2.3/P2.4) |
+| iOS.9 | **四页布局 + 群控 Home + §14 巡检全链路**(P0.8 展示面+大脑,**仅 iOS**) | 🚧 全链路落地、真机在测(2026-06-04) | 三页→四页:日志 ← **Home** ← 列表 → 终端(线性 slide pager)。**UI = 深色 console 风**(全局 `overrideUserInterfaceStyle=.dark`):Home 全屏深色、隐藏 nav bar,"AGENT STATION" wordmark(**去掉「群控」**)+ 大数字 hero + 运行/离线 pill(P2.3)+ 关注卡片(左侧紧急度色条 + name + why + 等宽 meta)。**§14 巡检**:`FleetTriage`(25s,前台 home/list/terminal 自门)→ `ManifestFetcher.fetch(captureWaiting:)` 同连接抓 pane → `FleetJudge`(**deepseek-v4-pro**)判 → 跨 host 聚合 → Home + **app 内 banner**(P2.4,新 needsYou 弹)。**判官口径**:只报"进行中要你拍板的、自上次所见以来新出现的决策";waiting=常态不报;baseline=`backToList` 抓帧(`markSeen`);忽略计时噪音;降级只认 needs-permission(见 SPEC §14.3)。**已验**:模拟器 + **真机 0.4.0 已装**(深色 UI、空 host 不崩)。**待**:真机长测判准 + 四页手势手感 + 系统级后台通知 + Android。 |
 | iOS.8 | **SSH-over-443 / vmess** | ✅ 真机验证 | HostStore 支持 host 内联 `proxy{name,localPort,url}` 并拒绝本地端口冲突;列表 host header 显示 `🔒 proxy`;`SshConnect` 统一处理终端 + manifest/status 轮询,按 proxy/via 归属起 host 级 xray dokodemo-door(override→服务端 `127.0.0.1:22`)并让 Citadel 直连该 host 固定本地口。未 build framework 时带 proxy host fail closed,直连不受影响 |
 
 ---
