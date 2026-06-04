@@ -767,6 +767,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // iOS.7 保活:**不关 ssh**,SwiftTerm 绘制保留、后台继续喂输出;keepWarmSeconds 后超时真关。
         // 列表右缘滑 / 重开同一 project = 瞬间滑回(不重连)。
         if ssh != nil || warmHost != nil { scheduleKeepWarm() }
+        // §14:记下用户离开这个 agent 时最后看到的画面,作为巡检判官 baseline(只报"自上次所见以来的新决策")。
+        if let h = warmHost, let sess = warmSession, let conn = ssh {
+            Task { [weak self, weak conn] in
+                let tail = await conn?.execCapture(SSHSession.tmuxCaptureCommand(sess)) ?? ""
+                await MainActor.run { self?.fleetTriage.markSeen(host: h, session: sess, tail: tail) }
+            }
+        }
         if animated {
             showListViewSlidingOut { [weak self] in
                 guard let self else { return }
@@ -1158,7 +1165,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                      probing: probing, judgeActive: fleetTriage.hasJudge)
     }
 
-    /// 未巡检/降级:仅用 hooks 状态列出 waiting/needs-permission(无 why)。
+    /// 巡检尚未出结果时的占位:**只列 needs-permission**(明确的权限抉择)。单纯 waiting 是常态
+    /// (干完一轮停着等下一步),不进「需要你」——和 §14 判官 / 降级口径一致。巡检一跑完即被 digest 取代。
     private func hooksAttention() -> [HomePanelView.HomeRow] {
         var rows: [HomePanelView.HomeRow] = []
         for h in hosts {
@@ -1167,10 +1175,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
             guard !hostLoading, !unreachable else { continue }
             for p in h.projects {
-                guard let s = st[p.session], s.state == "waiting" || s.state == "needs-permission" else { continue }
+                guard let s = st[p.session], s.state == "needs-permission" else { continue }
                 rows.append(.init(host: h.name, session: p.session, name: p.name, type: p.type,
-                                  state: s.state, since: s.since, why: "",
-                                  urgency: s.state == "needs-permission" ? "high" : "normal"))
+                                  state: s.state, since: s.since, why: "等待权限确认", urgency: "high"))
             }
         }
         rows.sort { ($0.since == 0 ? Int.max : $0.since) < ($1.since == 0 ? Int.max : $1.since) }
