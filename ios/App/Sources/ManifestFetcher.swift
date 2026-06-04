@@ -17,6 +17,8 @@ struct FetchResult {
     let hosts: [HostConfig]
     let statusByHost: [String: [String: SessionState]]   // hostName → (session → state)
     let reachable: Set<String>                            // hosts whose SSH connect+exec succeeded
+    /// 仅 captureWaiting=true 时填:hostName → (session → pane tail)(SPEC §14 巡检用,同连接抓)。
+    var tailsByHost: [String: [String: String]] = [:]
 }
 
 /// One host's resolved fetch outcome (Phase 3: emitted incrementally per host so the
@@ -27,6 +29,8 @@ struct HostFetchResult {
     let status: [String: SessionState]
     let reachable: Bool                        // SSH connect+exec succeeded this round
     let liveFetched: Bool                      // had a basePath → was actually probed
+    /// 仅 captureWaiting=true 时填:session → pane tail(SPEC §14;在同一连接上对 waiting 抓 capture-pane)。
+    var tails: [String: String] = [:]
 }
 
 enum ManifestFetcher {
@@ -47,9 +51,10 @@ enum ManifestFetcher {
     /// aggregate `FetchResult` is still returned for callers that just want the final state.
     static func fetch(
         _ hosts: [HostConfig],
+        captureWaiting: Bool = false,
         onHostResolved: (@MainActor (HostFetchResult) -> Void)? = nil
     ) async -> FetchResult {
-        AgentLog.info("network", "manifest fetch start hosts=\(hosts.count)")
+        AgentLog.info("network", "manifest fetch start hosts=\(hosts.count)\(captureWaiting ? " +capture" : "")")
         // via (SPEC §5) is a host *name*; resolve it against the full list (mirrors Android
         // ManifestFetcher's `byName[it]`). Built once here, passed into each probe so a
         // via-host's manifest cat rides the jump tunnel just like its PTY does.
@@ -58,7 +63,7 @@ enum ManifestFetcher {
         let resolved: [String: HostFetchResult] = await withTaskGroup(of: HostFetchResult.self) { group in
             for h in hosts {
                 let jump = h.via.flatMap { byName[$0] }   // nil via, or via→unknown name = direct
-                group.addTask { await probe(host: h, via: jump) }
+                group.addTask { await probe(host: h, via: jump, captureWaiting: captureWaiting) }
             }
             var acc: [String: HostFetchResult] = [:]
             for await r in group {
@@ -70,27 +75,29 @@ enum ManifestFetcher {
 
         var out: [HostConfig] = []
         var statusByHost: [String: [String: SessionState]] = [:]
+        var tailsByHost: [String: [String: String]] = [:]
         var reachable: Set<String> = []
         for h in hosts {   // original order, not completion order
             guard let r = resolved[h.name] else { out.append(h); continue }
             out.append(r.host)
             statusByHost[h.name] = r.status
+            if !r.tails.isEmpty { tailsByHost[h.name] = r.tails }
             if r.reachable { reachable.insert(h.name) }
         }
-        return FetchResult(hosts: out, statusByHost: statusByHost, reachable: reachable)
+        return FetchResult(hosts: out, statusByHost: statusByHost, reachable: reachable, tailsByHost: tailsByHost)
     }
 
     /// Probe ONE host, time-boxed. No basePath → return seed as-is, not live-fetched (never
     /// offline). Otherwise race connect+cat against `perHostTimeoutMs`; timeout or connect
     /// failure → seed projects, unreachable (→ disconnected badges). The whole unit is inside
     /// the timeout so a half-open host (connects, then stalls on cat) can't stall either.
-    private static func probe(host h: HostConfig, via: HostConfig?) async -> HostFetchResult {
+    private static func probe(host h: HostConfig, via: HostConfig?, captureWaiting: Bool = false) async -> HostFetchResult {
         if h.basePath.isEmpty {
             AgentLog.debug("network", "\(h.name): skip live probe (no basePath)")
             return HostFetchResult(host: h, status: [:], reachable: false, liveFetched: false)
         }
         let result: HostFetchResult? = await withTimeout(ms: perHostTimeoutMs) {
-            await fetchOne(host: h, via: via)
+            await fetchOne(host: h, via: via, captureWaiting: captureWaiting)
         }
         guard let result else {
             NSLog("[ManifestFetcher] \(h.name): probe timed out (\(perHostTimeoutMs)ms) → offline, others unaffected")
@@ -104,7 +111,7 @@ enum ManifestFetcher {
     /// One host's connect + both cats on a single SSH connection (SPEC "同一连接").
     /// connect failure → seed + unreachable. Connected but bad/missing manifest → seed +
     /// reachable (renders unknown, not offline).
-    private static func fetchOne(host h: HostConfig, via: HostConfig?) async -> HostFetchResult {
+    private static func fetchOne(host h: HostConfig, via: HostConfig?, captureWaiting: Bool = false) async -> HostFetchResult {
         let base = h.basePath.hasSuffix("/") ? String(h.basePath.dropLast()) : h.basePath
         guard let conn = await connect(host: h, via: via) else {
             NSLog("[ManifestFetcher] \(h.name): connect failed → keep seed, host offline")
@@ -116,18 +123,43 @@ enum ManifestFetcher {
         let rawManifest = await cat(conn.target, path: "\(base)/.xreal/projects.json")
         let rawStatus = await cat(conn.target, path: "\(base)/.xreal/status.json")
         let status = parseStatus(rawStatus)
+        // SPEC §14:同连接对 waiting/needs-permission 的 session 抓 pane tail(闸门已由 status 给出)。
+        let tails = captureWaiting ? await captureTails(conn.target, status: status) : [:]
         if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
             var updated = h
             updated.projects = projects
             XrayDebugLog.append("manifest \(h.name): projects=\(projects.count) states=\(status.count)")
             NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(status.count) live states")
             AgentLog.info("network", "\(h.name): manifest OK projects=\(projects.count) states=\(status.count)")
-            return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true)
+            return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true, tails: tails)
         }
         XrayDebugLog.append("manifest \(h.name): missing/bad states=\(status.count)")
         NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
         AgentLog.warn("network", "\(h.name): manifest missing/bad states=\(status.count)")
-        return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true)
+        return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true, tails: tails)
+    }
+
+    /// 对状态为 waiting/needs-permission 的 session,在**同一连接**上跑 `tmux capture-pane` 抓 tail(SPEC §14.1)。
+    /// session 名再校验一遍 `[A-Za-z0-9_.-]`(要拼进 shell);抓不到的省略,不报错。
+    private static func captureTails(_ client: SSHClient, status: [String: SessionState]) async -> [String: String] {
+        var tails: [String: String] = [:]
+        for (session, st) in status where st.state == "waiting" || st.state == "needs-permission" {
+            guard session.range(of: "^[A-Za-z0-9_.-]+$", options: .regularExpression) != nil else { continue }
+            if let t = await execOut(client, command: SSHSession.tmuxCaptureCommand(session)), !t.isEmpty {
+                tails[session] = t
+            }
+        }
+        return tails
+    }
+
+    /// 在既有连接上跑任意命令取 stdout(同 `cat` 模式,独立 exec channel)。失败/非零 → nil。
+    private static func execOut(_ client: SSHClient, command: String) async -> String? {
+        do {
+            var buf = try await client.executeCommand(command)
+            return buf.readString(length: buf.readableBytes)
+        } catch {
+            return nil
+        }
     }
 
     /// Single-shot continuation gate: the first of {op completes, timer fires} resumes;

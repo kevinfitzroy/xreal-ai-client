@@ -24,7 +24,7 @@
 | P0.5 | 硬件键路由(+ 虚拟键盘兜底) | ✅ | `dispatchKeyEvent` 路由 **F1=语音 / F2=返回**(Stage A.1 实测:Beam Pro 的 8BitDo F13–F24 被 `Generic.kl` 注释、到不了 app;F13/F14 + Ctrl+Alt+1/2 分支保留作兜底)。**虚拟键盘动态显隐**:8BitDo 插拔实时切(插着隐、拔了出),去掉多余 hint 说明条 |
 | P0.6 | 语音 daemon 状态机(overlay show/hide + Enter 注入) | ✅ | 骨架完成,ASR 仍是 mock(真豆包见 P1.2) |
 | P0.7 | BACK 返回列表 / 优雅降级 | ✅ | BACK 键 + home 键;SSH 失败回退 LocalEcho 不卡 |
-| **P0.8** 🆕 | **舰队巡检分诊 + 通知(client 侧群控)** | ⬜ 未开始(2026-06-04 立为 P0,**当前焦点**) | 见下「§ 舰队巡检分诊设计」。**client(手机)是唯一有跨 host 全局视图的角色** —— Maestro 只看自己一台 host,"哪几个 agent 要我"是**跨 host 聚合**问题,必须 client 来做。client 巡检 loop:**用各 host 的 hooks 状态(P2.1)当闸门**,只对 `waiting`/tail 变过的 session SSH `tmux capture-pane` 取最近几十行 → 送模型(复用 voice-correction 的 DeepSeek seam)判「是否真需要你 + 原因 + 紧急度」→ **跨 host 聚合**成全局「N 需要你」→ pill(P2.3)+ 通知(P2.4)。v1 手机直接做(工作时段手机本就在线)。**零服务端增量**(连 host 上 digest 文件都不写,client 内存里算;hooks 仍是唯一 host 侧产物)。**未来**:手机离线也要跨 host 盯梢成真需求 → 再起 server 侧常驻群控(见设计) |
+| **P0.8** 🆕 | **舰队巡检分诊 + 通知(client 侧群控)** | 🚧 iOS 巡检后端已落地(2026-06-04);判官=**DeepSeek V4 Pro**;Android + 通知/pill(P2.3/4)待跟进 | 见下「§ 舰队巡检分诊设计」。**client(手机)是唯一有跨 host 全局视图的角色** —— Maestro 只看自己一台 host,"哪几个 agent 要我"是**跨 host 聚合**问题,必须 client 来做。client 巡检 loop:**用各 host 的 hooks 状态(P2.1)当闸门**,只对 `waiting`/tail 变过的 session SSH `tmux capture-pane` 取最近几十行 → 送模型(复用 voice-correction 的 DeepSeek seam)判「是否真需要你 + 原因 + 紧急度」→ **跨 host 聚合**成全局「N 需要你」→ pill(P2.3)+ 通知(P2.4)。v1 手机直接做(工作时段手机本就在线)。**零服务端增量**(连 host 上 digest 文件都不写,client 内存里算;hooks 仍是唯一 host 侧产物)。**未来**:手机离线也要跨 host 盯梢成真需求 → 再起 server 侧常驻群控(见设计) |
 
 > P0 当前**已全部打通并在 Beam Pro X4100 真机日常用**(双 host:jump-edge 直连 + private-worker 经 jump-edge 多跳,各跑 Maestro)。物理设备项(8BitDo F1/F2、真麦克风)已实测。
 >
@@ -82,7 +82,7 @@
 | iOS.5 | **列表状态栏 / 终端全屏** | ✅ | 列表态恢复标准 iOS chrome(状态栏 + nav bar 大标题);终端态沉浸全屏(隐藏状态栏 + home indicator + nav bar)。`DeckNavController` 把状态栏决定权转发给顶层 VC |
 | iOS.6 | **边缘滑动手势** | ✅ | **列表页**:右侧较宽区域左滑 → 打开**最近一次打开的终端**;**终端页**:左缘或内容区明显右滑 → 回列表。terminal 跟手滑动,垂直滚动/点按翻页不抢 |
 | iOS.7 | **最近终端保活(keep-warm)** | ✅ | 离开终端后 90s 内不 close tmux/SSH,保留 SwiftTerm 绘制状态;滑入前预热/缓存 vkey 高度并先摆好 offscreen frame;返回列表时临时卸掉 vkey + 用底部 cover 隔离 hide 动画,首帧不 reload table;超时真正 close |
-| iOS.9 | **四页布局 + 群控 Home 落地页**(P0.8 展示面,**仅 iOS**) | 🚧 骨架(2026-06-04) | 三页→四页:日志 ← **Home** ← 列表 → 终端(线性 slide pager,镜像既有 logPanel 机制)。`HomePanelView` 跨 host 聚合「需要你关注」(waiting/needs-permission,§14.4 降级形态,数据来自现有 hooks 状态)。落地 = Home。**已验**:模拟器编译 + 落地 Home 截图。**待真机/触屏验**:四页滑动手势 + Home 点 session 开 project。**待接**:§14 巡检后端灌 why/urgency + 通知(P2.4) |
+| iOS.9 | **四页布局 + 群控 Home + §14 巡检后端**(P0.8 展示面+大脑,**仅 iOS**) | 🚧 后端落地(2026-06-04) | 三页→四页:日志 ← **Home** ← 列表 → 终端(线性 slide pager,镜像既有 logPanel)。`HomePanelView` 显示跨 host「需要你关注」(name + **why** + host·session·时长 + urgency 色)。**§14 巡检后端**:`FleetTriage`(25s timer,前台+home/list 自门)→ `ManifestFetcher.fetch(captureWaiting:)` 同连接抓 pane → `FleetJudge`(**deepseek-v4-pro**)判 → 跨 host 聚合 → Home;tail 指纹去重;无 key/失败 → §14.4 降级(waiting=需要你,无 why)。**已验**:模拟器编译 + 落地 Home + 空 host 不崩。**待真机验**:配 host + DeepSeek key 后真巡检判准、四页滑动手势、Home 点开 project。**待接**:顶部 pill + 系统通知(P2.3/P2.4) |
 | iOS.8 | **SSH-over-443 / vmess** | ✅ 真机验证 | HostStore 支持 host 内联 `proxy{name,localPort,url}` 并拒绝本地端口冲突;列表 host header 显示 `🔒 proxy`;`SshConnect` 统一处理终端 + manifest/status 轮询,按 proxy/via 归属起 host 级 xray dokodemo-door(override→服务端 `127.0.0.1:22`)并让 Citadel 直连该 host 固定本地口。未 build framework 时带 proxy host fail closed,直连不受影响 |
 
 ---

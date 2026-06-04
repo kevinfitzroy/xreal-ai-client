@@ -116,6 +116,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var micRequested = false
     private var voiceKeyHeld = false
 
+    // 舰队巡检分诊(SPEC §14)。Home/列表态周期跑一轮:fetch+capture-pane → DeepSeek 判 → 聚合喂 Home。
+    private let fleetTriage = FleetTriage()
+    private var triageItems: [TriageItem]? = nil   // 最近一轮 digest;nil = 尚未巡检(Home 用 hooks 降级)
+    private var triageTimer: Timer?
+    private static let triageIntervalSeconds: TimeInterval = 25
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -226,6 +232,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.addSubview(channelStrip)
 
         setupVoice()
+        fleetTriage.reloadConfig()   // 巡检判官(deepseek-v4-pro);无 correction.json → 降级
 
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
@@ -264,6 +271,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         self.homePan = homePan
         // 落地页 = 群控 Home(四页布局)。
         landOnHome()
+        startTriageLoop()   // §14 巡检:前台周期跑;首轮语义刷新在 +25s,之前 Home 用 refreshManifests 的 hooks 降级
 
         #if DEBUG
         applyDebugLevers()
@@ -1113,35 +1121,84 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
 
-    /// 跨 host 聚合「需要你关注」(waiting/needs-permission)。SPEC §14.4 降级形态:无语义"为什么",
-    /// 仅用 hooks 状态(§3)。§14 巡检后端落地后,把 why/urgency 灌进 HomeRow 即可。
+    /// Home 模型。有巡检 digest(§14)→ 用它(带 why/urgency,已过滤 needsYou);否则 hooks 降级
+    /// (§14.4:列 waiting/needs-permission,无"为什么")。working/hostCount 始终从 hooks 状态算。
     private func buildHomeModel() -> HomePanelView.Model {
-        var attention: [HomePanelView.HomeRow] = []
-        var working = 0
         let probing = (reachable == nil)
+        var working = 0
         for h in hosts {
-            let hostStatus = statusByHost[h.name] ?? [:]
+            let st = statusByHost[h.name] ?? [:]
             let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
             let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
+            guard !hostLoading, !unreachable else { continue }
+            for p in h.projects where (st[p.session]?.state ?? "") == "working" { working += 1 }
+        }
+        let attention: [HomePanelView.HomeRow]
+        if let items = triageItems {
+            attention = items.map {
+                .init(host: $0.host, session: $0.session, name: $0.name, type: $0.type,
+                      state: $0.state, since: $0.since, why: $0.why, urgency: $0.urgency)
+            }
+        } else {
+            attention = hooksAttention()
+        }
+        return .init(attention: attention, working: working, hostCount: hosts.count,
+                     probing: probing, judgeActive: fleetTriage.hasJudge)
+    }
+
+    /// 未巡检/降级:仅用 hooks 状态列出 waiting/needs-permission(无 why)。
+    private func hooksAttention() -> [HomePanelView.HomeRow] {
+        var rows: [HomePanelView.HomeRow] = []
+        for h in hosts {
+            let st = statusByHost[h.name] ?? [:]
+            let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
+            let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
+            guard !hostLoading, !unreachable else { continue }
             for p in h.projects {
-                guard !hostLoading, !unreachable else { continue }
-                let live = hostStatus[p.session]
-                let state = live?.state ?? "unknown"
-                if state == "working" { working += 1 }
-                if state == "waiting" || state == "needs-permission" {
-                    attention.append(.init(host: h.name, session: p.session, name: p.name,
-                                           type: p.type, state: state, since: live?.since ?? 0))
-                }
+                guard let s = st[p.session], s.state == "waiting" || s.state == "needs-permission" else { continue }
+                rows.append(.init(host: h.name, session: p.session, name: p.name, type: p.type,
+                                  state: s.state, since: s.since, why: "",
+                                  urgency: s.state == "needs-permission" ? "high" : "normal"))
             }
         }
-        // 等得最久的在前(since 小=早);since==0(无)排末尾。
-        attention.sort { ($0.since == 0 ? Int.max : $0.since) < ($1.since == 0 ? Int.max : $1.since) }
-        return .init(attention: attention, working: working, hostCount: hosts.count, probing: probing)
+        rows.sort { ($0.since == 0 ? Int.max : $0.since) < ($1.since == 0 ? Int.max : $1.since) }
+        return rows
     }
 
     /// home 数据刷新(随 manifest/status 更新)。off-screen 也刷,保证滑入即新。
     private func pushHome() {
         homePanel.render(buildHomeModel())
+    }
+
+    // MARK: - 舰队巡检 loop(SPEC §14)
+    /// 周期定时器(前台才 fire)。tick 自门:仅 Home/列表态 + 有 basePath host 才跑一轮。
+    private func startTriageLoop() {
+        triageTimer?.invalidate()
+        let t = Timer(timeInterval: Self.triageIntervalSeconds, repeats: true) { [weak self] _ in
+            self?.triageTick()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        triageTimer = t
+    }
+    private func triageTick() {
+        guard view_ == .home || view_ == .list else { return }
+        guard hosts.contains(where: { !$0.basePath.isEmpty }) else { return }
+        runTriageRound()
+    }
+    /// 跑一轮巡检:digest 喂 Home,顺带用这一轮 fresh fetch 刷新列表状态(巡检 = Home/列表的 live 刷新)。
+    /// `runOnce` 内部 `running` 防重入;不动 `fetchGen`(那是事件驱动 refresh 的序号,互不干涉,末写为准)。
+    private func runTriageRound() {
+        guard hosts.contains(where: { !$0.basePath.isEmpty }) else { return }
+        Task {
+            guard let round = await fleetTriage.runOnce(hosts: hosts) else { return }  // nil = 上一轮还在跑,跳过
+            self.hosts = round.fetch.hosts
+            self.statusByHost = round.fetch.statusByHost
+            self.reachable = round.fetch.reachable
+            self.probedHosts = Set(round.fetch.hosts.map { $0.name })
+            self.triageItems = round.items
+            self.pushList()
+            self.pushHome()
+        }
     }
 
     private var shouldShowTermAccessory: Bool { GCKeyboard.coalesced == nil }
@@ -1447,7 +1504,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            if (self.view_ == .list || self.view_ == .home), !self.hosts.isEmpty { self.refreshManifests() }
+            guard (self.view_ == .list || self.view_ == .home), !self.hosts.isEmpty else { return }
+            self.refreshManifests()                                    // 快路径:列表/Home 状态即时刷新
+            if self.hosts.contains(where: { !$0.basePath.isEmpty }) { self.runTriageRound() }   // 语义分诊一轮
         }
     }
 
@@ -1457,6 +1516,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         AgentLog.info("config", "imported mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         hosts = HostStore.loadHosts()
         statusByHost = [:]; reachable = nil; probedHosts = []
+        triageItems = nil                 // host 变了 → 旧 digest 失效
+        fleetTriage.reloadConfig()        // 可能导入了 correction.json(判官凭证)
         if result.asr, let creds = AsrCreds.load() {
             voice.asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
             NSLog("[VC] ASR creds imported → VolcAsr(resource=\(creds.resourceId))")
@@ -1846,6 +1907,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     #endif
 
     deinit {
+        triageTimer?.invalidate()
         for o in [kbConnectObs, kbDisconnectObs, foregroundObs, kbFrameObs, kbHideObs] {
             if let o { NotificationCenter.default.removeObserver(o) }
         }

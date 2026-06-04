@@ -92,6 +92,9 @@ struct CorrectionConfig {
     let model: String
     let timeoutMs: Int
     let disableThinking: Bool
+    /// 舰队巡检判官模型(SPEC §14;复用同一 key/endpoint,模型更强)。默认 DeepSeek V4 Pro。
+    let triageModel: String
+    let triageTimeoutMs: Int
 
     var isConfigured: Bool { enabled && !endpoint.isEmpty && !apiKey.isEmpty && !model.isEmpty }
 
@@ -110,7 +113,10 @@ struct CorrectionConfig {
             apiKey: (o["apiKey"] as? String) ?? "",
             model: (o["model"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "deepseek-v4-flash",
             timeoutMs: (o["timeoutMs"] as? Int) ?? 5000,
-            disableThinking: (o["disableThinking"] as? Bool) ?? true   // v4 默认 thinking → 走 non-thinking
+            disableThinking: (o["disableThinking"] as? Bool) ?? true,   // v4 默认 thinking → 走 non-thinking
+            // 巡检判官(SPEC §14):默认更强的 DeepSeek V4 Pro;后台 loop 给更长超时。
+            triageModel: (o["triageModel"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "deepseek-v4-pro",
+            triageTimeoutMs: (o["triageTimeoutMs"] as? Int) ?? 15000
         )
         return cfg.isConfigured ? cfg : nil
     }
