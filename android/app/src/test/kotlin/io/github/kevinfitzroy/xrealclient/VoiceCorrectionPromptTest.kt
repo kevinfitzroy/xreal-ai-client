@@ -25,6 +25,8 @@ class VoiceCorrectionPromptTest {
         assertTrue(s.contains("不改写"))     // 只纠正不改写
         assertTrue(s.contains("揣摩"))       // 不揣摩意图
         assertTrue(s.contains("原样"))       // 保守:拿不准原样返回
+        assertTrue(s.contains("自然语言"))   // 自然语言请求保持自然语言(别编成 git clone)
+        assertTrue(s.contains("臆造"))       // 绝不臆造用户没说的 URL/路径/占位符
     }
 
     @Test fun `AI agent 会话才追加 Claude Code 内置命令例外`() {
