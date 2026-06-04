@@ -257,18 +257,20 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
         let resumePan = UIPanGestureRecognizer(target: self, action: #selector(handleListResumePan(_:)))
         resumePan.delegate = self
-        resumePan.cancelsTouchesInView = false
+        // cancelsTouchesInView=true:横滑手势一旦识别,取消底下 table cell 的触摸 → 不会误开 project;
+        // 纯点击(无横向速度)不触发本手势 → cell 正常选中。解决"想滑回 Home 却点开了 Terminal"。
+        resumePan.cancelsTouchesInView = true
         view.addGestureRecognizer(resumePan)
         self.listResumePan = resumePan
         let logPan = UIPanGestureRecognizer(target: self, action: #selector(handleListLogPan(_:)))
         logPan.delegate = self
-        logPan.cancelsTouchesInView = false
+        logPan.cancelsTouchesInView = true   // 同上:home 卡片上横滑去 logs 不误点开卡片
         view.addGestureRecognizer(logPan)
         self.listLogPan = logPan
         // 四页链:home 居 logs 与 list 之间。homePan 管 list↔home;logPan 改管 home↔logs。
         let homePan = UIPanGestureRecognizer(target: self, action: #selector(handleHomeListPan(_:)))
         homePan.delegate = self
-        homePan.cancelsTouchesInView = false
+        homePan.cancelsTouchesInView = true   // 列表 cell 上右滑回 Home 不误点开 project(用户反馈)
         view.addGestureRecognizer(homePan)
         self.homePan = homePan
         // 落地页 = 群控 Home(四页布局)。
