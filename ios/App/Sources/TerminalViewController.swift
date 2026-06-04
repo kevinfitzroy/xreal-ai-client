@@ -1016,8 +1016,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// logs 在 home 左侧 → 关 logs 退回 **home**(不是 list)。home 面板本就在 x=0 后面,只需把 logs 滑走。
     private func hideLogPanel(animated: Bool) {
         view_ = .home
-        navigationItem.title = "群控"
+        navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
+        navigationController?.setNavigationBarHidden(true, animated: false)
         homePanel.render(buildHomeModel())
         homePanel.isHidden = false
         layoutHomePanel()   // view_==.home → x=0,露在 logPanel 之下
@@ -1067,9 +1068,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func showHomePanel(animated: Bool, alreadyPrepared: Bool = false) {
         if !alreadyPrepared { prepareHomePanelFromLeft() }
         view_ = .home
-        navigationItem.title = "群控"
+        navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
-        navigationController?.setNavigationBarHidden(false, animated: false)
+        navigationController?.setNavigationBarHidden(true, animated: false)   // Home 全屏深色仪表盘,隐藏 nav bar
         homePanel.render(buildHomeModel())
         homePanel.isHidden = false
         view.bringSubviewToFront(homePanel)
@@ -1084,6 +1085,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// home 在 list 左侧 → 关 home 退回 **list**(home 滑走,露出后面的 list)。
     private func hideHomePanel(animated: Bool) {
         view_ = .list
+        navigationController?.setNavigationBarHidden(false, animated: false)   // 回列表:恢复 nav bar
         navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
         _ = becomeFirstResponder()
@@ -1112,9 +1114,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// 启动落地在 Home(四页布局)。list 已是默认可见 anchor,home 盖其上。
     private func landOnHome() {
         view_ = .home
-        navigationItem.title = "群控"
+        navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
-        navigationController?.setNavigationBarHidden(false, animated: false)
+        navigationController?.setNavigationBarHidden(true, animated: false)   // Home 全屏深色仪表盘,隐藏 nav bar
         homePanel.render(buildHomeModel())
         homePanel.isHidden = false
         layoutHomePanel()

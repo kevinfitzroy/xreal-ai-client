@@ -1,14 +1,10 @@
 import UIKit
 
-/// 群控 **Home** 页(四页布局最左侧 dashboard;SPEC §14 舰队巡检的展示面)。
+/// **Agent Station** 落地仪表盘(四页布局最左:logs ← home ← list → terminal;SPEC §14 展示面)。
 ///
-/// 当前是 **骨架**:§14 的语义分诊后端(读 status.json 闸门 → capture-pane → DeepSeek 判 →
-/// 跨 host 聚合)尚未接入。在此之前,Home 直接消费已有的 hooks 状态(SPEC §3),按 §14.4
-/// **降级形态**渲染:把所有 host 里 `waiting` / `needs-permission` 的 session 聚成一张「需要你
-/// 关注」列表(无"为什么",那一句话原因留给 §14)。结构已就位,§14 落地后只需把 `why`/`urgency`
-/// 灌进 `HomeRow` 即可。
-///
-/// overlay 面板范式同 `LogPanelView`(VC 用 slide 显隐)。
+/// 深色 console 风:顶部 brand wordmark + 大数字 hero(几个 agent 等你)+ 计数 pill(运行/离线)+
+/// 「需要你关注」卡片(name + 一句话 why + host·session·时长 + 紧急度配色)。数据来自 §14 巡检 digest;
+/// 未巡检/无判官时 hooks 降级(§14.4)。overlay 面板范式同 LogPanelView(VC 用 slide 显隐)。
 final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     /// 一个「需要你关注」的 agent(跨 host 聚合后的一行)。
@@ -25,86 +21,110 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     /// Home 视图模型(VC 从 hosts + statusByHost 算好喂进来)。
     struct Model {
-        let attention: [HomeRow]   // 需要你关注(已按 urgency/since 排序)
-        let working: Int           // 工作中的 agent 数(pill)
-        let offline: Int           // 离线/已断开的 agent 数(pill)
+        let attention: [HomeRow]
+        let working: Int
+        let offline: Int
         let hostCount: Int
-        let probing: Bool          // 仍在首轮探测(还没有任何状态)
-        let judgeActive: Bool      // §14 判官是否就绪(配了 DeepSeek key)→ 语义分诊;否则 hooks 降级
+        let probing: Bool
+        let judgeActive: Bool
     }
 
     var onSelect: ((HomeRow) -> Void)?
 
-    private let headlineLabel = UILabel()
-    private let subLabel = UILabel()
-    private let pillStack = UIStackView()   // 彩色计数胶囊行(工作中/离线)
-    private let noteLabel = UILabel()
+    private let wordmark = UILabel()
+    private let heroNumber = UILabel()
+    private let heroCaption = UILabel()
+    private let pillStack = UIStackView()
     private let table = UITableView(frame: .zero, style: .insetGrouped)
     private let emptyLabel = UILabel()
+    private let footLabel = UILabel()
 
     private var rows: [HomeRow] = []
+    private var footText = ""
+
+    private static let bg = UIColor(red: 0.043, green: 0.047, blue: 0.063, alpha: 1)   // 近黑 console 底
+    private static let card = UIColor(red: 0.094, green: 0.102, blue: 0.125, alpha: 1)  // 卡片底
+    private static let amber = UIColor(red: 1.0, green: 0.72, blue: 0.28, alpha: 1)
+    private static let red = UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+    private static let green = UIColor(red: 0.36, green: 0.86, blue: 0.55, alpha: 1)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .systemGroupedBackground
+        overrideUserInterfaceStyle = .dark
+        backgroundColor = Self.bg
 
-        headlineLabel.font = .systemFont(ofSize: 30, weight: .bold)
-        headlineLabel.textColor = .label
-        headlineLabel.adjustsFontForContentSizeCategory = true
+        wordmark.attributedText = NSAttributedString(string: "AGENT STATION", attributes: [
+            .font: UIFont.systemFont(ofSize: 12, weight: .heavy),
+            .kern: 3.0,
+            .foregroundColor: UIColor(white: 1, alpha: 0.34),
+        ])
 
-        subLabel.font = .preferredFont(forTextStyle: .subheadline)
-        subLabel.textColor = .secondaryLabel
-        subLabel.adjustsFontForContentSizeCategory = true
+        heroNumber.font = .systemFont(ofSize: 60, weight: .bold)
+        heroNumber.textColor = Self.amber
+        heroNumber.adjustsFontForContentSizeCategory = false
 
-        noteLabel.font = .preferredFont(forTextStyle: .caption2)
-        noteLabel.textColor = .tertiaryLabel
-        noteLabel.numberOfLines = 0
-        noteLabel.adjustsFontForContentSizeCategory = true
+        heroCaption.font = .systemFont(ofSize: 16, weight: .medium)
+        heroCaption.textColor = UIColor(white: 1, alpha: 0.62)
+        heroCaption.numberOfLines = 0
 
         pillStack.axis = .horizontal
         pillStack.spacing = 8
         pillStack.alignment = .center
 
-        let header = UIStackView(arrangedSubviews: [headlineLabel, subLabel, pillStack, noteLabel])
-        header.axis = .vertical
-        header.spacing = 4
-        header.setCustomSpacing(8, after: subLabel)
-        header.setCustomSpacing(10, after: pillStack)
-        header.translatesAutoresizingMaskIntoConstraints = false
+        let head = UIStackView(arrangedSubviews: [wordmark, heroNumber, heroCaption, pillStack])
+        head.axis = .vertical
+        head.alignment = .fill
+        head.spacing = 2
+        head.setCustomSpacing(8, after: wordmark)
+        head.setCustomSpacing(2, after: heroNumber)
+        head.setCustomSpacing(14, after: heroCaption)
+        head.translatesAutoresizingMaskIntoConstraints = false
 
         table.translatesAutoresizingMaskIntoConstraints = false
         table.backgroundColor = .clear
+        table.separatorStyle = .none
         table.dataSource = self
         table.delegate = self
-        table.register(UITableViewCell.self, forCellReuseIdentifier: "home")
+        table.register(HomeCell.self, forCellReuseIdentifier: "home")
         table.rowHeight = UITableView.automaticDimension
-        table.estimatedRowHeight = 60
+        table.estimatedRowHeight = 72
+        table.contentInset = UIEdgeInsets(top: 2, left: 0, bottom: 28, right: 0)
 
-        emptyLabel.font = .preferredFont(forTextStyle: .callout)
-        emptyLabel.textColor = .secondaryLabel
+        emptyLabel.font = .systemFont(ofSize: 15, weight: .regular)
+        emptyLabel.textColor = UIColor(white: 1, alpha: 0.45)
         emptyLabel.textAlignment = .center
         emptyLabel.numberOfLines = 0
         emptyLabel.isHidden = true
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        addSubview(header)
+        footLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        footLabel.textColor = UIColor(white: 1, alpha: 0.30)
+        footLabel.numberOfLines = 0
+        footLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(head)
         addSubview(table)
         addSubview(emptyLabel)
+        addSubview(footLabel)
 
         NSLayoutConstraint.activate([
-            header.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 14),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            header.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            head.topAnchor.constraint(equalTo: safeAreaLayoutGuide.topAnchor, constant: 18),
+            head.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
+            head.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -22),
 
-            table.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
+            table.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 10),
             table.leadingAnchor.constraint(equalTo: leadingAnchor),
             table.trailingAnchor.constraint(equalTo: trailingAnchor),
             table.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            emptyLabel.centerXAnchor.constraint(equalTo: table.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: table.centerYAnchor, constant: -20),
+            emptyLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            emptyLabel.topAnchor.constraint(equalTo: head.bottomAnchor, constant: 60),
             emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 32),
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -32),
+
+            footLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 22),
+            footLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -22),
+            footLabel.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -10),
         ])
     }
 
@@ -115,51 +135,63 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     func render(_ m: Model) {
         rows = m.attention
         let n = m.attention.count
+
         if m.hostCount == 0 {
-            headlineLabel.text = "暂无 host"
-            subLabel.text = "AirDrop 一个 .xrhosts 配置导入"
-            subLabel.isHidden = false
+            heroNumber.isHidden = true
+            heroCaption.text = "暂无 host\nAirDrop 一个 .xrhosts 配置导入"
             pillStack.isHidden = true
             emptyLabel.isHidden = true
-            noteLabel.isHidden = true
         } else if m.probing && n == 0 {
-            headlineLabel.text = "正在巡检…"
-            subLabel.text = "拉取各 host 状态中"
-            subLabel.isHidden = false
+            heroNumber.isHidden = true
+            heroCaption.text = "正在巡检舰队…"
             pillStack.isHidden = true
             emptyLabel.isHidden = true
-            noteLabel.isHidden = false
-        } else {
-            headlineLabel.text = n == 0 ? "一切就绪" : "\(n) 个 agent 需要你"
-            subLabel.isHidden = true
-            // 大标题已 own「N 需要你」;pill 补「工作中/离线」的彩色计数。都为 0 则不显示这行。
+        } else if n == 0 {
+            heroNumber.isHidden = false
+            heroNumber.text = "✓"
+            heroNumber.textColor = Self.green
+            heroCaption.text = "全部就绪 · 没有 agent 在等你"
             rebuildPills(working: m.working, offline: m.offline)
             pillStack.isHidden = (m.working == 0 && m.offline == 0)
-            emptyLabel.isHidden = (n != 0)
-            emptyLabel.text = "暂无需要你处理的 agent\n所有 agent 在工作或空闲中"
-            noteLabel.isHidden = false
+            emptyLabel.isHidden = true
+        } else {
+            heroNumber.isHidden = false
+            heroNumber.text = "\(n)"
+            heroNumber.textColor = m.attention.contains { $0.urgency == "high" } ? Self.red : Self.amber
+            heroCaption.text = "个 agent 等你处理"
+            rebuildPills(working: m.working, offline: m.offline)
+            pillStack.isHidden = (m.working == 0 && m.offline == 0)
+            emptyLabel.isHidden = true
         }
-        // 脚注随判官状态:配了 DeepSeek = 语义分诊;否则降级提示。
-        noteLabel.text = m.judgeActive
-            ? "由 DeepSeek V4 Pro 巡检分诊(SPEC §14)"
-            : "未配置巡检判官 · 暂按运行状态聚合 · 配置 DeepSeek key 启用语义分诊"
+        emptyLabel.text = ""
+
+        footText = m.hostCount == 0 ? ""
+            : (m.judgeActive ? "DeepSeek V4 Pro · 实时分诊" : "未配判官 · 按运行状态聚合(配 DeepSeek key 启用语义分诊)")
+        footLabel.text = footText
+        footLabel.isHidden = footText.isEmpty
+
         table.reloadData()
     }
 
     private func rebuildPills(working: Int, offline: Int) {
         pillStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if working > 0 { pillStack.addArrangedSubview(makeChip("● \(working) 工作中", color: .systemGreen)) }
-        if offline > 0 { pillStack.addArrangedSubview(makeChip("● \(offline) 离线", color: .systemGray)) }
+        if working > 0 { pillStack.addArrangedSubview(makeChip("\(working) 运行", color: Self.green)) }
+        if offline > 0 { pillStack.addArrangedSubview(makeChip("\(offline) 离线", color: UIColor(white: 1, alpha: 0.5))) }
         pillStack.addArrangedSubview(UIView())   // 末尾弹性占位 → 胶囊靠左
     }
 
     private func makeChip(_ text: String, color: UIColor) -> UIView {
         let l = Chip()
-        l.text = text
-        l.font = .systemFont(ofSize: 13, weight: .semibold)
-        l.textColor = color
-        l.backgroundColor = color.withAlphaComponent(0.16)
+        let dot = NSTextAttachment()
+        l.attributedText = NSAttributedString(string: "● " + text, attributes: [
+            .font: UIFont.systemFont(ofSize: 12.5, weight: .semibold),
+            .foregroundColor: color,
+        ])
+        _ = dot
+        l.backgroundColor = color.withAlphaComponent(0.14)
         l.layer.cornerRadius = 13
+        l.layer.borderWidth = 1
+        l.layer.borderColor = color.withAlphaComponent(0.22).cgColor
         l.clipsToBounds = true
         l.setContentHuggingPriority(.required, for: .horizontal)
         return l
@@ -174,22 +206,8 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath)
-        let r = rows[indexPath.row]
-        var c = UIListContentConfiguration.subtitleCell()
-        c.text = r.name
-        let age = Self.ageText(r.since)
-        let meta = "\(r.host) · \(r.session)" + (age.isEmpty ? "" : "  ·  \(age)")
-        // 主行 = 原因(§14 判官);没有原因(降级/未巡检)就只显示 host·session·时长。
-        c.secondaryText = r.why.isEmpty ? meta : "\(r.why)\n\(meta)"
-        c.secondaryTextProperties.numberOfLines = 0
-        c.secondaryTextProperties.color = .secondaryLabel
-        c.image = UIImage(systemName: Self.symbol(urgency: r.urgency, state: r.state))
-        c.imageProperties.tintColor = Self.color(urgency: r.urgency, state: r.state)
-        c.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-        cell.contentConfiguration = c
-        cell.accessoryType = .disclosureIndicator
-        cell.backgroundColor = .secondarySystemGroupedBackground
+        let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
+        cell.configure(rows[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
         return cell
     }
 
@@ -198,18 +216,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         onSelect?(rows[indexPath.row])
     }
 
-    // MARK: - state → 视觉(对齐 DeckListView 的语义)
-
-    private static func symbol(urgency: String, state: String) -> String {
-        if urgency == "high" { return "exclamationmark.triangle.fill" }
-        if state == "needs-permission" { return "exclamationmark.shield.fill" }
-        return "questionmark.circle.fill"
-    }
-    private static func color(urgency: String, state: String) -> UIColor {
-        if urgency == "high" || state == "needs-permission" { return .systemRed }
-        return .systemOrange
-    }
-    private static func ageText(_ since: Int) -> String {
+    static func ageText(_ since: Int) -> String {
         guard since > 0 else { return "" }
         let secs = Int(Date().timeIntervalSince1970) - since
         guard secs >= 0 else { return "" }
@@ -220,7 +227,78 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 }
 
-/// 紧凑内边距的胶囊标签(pill 用;比 toast 的 PaddingLabel 更小)。
+// MARK: - 关注卡片(深色 + 左侧紧急度色条 + 等宽 meta)
+
+private final class HomeCell: UITableViewCell {
+    private let accent = UIView()
+    private let nameLabel = UILabel()
+    private let whyLabel = UILabel()
+    private let metaLabel = UILabel()
+
+    private static let red = UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+    private static let amber = UIColor(red: 1.0, green: 0.72, blue: 0.28, alpha: 1)
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        let sel = UIView(); sel.backgroundColor = UIColor(white: 1, alpha: 0.06); selectedBackgroundView = sel
+
+        accent.layer.cornerRadius = 1.5
+        accent.translatesAutoresizingMaskIntoConstraints = false
+
+        nameLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        nameLabel.textColor = .white
+        whyLabel.font = .systemFont(ofSize: 13.5, weight: .regular)
+        whyLabel.textColor = UIColor(white: 1, alpha: 0.66)
+        whyLabel.numberOfLines = 2
+        metaLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        metaLabel.textColor = UIColor(white: 1, alpha: 0.34)
+
+        let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+        chevron.tintColor = UIColor(white: 1, alpha: 0.26)
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        let text = UIStackView(arrangedSubviews: [nameLabel, whyLabel, metaLabel])
+        text.axis = .vertical
+        text.spacing = 3
+        text.setCustomSpacing(5, after: whyLabel)
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(accent)
+        contentView.addSubview(text)
+        contentView.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            accent.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            accent.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            accent.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -14),
+            accent.widthAnchor.constraint(equalToConstant: 3),
+
+            text.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 13),
+            text.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            text.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+
+            chevron.leadingAnchor.constraint(equalTo: text.trailingAnchor, constant: 10),
+            chevron.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+            chevron.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ r: HomePanelView.HomeRow, cardColor: UIColor, ageText: (Int) -> String) {
+        let hi = r.urgency == "high" || r.state == "needs-permission"
+        accent.backgroundColor = hi ? Self.red : Self.amber
+        nameLabel.text = r.name
+        whyLabel.text = r.why.isEmpty ? (r.state == "needs-permission" ? "等待权限确认" : "等待你的反馈") : r.why
+        let age = ageText(r.since)
+        metaLabel.text = "\(r.host) · \(r.session)" + (age.isEmpty ? "" : "  ·  \(age)")
+        // 卡片底:insetGrouped 默认卡用得上;这里直接给 contentView 一个深色卡背景。
+        backgroundColor = cardColor
+    }
+}
+
+/// 紧凑内边距的胶囊标签(pill 用)。
 private final class Chip: UILabel {
     private let inset = UIEdgeInsets(top: 5, left: 11, bottom: 5, right: 11)
     override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: inset)) }

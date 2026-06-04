@@ -15,6 +15,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // (iOS 全面原生化后无 WKWebView,旧的 WebViewKeyboard 软键盘抑制 swizzle 已无意义,移除。)
         let window = UIWindow(frame: UIScreen.main.bounds)
+        window.overrideUserInterfaceStyle = .dark   // 全局深色 console 风(终端本就深色,列表/Home 一致 + 科技感)
         let nav = DeckNavController(rootViewController: TerminalViewController())
         nav.navigationBar.prefersLargeTitles = true
         window.rootViewController = nav
