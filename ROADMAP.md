@@ -1,7 +1,7 @@
 # ROADMAP — 分级需求跟踪
 
 > 按**优先级分层**跟踪需求,而不是按 phase。判据是:**这条断了,整体流程还能不能打通?**
-> - **P0 核心**:断了 = app 不可用。**已全部打通**(Beam Pro X4100 真机日常用);焦点已移到 P1 收尾 + P2。
+> - **P0 核心**:断了 = app 不可用。最小闭环 P0.1–P0.7 **已全部打通**(Beam Pro X4100 真机日常用);**2026-06-04 新增 P0.8(舰队巡检分诊 + 通知)立为 P0,⬜ 未开始 = 当前焦点**。
 > - **P1 可用性**:当前未完成 P1 = **富媒体预览**。其它未完成项默认降到 P2/P3,不抢主线。
 > - **P2 体验增强**:不影响主流程,可随时搁置 / 接回。**搁置的必须留接口 + 在本文件记接回清单**。
 >
@@ -9,9 +9,11 @@
 
 ---
 
-## P0 — 核心流程(已全部打通)
+## P0 — 核心流程(最小闭环已打通 + 新增舰队巡检 P0.8)
 
 最小端到端闭环:**开 app → 看到真实项目列表 → 键盘导航 → Enter 开真 SSH 终端 → 打字(硬件键+虚拟键盘)/语音 → BACK 回列表**。任何一环断了主流程就断。
+
+> **2026-06-04 P0 边界扩展**:产品定位是"agent 集群指挥台"(非 SSH client)。~10 个并行 agent 时,**"知道哪几个 agent 在等我决策"不再是锦上添花,而是核心价值**——没有它,移动场景下逐个切 session 看哪个卡住,指挥台就名不副实。故把 **P0.8 舰队巡检分诊 + 通知** 提到 P0(其余 P0.1–P0.7 是"能操作单个 agent",P0.8 是"替我盯住一群**跨 host 的** agent")。**大脑在 client**(唯一有跨 host 全局视图者),不在 per-host 的 Maestro —— 见下「§ 舰队巡检分诊设计」。
 
 | # | 需求 | 状态 | 备注 |
 |---|---|---|---|
@@ -22,10 +24,48 @@
 | P0.5 | 硬件键路由(+ 虚拟键盘兜底) | ✅ | `dispatchKeyEvent` 路由 **F1=语音 / F2=返回**(Stage A.1 实测:Beam Pro 的 8BitDo F13–F24 被 `Generic.kl` 注释、到不了 app;F13/F14 + Ctrl+Alt+1/2 分支保留作兜底)。**虚拟键盘动态显隐**:8BitDo 插拔实时切(插着隐、拔了出),去掉多余 hint 说明条 |
 | P0.6 | 语音 daemon 状态机(overlay show/hide + Enter 注入) | ✅ | 骨架完成,ASR 仍是 mock(真豆包见 P1.2) |
 | P0.7 | BACK 返回列表 / 优雅降级 | ✅ | BACK 键 + home 键;SSH 失败回退 LocalEcho 不卡 |
+| **P0.8** 🆕 | **舰队巡检分诊 + 通知(client 侧群控)** | ⬜ 未开始(2026-06-04 立为 P0,**当前焦点**) | 见下「§ 舰队巡检分诊设计」。**client(手机)是唯一有跨 host 全局视图的角色** —— Maestro 只看自己一台 host,"哪几个 agent 要我"是**跨 host 聚合**问题,必须 client 来做。client 巡检 loop:**用各 host 的 hooks 状态(P2.1)当闸门**,只对 `waiting`/tail 变过的 session SSH `tmux capture-pane` 取最近几十行 → 送模型(复用 voice-correction 的 DeepSeek seam)判「是否真需要你 + 原因 + 紧急度」→ **跨 host 聚合**成全局「N 需要你」→ pill(P2.3)+ 通知(P2.4)。v1 手机直接做(工作时段手机本就在线)。**零服务端增量**(连 host 上 digest 文件都不写,client 内存里算;hooks 仍是唯一 host 侧产物)。**未来**:手机离线也要跨 host 盯梢成真需求 → 再起 server 侧常驻群控(见设计) |
 
 > P0 当前**已全部打通并在 Beam Pro X4100 真机日常用**(双 host:jump-edge 直连 + private-worker 经 jump-edge 多跳,各跑 Maestro)。物理设备项(8BitDo F1/F2、真麦克风)已实测。
 >
 > **可观测性(支撑性,非 P0 闭环)**:持久化日志 + 崩溃捕获已落地 —— `AppLog` 写外存(`adb pull`,不需 run-as)+ `XrealApp` 全局未捕获异常处理器落盘崩溃。出问题先 `adb pull` 取证。
+
+### 舰队巡检分诊设计(P0.8 —— 2026-06-04 立项)
+
+**动机**:hooks(P2.1)只给「某 session = `waiting` + 时长」,给不了「它等的是啥、要不要你拍板」。~10 个并行 agent(且分布在**多台 host**)时痛点是"切来切去看哪个卡住等我"。这一层让**模型替你盯梢**:定期看在等的 session 最近几十行,判哪几个真需要决策,**跨 host 聚合**成一个全局摘要通知你。
+
+**架构落点(关键:大脑在 client,不在 Maestro)**:
+- **为什么不是 Maestro**(2026-06-04 user 纠正):Maestro 是 **per-host** 的,只有自己那台机的数据,**没有全局视图**。但 user 有**多台 host**,"哪几个 agent 要我"是个**跨 host 聚合**问题 —— 每台 Maestro 各判各的,没人能给出"全舰队此刻 N 个要你"。所以分诊大脑必须在**能同时看到所有 host 的角色**手里。
+- **client(手机)就是那个角色**:它本来就连所有 host(逐台 cat status.json / manifest)。让它顺手多做一步即可。**比 Maestro 方案更省**:连 host 上的 digest 文件都不用写,client 自己在内存里算 + 聚合。**零服务端增量**(hooks 仍是唯一 host 侧产物)。
+- **数据流**:client 巡检 loop(走每台 host 已有的 SSH 连接)→ 读各 host status.json 拿候选(闸门)→ 对候选 `tmux capture-pane -p` 取尾部 → 送模型(复用 voice-correction 的 **DeepSeek LLM seam**,client 已有 key)判(needs-decision? + 一句话原因 + 紧急度)→ **跨 host 合并**成全局 digest(client 内部结构)→ 顶部 pill / 通知 / WAITING 置顶。
+
+**hooks 当闸门(效率关键)**:不盲扫所有 session。先用 P2.1 的 hooks 状态筛 —— 只对 `waiting` / 自上轮 tail 变过的 session 才 capture-pane + 喂模型。成本随"在等的数量"走,不随 总数 × host 数 走。便宜的状态机 + 贵的语义判断分层。
+
+**digest 形状(client 内部结构,SPEC 收口跨端一致)**:
+```
+{ items: [ { host, session, needsYou: true, why: "等你确认是否 force-push", urgency: "high|normal", since } ] }
+```
+注意:**不是 host 上的文件** —— client 自己算自己消费;进 SPEC 是为了 Android/iOS 两端的**巡检算法 + 判官 prompt + 形状**一致。
+
+**与通知模块结合(user 点名,2026-06-04)**:digest 的「这 N 个要你 + 原因」正是通知要推的内容。**P2.3 顶部 pill「N 需要你」+ P2.4 状态变化通知 / WAITING 置顶 = 这一层的展示/送达面;P0.8 是它们的智能 + 数据源**。绑定推进:in-app 先做,系统级 push(app 后台)押后。
+
+**未来:server 侧常驻群控(按需,不急)**:v1 让手机做,理由是**工作时段手机本就在线**。**若**"手机离线时也要跨 host 盯梢 / 调度"成为高频需求,再起一个**专门的群控大脑**(暂名 group manager / 总管家)常驻某台 server:思路和 client 端管理一样 —— 要么 client 把数据丢给它,要么把 client 的 host key 托管给它(server 在线时长比手机好)。它接管"跨 host 聚合 + 判 + 通知",手机退化成纯展示端。**等真有这需求再做,来得及** —— 别在 v1 提前为它加复杂度。
+
+**要避开的坑**:
+- **巡检别拖累 client**:periodic SSH capture + 模型调用要节流 + 闸门收窄(只看 waiting),别每秒全量扫;复用已有的逐 host 连接,别每轮新建。
+- **隐私**:pane 内容(可能含代码/敏感串)会送到 client 用的 LLM(DeepSeek)—— 与 voice-correction 把 ASR 文本送 DeepSeek 同一姿态,但 pane 内容更敏感,记一笔(将来可选 on-device / 可 per-project 关)。
+- **去重防反复打扰**:每 session 记上次判过的 tail 指纹,同一 waiting prompt 不每轮重报。
+- **判官保守起步**:误报(没事也喊你)比漏报更伤信任;判官 prompt 先窄、"拿不准就上报",跑顺再收。
+
+**交付物**:
+| 层 | 做什么 | 谁做 |
+|---|---|---|
+| 巡检 loop | 闸门筛(读 status.json)→ capture-pane → 送模型判 → 跨 host 聚合 | **client**(Android + iOS,SPEC 定算法) |
+| 判官 prompt + digest 形状 | 判定契约 + 内部数据形状 | SPEC 新增一节(跨端一致) |
+| 展示/送达 | 顶部「N 需要你」pill + 通知 + WAITING 置顶 | client(= P2.3 + P2.4 的 UI,绑定上来) |
+| (未来)server 群控 | 手机离线时接管跨 host 聚合 | 专门的常驻 server 进程(暂不做) |
+
+**跨端**:巡检算法 + 判官 prompt + digest 形状是两端共同行为 → 进 SPEC 契约(新一节),Android/iOS 一致实现。
 
 ---
 
@@ -81,8 +121,8 @@
 |---|---|---|---|
 | P2.1 | 实时状态刷新(WORKING/WAITING/时长) | ✅ 已用 **hooks** 实现(2026-05-31,真机验证) | **改走事件驱动,非抓屏**:Claude Code hooks 写 `<base>/.xreal/status.json`(`{session,state,since}`),`ManifestFetcher.fetch` 同连接顺手 `cat`,app 进列表/back/onStart 各拉一次(零空轮询)。`xreal-project.sh` 自动部署 hooks。**老的 `StatusPoller`/`AgentStatusDetector` 抓屏轮询(`tmux capture-pane`)已被取代、仍 dormant**(`FleetFeatures.LIVE_STATUS=false` 不再是状态来源,别去翻它,见 §4)。**注意**:hooks 只给 state + 时长,**不给 preview(最近命令)文本** → 见 P2.2 |
 | P2.2 | 列表卡片 **preview 文本(最近命令预览)** | ⏸️ 仍搁置 | 状态徽章(working/waiting/disconnected/unknown + 时长)已由 hooks 落地(P2.1);但 **preview 文本需抓屏**(`tmux capture-pane`),hooks 给不了 → 随老抓屏路径一起搁置。index.html `render` 的 `preview` 字段已能消费,数据源未接 |
-| P2.3 | 舰队聚合 pills(顶部 需要你/工作中/未激活/已断开 计数) | ⬜ 未开始(列表 UI 精简时撤掉了顶部 `#fleet`) | 纯展示。**数据源 P2.1 已就绪(hooks 状态)**,缺的是顶部聚合 pills 这块 UI 本身。**注意:这才是用户说的"舰队导航",≠ P0.2 方向键导航** |
-| P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | 数据源 P2.1(hooks 状态)已就绪;缺排序/提醒逻辑。"哪个 agent 要我反馈"一眼可见 |
+| P2.3 | 舰队聚合 pills(顶部 需要你/工作中/未激活/已断开 计数) | ⬜ 未开始(列表 UI 精简时撤掉了顶部 `#fleet`) | 纯展示。**数据源:粗粒度计数走 P2.1(hooks 状态);「N 需要你」的精确判定走 P0.8 的 client 侧分诊**(client 内部 digest,非 host 文件;hooks 的 `waiting` ≠ "真需要你")。**这才是 P0.8 的展示面之一**;缺的是顶部聚合 pills 这块 UI。**注意:这才是用户说的"舰队导航",≠ P0.2 方向键导航** |
+| P2.4 | WAITING 置顶 / 状态变化通知 | ⬜ 未开始 | **= P0.8 的送达面**:P0.8 的 client 侧分诊给出"哪 N 个真需要你 + 原因",这里负责置顶排序 + 通知。数据源 hooks(P2.1)+ P0.8 分诊已规划;缺排序/提醒逻辑。**随 P0.8 一起推进** |
 | P2.5 | Project 内多 session(tmux 多 window) | ⬜ 未开始 | 一个 project 内开**配角终端**(shell/git/日志 tail/REPL)—— 不是第二个 agent(并行 agent 由Maestro建多个 project,见 P1.1b)。映射:tmux session 内多 window。切窗口**复用 voice-overlay 那套**(按住一键 → 大字号 overlay 列窗口 → 方向键选 → 松手切),常驻占 0 行终端输出,6 键手柄上比 `prefix+n` 顺手。**体验升级,不急** |
 | P2.6 | 项目级**热词管理 skill** | ⬜ 未开始 | 热词读取链路已就绪(`Hotwords.BASE` 继承 + manifest `projects[].hotwords` per-project 合并喂 ASR)。**这个 skill 负责"写"那张表**:project agent 定期回顾、从语音识别明显错误里总结新热词,用户授权后刷新进该 project 的热词表。**待定:存储位置** —— manifest `projects[].hotwords` 字段(Maestro 转写)vs `<projectDir>/.xreal/hotwords.json`(project agent 自管)。实做时再定 |
 | P2.8 | **触摸翻页(旧半屏入口)** | ✅ 已被 P1.4 升级 | 旧入口是上半屏/下半屏翻页;iOS 现已升级为 P1.4 的 5-unit 热区 + 语音触发区。Android 锁横屏 + 物理键为主,按需补。 |
