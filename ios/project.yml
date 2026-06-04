@@ -30,9 +30,13 @@ targets:
       - path: App/web
         type: folder
         buildPhase: resources
+      # 共享音频收件箱(App Group)—— 主 app 与 ShareExtension 都编译这一份。
+      - path: Shared
     dependencies:
       - package: Citadel
       - package: SwiftTerm
+      # 嵌入「分享到 Agent Station」扩展(接收语音备忘录等分享的音频文件)。
+      - target: ShareExtension
     postBuildScripts:
       - name: Stamp Git revision
         script: |
@@ -74,3 +78,27 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
+        # App Group:读 ShareExtension 落进来的共享音频收件箱(AudioInbox)。
+        CODE_SIGN_ENTITLEMENTS: App/XrealPOC.entitlements
+
+  # 「分享到 Agent Station」Share Extension —— 接收音频文件存进 App Group 共享收件箱。
+  # 刻意精简:不依赖 Citadel/SwiftTerm,只用 UIKit + Shared/AudioInbox.swift。
+  ShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+      - path: Shared
+    configFiles:
+      Debug: BuildSettings.xcconfig
+      Release: BuildSettings.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.ShareExtension
+        PRODUCT_NAME: ShareExtension
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements

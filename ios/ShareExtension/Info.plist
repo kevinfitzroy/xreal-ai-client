@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>存到 Agent Station</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.share-services</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>ShareViewController</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<!-- 仅当分享内容里有音频附件时才出现在分享菜单(语音备忘录 .m4a 走 public.audio)。
+			     不匹配图片/文本/URL,避免在无关分享里冒出来。 -->
+			<key>NSExtensionActivationRule</key>
+			<string>SUBQUERY (extensionItems, $item, SUBQUERY ($item.attachments, $a, ANY $a.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio").@count &gt;= 1).@count &gt;= 1</string>
+		</dict>
+	</dict>
+</dict>
+</plist>
