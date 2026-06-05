@@ -19,9 +19,18 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         let urgency: String    // high | normal
     }
 
-    /// Home 视图模型(VC 从 hosts + statusByHost 算好喂进来)。
+    /// 一个录音转写任务行(收件箱里的录音,独立于任何 host)。
+    struct RecordingRow {
+        let id: String          // 文件名,增量 diff 用
+        let name: String
+        let state: String       // received | processing | done | failed
+        let since: Int          // 收到时间 epoch 秒
+    }
+
+    /// Home 视图模型(VC 从 hosts + statusByHost + MeetingStore 算好喂进来)。
     struct Model {
         let attention: [HomeRow]
+        let recordings: [RecordingRow]
         let working: Int
         let offline: Int
         let hostCount: Int
@@ -30,6 +39,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     var onSelect: ((HomeRow) -> Void)?
+    var onSelectRecording: ((RecordingRow) -> Void)?
 
     private let wordmark = UILabel()
     private let heroNumber = UILabel()
@@ -40,6 +50,9 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     private let footLabel = UILabel()
 
     private var rows: [HomeRow] = []
+    private var recordings: [RecordingRow] = []
+    private enum Section { case attention, recordings }
+    private var sectionOrder: [Section] = []
     private var footText = ""
 
     private static let bg = UIColor(red: 0.043, green: 0.047, blue: 0.063, alpha: 1)   // 近黑 console 底
@@ -86,6 +99,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.dataSource = self
         table.delegate = self
         table.register(HomeCell.self, forCellReuseIdentifier: "home")
+        table.register(RecordingCell.self, forCellReuseIdentifier: "rec")
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 72
         table.contentInset = UIEdgeInsets(top: 2, left: 0, bottom: 28, right: 0)
@@ -170,6 +184,10 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         footLabel.text = footText
         footLabel.isHidden = footText.isEmpty
 
+        recordings = m.recordings
+        sectionOrder = []
+        if !rows.isEmpty { sectionOrder.append(.attention) }
+        if !recordings.isEmpty { sectionOrder.append(.recordings) }
         table.reloadData()
     }
 
@@ -199,21 +217,41 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     // MARK: - UITableView
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { rows.count }
+    func numberOfSections(in tableView: UITableView) -> Int { sectionOrder.count }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        switch sectionOrder[section] {
+        case .attention:  return rows.count
+        case .recordings: return recordings.count
+        }
+    }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        rows.isEmpty ? nil : "需要你关注"
+        switch sectionOrder[section] {
+        case .attention:  return "需要你关注"
+        case .recordings: return "录音转写"
+        }
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
-        cell.configure(rows[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
-        return cell
+        switch sectionOrder[indexPath.section] {
+        case .attention:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
+            cell.configure(rows[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
+            return cell
+        case .recordings:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
+            cell.configure(recordings[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
+            return cell
+        }
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        onSelect?(rows[indexPath.row])
+        switch sectionOrder[indexPath.section] {
+        case .attention:  onSelect?(rows[indexPath.row])
+        case .recordings: onSelectRecording?(recordings[indexPath.row])
+        }
     }
 
     static func ageText(_ since: Int) -> String {
@@ -295,6 +333,69 @@ private final class HomeCell: UITableViewCell {
         metaLabel.text = "\(r.host) · \(r.session)" + (age.isEmpty ? "" : "  ·  \(age)")
         // 卡片底:insetGrouped 默认卡用得上;这里直接给 contentView 一个深色卡背景。
         backgroundColor = cardColor
+    }
+}
+
+// MARK: - 录音转写卡片(波形图标 + 名 + 状态;转写中转圈)
+
+private final class RecordingCell: UITableViewCell {
+    private let icon = UIImageView()
+    private let nameLabel = UILabel()
+    private let stateLabel = UILabel()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+
+    private static let amber = UIColor(red: 1.0, green: 0.72, blue: 0.28, alpha: 1)
+    private static let green = UIColor(red: 0.36, green: 0.86, blue: 0.55, alpha: 1)
+    private static let red = UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        backgroundColor = .clear
+        let sel = UIView(); sel.backgroundColor = UIColor(white: 1, alpha: 0.06); selectedBackgroundView = sel
+
+        icon.image = UIImage(systemName: "waveform")
+        icon.tintColor = UIColor(white: 1, alpha: 0.62)
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
+
+        nameLabel.font = .systemFont(ofSize: 15.5, weight: .medium)
+        nameLabel.textColor = .white
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        stateLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        stateLabel.setContentHuggingPriority(.required, for: .horizontal)
+        spinner.hidesWhenStopped = true
+
+        let row = UIStackView(arrangedSubviews: [icon, nameLabel, UIView(), spinner, stateLabel])
+        row.axis = .horizontal; row.spacing = 10; row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(_ r: HomePanelView.RecordingRow, cardColor: UIColor, ageText: (Int) -> String) {
+        backgroundColor = cardColor
+        nameLabel.text = r.name
+        let age = ageText(r.since)
+        switch r.state {
+        case "processing":
+            spinner.startAnimating()
+            stateLabel.text = "转写中"; stateLabel.textColor = Self.amber
+        case "done":
+            spinner.stopAnimating()
+            stateLabel.text = "完成" + (age.isEmpty ? "" : " · \(age)"); stateLabel.textColor = Self.green
+        case "failed":
+            spinner.stopAnimating()
+            stateLabel.text = "失败 · 点重试"; stateLabel.textColor = Self.red
+        default:   // received
+            spinner.stopAnimating()
+            stateLabel.text = "待处理"; stateLabel.textColor = UIColor(white: 1, alpha: 0.5)
+        }
     }
 }
 

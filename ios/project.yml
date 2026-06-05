@@ -36,11 +36,8 @@ targets:
       - package: Citadel
       - package: SwiftTerm
       # 嵌入「分享到 Agent Station」扩展(接收语音备忘录等分享的音频文件)。
-      # ⚠️ 暂时停用:App Group 需 Xcode GUI 做一次性 provisioning(CLI 签不了新 profile,
-      # keychain 写权限受限)。停用后主 app 复用缓存 profile → 命令行可自动装。
-      # 走完整分享流程时,在 Xcode 里 Run 一次自动开通 App Group,再把这两行 + 下面的
-      # CODE_SIGN_ENTITLEMENTS 取消注释。当前 debug 验证走 document picker,不需要它。
-      # - target: ShareExtension
+      # 真机首次装需在 Xcode Run 一次开通 App Group provisioning(CLI 签不了带新能力的 profile)。
+      - target: ShareExtension
     postBuildScripts:
       - name: Stamp Git revision
         script: |
@@ -83,8 +80,7 @@ targets:
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         # App Group:读 ShareExtension 落进来的共享音频收件箱(AudioInbox)。
-        # ⚠️ 暂时停用(见上面 ShareExtension 依赖处说明):CLI 签不了带 App Group 的新 profile。
-        # CODE_SIGN_ENTITLEMENTS: App/XrealPOC.entitlements
+        CODE_SIGN_ENTITLEMENTS: App/XrealPOC.entitlements
 
   # 「分享到 Agent Station」Share Extension —— 接收音频文件存进 App Group 共享收件箱。
   # 刻意精简:不依赖 Citadel/SwiftTerm,只用 UIKit + Shared/AudioInbox.swift。

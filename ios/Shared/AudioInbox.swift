@@ -64,9 +64,9 @@ enum AudioInbox {
         return f.string(from: Date())
     }
 
-    /// 只保留 [A-Za-z0-9.-_],其它(含中文/空格)替成 _,避免落盘文件名问题。
+    /// 只挡路径分隔符 / 控制字符,**保留中文/空格**(容器文件名 UTF-8 安全,且要给人看)。
     private static func sanitize(_ s: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
-        return String(s.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
+        let bad = CharacterSet(charactersIn: "/\\:\u{0}").union(.controlCharacters)
+        return String(s.unicodeScalars.map { bad.contains($0) ? "_" : Character($0) })
     }
 }

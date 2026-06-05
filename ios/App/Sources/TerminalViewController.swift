@@ -111,6 +111,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var kbConnectObs: NSObjectProtocol?
     private var kbDisconnectObs: NSObjectProtocol?
     private var foregroundObs: NSObjectProtocol?
+    private var meetingObs: NSObjectProtocol?
 
     // 语音输入(Android VoiceDaemon 的对应)。
     private var voice: VoiceController!
@@ -152,6 +153,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         homePanel.onSelect = { [weak self] r in
             self?.onOpenProject(host: r.host, session: r.session, name: r.name, type: r.type.rawValue)
         }
+        homePanel.onSelectRecording = { [weak self] r in self?.onTapRecording(r) }
         homePanel.isHidden = true
         view.addSubview(homePanel)
         logPanel.onClose = { [weak self] in self?.hideLogPanel(animated: true) }
@@ -1087,6 +1089,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
         navigationController?.setNavigationBarHidden(true, animated: false)   // Home 全屏深色仪表盘,隐藏 nav bar
+        MeetingStore.shared.processPending()   // 滑入 Home:把待处理录音跑起来
         homePanel.render(buildHomeModel())
         homePanel.isHidden = false
         view.bringSubviewToFront(homePanel)
@@ -1133,6 +1136,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
         navigationController?.setNavigationBarHidden(true, animated: false)   // Home 全屏深色仪表盘,隐藏 nav bar
+        MeetingStore.shared.processPending()   // 启动落地 Home:把待处理录音跑起来
         homePanel.render(buildHomeModel())
         homePanel.isHidden = false
         layoutHomePanel()
@@ -1170,8 +1174,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         } else {
             attention = hooksAttention()
         }
-        return .init(attention: attention, working: working, offline: offline, hostCount: hosts.count,
-                     probing: probing, judgeActive: fleetTriage.hasJudge)
+        return .init(attention: attention, recordings: recordingRows(), working: working, offline: offline,
+                     hostCount: hosts.count, probing: probing, judgeActive: fleetTriage.hasJudge)
     }
 
     /// 巡检尚未出结果时的占位:**只列 needs-permission**(明确的权限抉择)。单纯 waiting 是常态
@@ -1196,6 +1200,33 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// home 数据刷新(随 manifest/status 更新)。off-screen 也刷,保证滑入即新。
     private func pushHome() {
         homePanel.render(buildHomeModel())
+    }
+
+    /// MeetingStore 任务 → Home 录音行(独立于 host)。
+    private func recordingRows() -> [HomePanelView.RecordingRow] {
+        MeetingStore.shared.tasks().map {
+            .init(id: $0.audioURL.lastPathComponent, name: $0.name,
+                  state: $0.state.rawValue, since: Int($0.receivedAt.timeIntervalSince1970))
+        }
+    }
+
+    /// 点录音卡片:完成→预览逐字稿(可删);失败/待处理→(重)触发转写。委托给 subproject 是下一步。
+    private func onTapRecording(_ r: HomePanelView.RecordingRow) {
+        guard let task = MeetingStore.shared.tasks().first(where: { $0.audioURL.lastPathComponent == r.id }) else { return }
+        switch task.state {
+        case .done:
+            let text = MeetingStore.shared.transcript(for: task) ?? "(空)"
+            let a = UIAlertController(title: task.name, message: text, preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "好", style: .default))
+            a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+                MeetingStore.shared.remove(task); self?.pushHome()
+            })
+            present(a, animated: true)
+        case .received, .failed:
+            MeetingStore.shared.process(task.audioURL)
+        case .processing:
+            break
+        }
     }
 
     // MARK: - 舰队巡检 loop(SPEC §14)
@@ -1576,10 +1607,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
+            MeetingStore.shared.processPending()   // 后台收到的录音(独立于 host)→ 前台即开始转写
             guard (self.view_ == .list || self.view_ == .home), !self.hosts.isEmpty else { return }
             self.refreshManifests()                                    // 快路径:列表/Home 状态即时刷新
             if self.hosts.contains(where: { !$0.basePath.isEmpty }) { self.runTriageRound() }   // 语义分诊一轮
         }
+        meetingObs = NotificationCenter.default.addObserver(
+            forName: .meetingStoreDidChange, object: nil, queue: .main
+        ) { [weak self] _ in self?.pushHome() }   // 录音任务状态变 → 刷 Home(off-screen 也刷)
     }
 
     // MARK: - Valet "Open in" import → reload list (SPEC §8)
@@ -2019,7 +2054,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     deinit {
         triageTimer?.invalidate()
-        for o in [kbConnectObs, kbDisconnectObs, foregroundObs, kbFrameObs, kbHideObs] {
+        for o in [kbConnectObs, kbDisconnectObs, foregroundObs, meetingObs, kbFrameObs, kbHideObs] {
             if let o { NotificationCenter.default.removeObserver(o) }
         }
     }
