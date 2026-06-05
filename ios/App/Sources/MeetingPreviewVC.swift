@@ -94,7 +94,9 @@ final class MeetingPreviewVC: UIViewController {
                 let a = UIAlertController(title: "已交给「\(target.projectName)」",
                                           message: "逐字稿已上传并转交。要删除这条录音吗?(委托错了可「保留」再重发)",
                                           preferredStyle: .alert)
-                a.addAction(UIAlertAction(title: "保留", style: .cancel))
+                a.addAction(UIAlertAction(title: "保留", style: .cancel) { [weak self] _ in
+                    self?.dismiss(animated: true)   // 留着录音(可从 Home 再点开重委托),但一样退回 Home
+                })
                 a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
                     self?.onDelete()
                     self?.dismiss(animated: true)
