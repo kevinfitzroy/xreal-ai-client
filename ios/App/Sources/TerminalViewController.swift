@@ -1,5 +1,4 @@
 import UIKit
-import UniformTypeIdentifiers
 import GameController
 import AVFoundation
 import SwiftTerm
@@ -131,12 +130,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.backgroundColor = .systemBackground
         navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
-        #if DEBUG
-        // 会议纪要听写链路的临时验证入口(取收件箱最新音频跑豆包录音文件识别)。生产构建无此按钮。
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "waveform.badge.mic"),
-            style: .plain, target: self, action: #selector(runMeetingDebug))
-        #endif
 
         // 原生列表:全屏(内容自动避让安全区/状态栏);终端态被 term 盖住。
         deckList.translatesAutoresizingMaskIntoConstraints = false
@@ -2000,44 +1993,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
-    /// 🎙 会议听写临时验证:取收件箱最新音频 → 转码 → 豆包录音文件识别2.0 → 弹「说话人N」逐字稿,
-    /// 并把 raw 响应打进日志面板(验真实返回体、钉死 parser)。仅 DEBUG 构建可见此按钮。
-    @objc private func runMeetingDebug() {
-        // 文件选择器选音频(语音备忘录「存储到文件」后从 Files 选)—— 不依赖 App Group / Share Extension,
-        // 便于命令行自动装机时验豆包链路。完整分享流程开通 App Group 后改走收件箱。
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.audio])
-        picker.delegate = self
-        present(picker, animated: true)
-    }
-
-    fileprivate func runMeetingPipelineDebug(on file: URL) {
-        showDebugAlert(title: "处理中…", message: file.lastPathComponent + "\n转码 → 豆包识别,稍候,结果会再弹一次。")
-        Task { [weak self] in
-            do {
-                let t = try await MeetingPipeline.process(inboxFile: file, enableSpeaker: true)
-                let md = t.asMarkdown()
-                AgentLog.info("meeting", "transcript(\(t.utterances.count)句):\n\(md)")
-                await MainActor.run {
-                    self?.presentedViewController?.dismiss(animated: false)
-                    self?.showDebugAlert(
-                        title: "转写完成 · \(t.utterances.count)句 · \(Set(t.utterances.compactMap(\.speaker)).count)人",
-                        message: md)
-                }
-            } catch {
-                await MainActor.run {
-                    self?.presentedViewController?.dismiss(animated: false)
-                    self?.showDebugAlert(title: "失败", message: "\(error)\n\n看左侧日志面板的「flash raw resp」对 parser。")
-                }
-            }
-        }
-    }
-
-    private func showDebugAlert(title: String, message: String) {
-        let a = UIAlertController(title: title, message: String(message.prefix(1500)), preferredStyle: .alert)
-        a.addAction(UIAlertAction(title: "好", style: .default))
-        present(a, animated: true)
-    }
-
     private var didAutoOpen = false
     private func maybeAutoOpen() {
         guard !didAutoOpen, view_ == .list || view_ == .home else { return }
@@ -2059,22 +2014,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 }
-
-#if DEBUG
-extension TerminalViewController: UIDocumentPickerDelegate {
-    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        guard let src = urls.first else { return }
-        // security-scoped URL 仅瞬时有效 → 立刻拷进 tmp 再跑流水线。
-        let scoped = src.startAccessingSecurityScopedResource()
-        defer { if scoped { src.stopAccessingSecurityScopedResource() } }
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("pick-" + src.lastPathComponent)
-        try? FileManager.default.removeItem(at: tmp)
-        do { try FileManager.default.copyItem(at: src, to: tmp) }
-        catch { showDebugAlert(title: "读取失败", message: "\(error)"); return }
-        runMeetingPipelineDebug(on: tmp)
-    }
-}
-#endif
 
 /// 带内边距的 UILabel(原生 toast 用)。
 final class PaddingLabel: UILabel {
