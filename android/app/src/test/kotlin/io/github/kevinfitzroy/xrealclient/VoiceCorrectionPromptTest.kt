@@ -27,6 +27,9 @@ class VoiceCorrectionPromptTest {
         assertTrue(s.contains("原样"))       // 保守:拿不准原样返回
         assertTrue(s.contains("自然语言"))   // 自然语言请求保持自然语言(别编成 git clone)
         assertTrue(s.contains("臆造"))       // 绝不臆造用户没说的 URL/路径/占位符
+        assertTrue(s.contains("句式"))       // #22 句式铁律:句式/语气/人称/时态不许扭
+        assertTrue(s.contains("人称"))       // #22 人称绝不反转(你↔我)
+        assertTrue(s.contains("你可以"))     // #22 正反例:"你可以…"是描述,不许扭成"是否需要我…"
     }
 
     @Test fun `AI agent 会话才追加 Claude Code 内置命令例外`() {
