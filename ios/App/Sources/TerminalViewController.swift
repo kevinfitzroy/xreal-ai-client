@@ -1209,12 +1209,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         switch task.state {
         case .done:
             let text = MeetingStore.shared.transcript(for: task) ?? "(空)"
-            let a = UIAlertController(title: task.name, message: text, preferredStyle: .alert)
-            a.addAction(UIAlertAction(title: "好", style: .default))
-            a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+            let preview = MeetingPreviewVC(name: task.name, markdown: text, hosts: hosts) { [weak self] in
                 MeetingStore.shared.remove(task); self?.pushHome()
-            })
-            present(a, animated: true)
+            }
+            let nav = UINavigationController(rootViewController: preview)
+            nav.modalPresentationStyle = .fullScreen
+            nav.overrideUserInterfaceStyle = .dark
+            present(nav, animated: true)
         case .received, .failed:
             MeetingStore.shared.process(task.audioURL)
         case .processing:
