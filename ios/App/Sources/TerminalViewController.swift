@@ -1216,8 +1216,19 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             nav.modalPresentationStyle = .fullScreen
             nav.overrideUserInterfaceStyle = .dark
             present(nav, animated: true)
-        case .received, .failed:
+        case .received:
             MeetingStore.shared.process(task.audioURL)
+        case .failed:
+            // 反复失败的条目:之前一点就立刻重转、根本删不掉 → 改成弹选择:重试 / 删除。
+            let a = UIAlertController(title: task.name, message: "这条转写失败了。", preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "重试转写", style: .default) { _ in
+                MeetingStore.shared.process(task.audioURL)
+            })
+            a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+                MeetingStore.shared.remove(task); self?.pushHome()
+            })
+            a.addAction(UIAlertAction(title: "取消", style: .cancel))
+            present(a, animated: true)
         case .processing:
             break
         }
