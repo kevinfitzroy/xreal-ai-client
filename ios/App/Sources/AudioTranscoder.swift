@@ -99,4 +99,63 @@ enum AudioTranscoder {
 
         return Double(totalOut) / targetRate
     }
+
+    /// 转码 + **按时长分段**:每段 ≤ `maxSeconds` 的 16k/mono WAV 写进 `outputDir`,返回有序段 URL。
+    /// 长录音(80min ≈ 160MB)单次 base64 POST 易因超 100MB 限制 / 网络抖动失败 → 分段后每段独立上传、
+    /// 可逐段重试(issue #19)。短录音返回单段。切段落在整块边界(不拆句),段长 ≈ maxSeconds ± 一个读块。
+    static func toWav16kMonoSegments(input: URL, outputDir: URL, maxSeconds: Double = 600) throws -> [URL] {
+        let inFile: AVAudioFile
+        do { inFile = try AVAudioFile(forReading: input) }
+        catch { throw TranscodeError.openFailed(error.localizedDescription) }
+        let inFormat = inFile.processingFormat
+
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: targetRate,
+                                            channels: 1, interleaved: true) else { throw TranscodeError.formatFailed }
+        guard let converter = AVAudioConverter(from: inFormat, to: outFormat) else { throw TranscodeError.converterFailed }
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+
+        let readChunk: AVAudioFrameCount = 16384
+        guard let inBuffer = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: readChunk) else { throw TranscodeError.formatFailed }
+        let maxFrames = AVAudioFramePosition(maxSeconds * targetRate)
+
+        var segments: [URL] = []
+        var outFile: AVAudioFile?
+        var segFrames: AVAudioFramePosition = 0
+        func openSegment() throws {
+            let url = outputDir.appendingPathComponent("seg-\(segments.count).wav")
+            try? FileManager.default.removeItem(at: url)
+            outFile = try AVAudioFile(forWriting: url, settings: outFormat.settings,
+                                      commonFormat: .pcmFormatInt16, interleaved: true)
+            segments.append(url)
+            segFrames = 0
+        }
+        try openSegment()
+
+        var reachedEnd = false
+        while true {
+            let outCap = AVAudioFrameCount(Double(readChunk) * targetRate / inFormat.sampleRate) + 1024
+            guard let outBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else { throw TranscodeError.formatFailed }
+            var convErr: NSError?
+            let status = converter.convert(to: outBuffer, error: &convErr) { _, outStatus in
+                if reachedEnd { outStatus.pointee = .endOfStream; return nil }
+                do { inBuffer.frameLength = 0; try inFile.read(into: inBuffer, frameCount: readChunk) }
+                catch { reachedEnd = true; outStatus.pointee = .endOfStream; return nil }
+                if inBuffer.frameLength == 0 { reachedEnd = true; outStatus.pointee = .endOfStream; return nil }
+                outStatus.pointee = .haveData; return inBuffer
+            }
+            if let convErr { throw convErr }
+            if outBuffer.frameLength > 0 {
+                try outFile?.write(from: outBuffer)
+                segFrames += AVAudioFramePosition(outBuffer.frameLength)
+                if segFrames >= maxFrames && !reachedEnd { try openSegment() }   // 满一段 → 开下一段
+            }
+            if status == .endOfStream || status == .error { break }
+            if reachedEnd && outBuffer.frameLength == 0 { break }
+        }
+        // 删掉可能的空尾段(刚好切完即结束 → 末段只有 WAV 头)。
+        if segments.count > 1, segFrames == 0 {
+            try? FileManager.default.removeItem(at: segments.removeLast())
+        }
+        return segments
+    }
 }

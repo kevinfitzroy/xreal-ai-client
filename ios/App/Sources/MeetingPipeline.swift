@@ -20,18 +20,19 @@ enum MeetingPipeline {
                         enableSpeaker: Bool = true,
                         onState: ((MeetingTaskState) -> Void)? = nil) async throws -> MeetingTranscript {
         onState?(.transcoding)
-        let wav = FileManager.default.temporaryDirectory
-            .appendingPathComponent("xreal-meeting-\(UUID().uuidString).wav")
-        defer { try? FileManager.default.removeItem(at: wav) }
+        let segDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xreal-meeting-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: segDir) }
 
         do {
-            let dur = try await Task.detached(priority: .userInitiated) {
-                try AudioTranscoder.toWav16kMono(input: inboxFile, output: wav)
+            // 分段转码:短录音 1 段,长录音(>10min)多段,每段 ≤10min 独立上传、可逐段重试(issue #19)。
+            let segments = try await Task.detached(priority: .userInitiated) {
+                try AudioTranscoder.toWav16kMonoSegments(input: inboxFile, outputDir: segDir)
             }.value
-            AgentLog.info("meeting", "transcoded \(inboxFile.lastPathComponent) → \(String(format: "%.1f", dur))s wav")
+            AgentLog.info("meeting", "transcoded \(inboxFile.lastPathComponent) → \(segments.count) 段 WAV")
 
             onState?(.transcribing)
-            let transcript = try await VolcFileAsr.recognize(wavURL: wav, enableSpeaker: enableSpeaker)
+            let transcript = try await VolcFileAsr.recognizeSegments(segments, enableSpeaker: enableSpeaker)
             onState?(.done(transcript))
             return transcript
         } catch {

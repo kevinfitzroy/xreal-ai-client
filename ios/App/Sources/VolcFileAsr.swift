@@ -78,6 +78,55 @@ enum VolcFileAsr {
         return try parse(data)
     }
 
+    /// 多段识别 + 合并:逐段 recognize(带重试),按段序拼接 utterances 与 fullText。某段静音(emptyResult)
+    /// 跳过不致命。⚠️ 说话人标签**每段独立**编号(豆包按请求编号),跨段不保证 speaker N 是同一人 —— 委托给
+    /// agent 时由它按上下文映射(issue #19 已知限制)。
+    static func recognizeSegments(_ urls: [URL], enableSpeaker: Bool) async throws -> MeetingTranscript {
+        guard !urls.isEmpty else { throw FileAsrError.emptyResult }
+        if urls.count == 1 { return try await recognizeWithRetry(wavURL: urls[0], enableSpeaker: enableSpeaker) }
+
+        var utterances: [MeetingUtterance] = []
+        var texts: [String] = []
+        var anyOk = false
+        for (i, url) in urls.enumerated() {
+            AgentLog.info("meeting", "recognize segment \(i + 1)/\(urls.count)")
+            do {
+                let seg = try await recognizeWithRetry(wavURL: url, enableSpeaker: enableSpeaker)
+                utterances.append(contentsOf: seg.utterances)
+                if !seg.fullText.isEmpty { texts.append(seg.fullText) }
+                anyOk = true
+            } catch FileAsrError.emptyResult {
+                AgentLog.info("meeting", "segment \(i + 1) empty (silence?), skip")
+            }
+            // 非空错误(重试后仍失败)→ 抛出,整体失败(用户可整条重试)。
+        }
+        guard anyOk else { throw FileAsrError.emptyResult }
+        return MeetingTranscript(utterances: utterances, fullText: texts.joined(separator: "\n"))
+    }
+
+    /// 单段识别 + **网络容错重试**:瞬时错误(超时/HTTP/解析)线性退避重试;逻辑错误(资源未授权/无凭证/
+    /// 空结果)不重试直接抛。
+    private static func recognizeWithRetry(wavURL: URL, enableSpeaker: Bool, attempts: Int = 3) async throws -> MeetingTranscript {
+        var lastError: Error?
+        for attempt in 1...attempts {
+            do {
+                return try await recognize(wavURL: wavURL, enableSpeaker: enableSpeaker)
+            } catch let e as FileAsrError {
+                switch e {
+                case .noCreds, .apiStatus, .emptyResult: throw e   // 确定性错误,重试无意义
+                case .http, .badResponse: lastError = e            // 可能瞬时 → 重试
+                }
+            } catch {
+                lastError = error   // 网络/超时 → 重试
+            }
+            if attempt < attempts {
+                AgentLog.warn("meeting", "segment recognize retry \(attempt)/\(attempts): \(wavURL.lastPathComponent)")
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)   // 线性退避 1s/2s
+            }
+        }
+        throw lastError ?? FileAsrError.badResponse
+    }
+
     /// 解析返回体。容错:`speaker` 可能在 utterance 顶层或 `additions.speaker`;无 utterances 时退回 `result.text`。
     private static func parse(_ data: Data) throws -> MeetingTranscript {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
