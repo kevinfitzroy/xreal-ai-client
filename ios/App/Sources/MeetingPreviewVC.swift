@@ -89,7 +89,7 @@ final class MeetingPreviewVC: UIViewController {
             switch result {
             case .success:
                 let a = UIAlertController(title: "已交给「\(target.projectName)」",
-                                          message: "逐字稿已上传到该 host,并向 agent 注入了整理指令。", preferredStyle: .alert)
+                                          message: "逐字稿已上传,并转交给该 agent 处理了。", preferredStyle: .alert)
                 a.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in self?.dismiss(animated: true) })
                 present(a, animated: true)
             case .failure(let e):
