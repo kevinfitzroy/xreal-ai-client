@@ -241,7 +241,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
             return cell
         case .recordings:
             let cell = tableView.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
-            cell.configure(recordings[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
+            cell.configure(recordings[indexPath.row], cardColor: Self.card)
             return cell
         }
     }
@@ -341,6 +341,7 @@ private final class HomeCell: UITableViewCell {
 private final class RecordingCell: UITableViewCell {
     private let icon = UIImageView()
     private let nameLabel = UILabel()
+    private let timeLabel = UILabel()
     private let stateLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
 
@@ -361,41 +362,61 @@ private final class RecordingCell: UITableViewCell {
         nameLabel.font = .systemFont(ofSize: 15.5, weight: .medium)
         nameLabel.textColor = .white
         nameLabel.lineBreakMode = .byTruncatingMiddle
-        stateLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        // 时间醒目:同地点录音默认标题(地理位置)常常一样,时间才是主要区分点。
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12.5, weight: .regular)
+        timeLabel.textColor = UIColor(white: 1, alpha: 0.55)
+        stateLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         stateLabel.setContentHuggingPriority(.required, for: .horizontal)
         spinner.hidesWhenStopped = true
 
-        let row = UIStackView(arrangedSubviews: [icon, nameLabel, UIView(), spinner, stateLabel])
+        let textCol = UIStackView(arrangedSubviews: [nameLabel, timeLabel])
+        textCol.axis = .vertical; textCol.spacing = 2
+
+        let row = UIStackView(arrangedSubviews: [icon, textCol, UIView(), spinner, stateLabel])
         row.axis = .horizontal; row.spacing = 10; row.alignment = .center
         row.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(row)
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
+            row.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 11),
+            row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -11),
             row.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             row.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(_ r: HomePanelView.RecordingRow, cardColor: UIColor, ageText: (Int) -> String) {
+    func configure(_ r: HomePanelView.RecordingRow, cardColor: UIColor) {
         backgroundColor = cardColor
         nameLabel.text = r.name
-        let age = ageText(r.since)
+        timeLabel.text = Self.timeText(r.since)
         switch r.state {
         case "processing":
             spinner.startAnimating()
             stateLabel.text = "转写中"; stateLabel.textColor = Self.amber
         case "done":
             spinner.stopAnimating()
-            stateLabel.text = "完成" + (age.isEmpty ? "" : " · \(age)"); stateLabel.textColor = Self.green
+            stateLabel.text = "完成"; stateLabel.textColor = Self.green
         case "failed":
             spinner.stopAnimating()
-            stateLabel.text = "失败 · 点重试"; stateLabel.textColor = Self.red
+            stateLabel.text = "失败·重试"; stateLabel.textColor = Self.red
         default:   // received
             spinner.stopAnimating()
             stateLabel.text = "待处理"; stateLabel.textColor = UIColor(white: 1, alpha: 0.5)
         }
+    }
+
+    /// 绝对时间,区分同标题录音:今天/昨天 HH:mm;更早 M月d日 HH:mm(跨年带年份)。
+    private static func timeText(_ since: Int) -> String {
+        guard since > 0 else { return "" }
+        let date = Date(timeIntervalSince1970: TimeInterval(since))
+        let cal = Calendar.current
+        let tf = DateFormatter(); tf.locale = Locale(identifier: "zh_CN"); tf.dateFormat = "HH:mm"
+        let hm = tf.string(from: date)
+        if cal.isDateInToday(date) { return "今天 \(hm)" }
+        if cal.isDateInYesterday(date) { return "昨天 \(hm)" }
+        let df = DateFormatter(); df.locale = Locale(identifier: "zh_CN")
+        df.dateFormat = cal.isDate(date, equalTo: Date(), toGranularity: .year) ? "M月d日 HH:mm" : "yyyy年M月d日 HH:mm"
+        return df.string(from: date)
     }
 }
 
