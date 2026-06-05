@@ -12,6 +12,17 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private let card = UIView()
     private var cardBottomConstraint: NSLayoutConstraint!
 
+    // 上滑锁定录音态:计时 + 停止/取消按钮(录音时显示,平时隐藏)。
+    private let recordingControls = UIStackView()
+    private let stopButton = UIButton(type: .system)
+    private let cancelButton = UIButton(type: .system)
+    private var recTimer: Timer?
+    private var recStart: Date?
+    private weak var tapGR: UITapGestureRecognizer?
+    private weak var voicePressGR: UILongPressGestureRecognizer?
+    private static let cardBgNormal = UIColor(white: 0.08, alpha: 0.95)
+    private static let cardBgArmed = UIColor(red: 0.22, green: 0.10, blue: 0.10, alpha: 0.96)
+
     // 纠错中(issue #16):状态行转圈动画 + 原文灰显 + 提示改"稍候"。spinner 由 overlay 自管,状态机不变。
     private var spinnerTimer: Timer?
     private var spinnerIndex = 0
@@ -23,6 +34,8 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
 
     var onTapZone: ((TapZone) -> Void)?
     var onVoicePress: ((Bool) -> Void)?
+    var onStopRecording: (() -> Void)?
+    var onCancelRecording: (() -> Void)?
     var reservedBottomInset: CGFloat = 0 {
         didSet { updateCardBottom() }
     }
@@ -58,6 +71,22 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(stack)
 
+        stopButton.setTitle("停止并转写", for: .normal)
+        stopButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .semibold)
+        stopButton.tintColor = UIColor(red: 1.0, green: 0.42, blue: 0.42, alpha: 1)
+        stopButton.addTarget(self, action: #selector(stopTap), for: .touchUpInside)
+        cancelButton.setTitle("取消", for: .normal)
+        cancelButton.titleLabel?.font = .systemFont(ofSize: 16, weight: .regular)
+        cancelButton.tintColor = UIColor(white: 0.7, alpha: 1)
+        cancelButton.addTarget(self, action: #selector(cancelTap), for: .touchUpInside)
+        recordingControls.axis = .horizontal
+        recordingControls.distribution = .fillEqually
+        recordingControls.spacing = 12
+        recordingControls.addArrangedSubview(cancelButton)
+        recordingControls.addArrangedSubview(stopButton)
+        recordingControls.isHidden = true
+        stack.addArrangedSubview(recordingControls)
+
         cardBottomConstraint = card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24)
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -75,12 +104,14 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         addGestureRecognizer(tap)
+        tapGR = tap
 
         let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.minimumPressDuration = 0
         voicePress.cancelsTouchesInView = true
         voicePress.delegate = self
         addGestureRecognizer(voicePress)
+        voicePressGR = voicePress
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
@@ -89,7 +120,9 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     /// 任何普通态都会**复位**纠错中样式(停 spinner、文本回绿、提示回默认)。
     func show(status: String, text: String) {
         stopSpinner()
+        resetRecordingChrome()
         textLabel.textColor = textColorNormal
+        hintLabel.isHidden = false
         hintLabel.text = Self.hintNormal
         statusLabel.text = status
         textLabel.text = text
@@ -112,9 +145,66 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
 
     func hide() {
         stopSpinner()
+        resetRecordingChrome()
         isHidden = true
         isUserInteractionEnabled = false
     }
+
+    /// 复位录音/armed 视觉:停计时、隐按钮、卡片底色回常态、恢复 overlay 自身手势。
+    private func resetRecordingChrome() {
+        recTimer?.invalidate(); recTimer = nil
+        recordingControls.isHidden = true
+        card.backgroundColor = Self.cardBgNormal
+        tapGR?.isEnabled = true
+        voicePressGR?.isEnabled = true
+    }
+
+    /// armed 态(手指上滑到 overlay):提示「松手转录音」,保留当前识别文本。
+    func showArmed(text: String) {
+        stopSpinner()
+        recTimer?.invalidate(); recTimer = nil
+        recordingControls.isHidden = true
+        tapGR?.isEnabled = true; voicePressGR?.isEnabled = true
+        card.backgroundColor = Self.cardBgArmed
+        textLabel.textColor = textColorNormal
+        statusLabel.text = "↑ 松手转录音"
+        textLabel.text = text
+        textLabel.isHidden = text.isEmpty
+        hintLabel.isHidden = false
+        hintLabel.text = "滑回去 = 继续语音输入"
+        isHidden = false
+        isUserInteractionEnabled = true
+    }
+
+    /// 录音锁定态:计时 + 停止/取消按钮;停用 overlay 自身手势让按钮收触摸。
+    func showRecording() {
+        stopSpinner()
+        card.backgroundColor = Self.cardBgNormal
+        textLabel.isHidden = true
+        hintLabel.isHidden = true
+        recordingControls.isHidden = false
+        tapGR?.isEnabled = false
+        voicePressGR?.isEnabled = false
+        isHidden = false
+        isUserInteractionEnabled = true
+        recStart = Date()
+        updateRecLabel()
+        recTimer?.invalidate()
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateRecLabel() }
+        RunLoop.main.add(t, forMode: .common)
+        recTimer = t
+    }
+
+    private func updateRecLabel() {
+        let secs = max(0, Int(Date().timeIntervalSince(recStart ?? Date())))
+        statusLabel.text = String(format: "🔴 录音中 · %02d:%02d", secs / 60, secs % 60)
+    }
+
+    /// overlay 坐标系里 card 顶部 y(≈ terminal 核心坐标),给上滑 armed 阈值用。
+    func cardTopY() -> CGFloat { card.frame.minY }
+
+    @objc private func stopTap() { onStopRecording?() }
+    @objc private func cancelTap() { onCancelRecording?() }
 
     private func startSpinner() {
         stopSpinner()

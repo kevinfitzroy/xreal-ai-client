@@ -16,7 +16,7 @@ import Foundation
 /// 触发(SPA 语音键)。所有方法在主线程调用(bridge 回调 + UI eval 都在 main)。
 final class VoiceController: AsrCallback {
 
-    enum State { case idle, streaming, asrPending, correcting, preview }
+    enum State { case idle, streaming, asrPending, correcting, preview, recording }
 
     /// 注入文本到 SSH(VC 提供:转发到当前 SSHSession.send,单写者纪律由 SSHSession 保证)。
     /// nil = 当前无活动 PTY(列表态),注入 no-op。
@@ -56,6 +56,8 @@ final class VoiceController: AsrCallback {
 
     /// 录音 —— nil = 无麦克风权限(VC 在授权后注入)。
     var recorder: AudioCapture?
+    /// 上滑锁定录音时,PCM 边采边 tee 到这份 WAV(2A 无缝);正常松手则丢弃。
+    private var wavWriter: PcmWavWriter?
 
     init(asr: Asr,
          showOverlay: @escaping (_ status: String, _ text: String) -> Void,
@@ -68,7 +70,14 @@ final class VoiceController: AsrCallback {
     }
 
     var currentState: State { state }
+    var currentPartial: String? { currentText }
     var hasInputWarning: Bool { inputWarning != nil }
+
+    /// 上滑 armed 后又滑回 → 恢复流式 overlay 显示。
+    func reshowStreaming() {
+        guard state == .streaming else { return }
+        showOverlay("🎤 聆听中…", currentText ?? "")
+    }
 
     func setInputWarning(_ warning: String?) {
         inputWarning = warning
@@ -83,16 +92,21 @@ final class VoiceController: AsrCallback {
         let gen = asrGen
         stream?.cancel()
         recorder?.cancel()
+        wavWriter?.discard(); wavWriter = nil      // 清上一会话的 tee 残留
         currentText = nil
         inputWarning = nil
         state = .streaming
         showOverlay("🎤 聆听中…", "")
 
+        // tee 一份 WAV(2A 无缝):音频从按下就写;上滑锁定即得完整录音,正常松手则丢弃。
+        wavWriter = PcmWavWriter(url: FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-\(UUID().uuidString).wav"))
+
         stream = asr.open(lang: lang, hotwords: hotwords, callback: GenCallback(gen: gen, owner: self))
         let recorderStarted = recorder?.start { [weak self] chunk in
             guard let self else { return }
-            // 录音线程:仅当代数仍匹配才喂(重按后旧录音的尾块不进新会话)。
-            if gen == self.asrGen { self.stream?.send(chunk) }
+            self.wavWriter?.append(chunk)                                  // 无条件 tee 到 WAV
+            if gen == self.asrGen, self.state == .streaming { self.stream?.send(chunk) }   // 仅流式喂 ASR
         } ?? false
         guard recorderStarted else {
             stream?.cancel()
@@ -107,12 +121,48 @@ final class VoiceController: AsrCallback {
     }
 
     func voiceUp(lang: String) {
+        guard state != .recording else { return }   // 录音锁定态不受松手影响(由 overlay 停止键结束)
         recorder?.stop()             // 总是停采集(防 mic 卡死)
+        wavWriter?.discard(); wavWriter = nil        // 正常语音路径不要这份 tee
         guard state == .streaming else { return }
         stream?.finish()             // 发最后一包(负包),等最终结果
         state = .asrPending
         showOverlay("识别中…", currentText ?? "")
         AgentLog.debug("voice", "stream finish requested")
+    }
+
+    // MARK: - 上滑锁定 → 录音态(长录音 → 转写 → 委托当前 subproject)
+
+    /// 松手时手指在 overlay 上 → 锁进录音态:停喂 ASR(作废会话),保持采集 + 继续 tee 到 WAV。
+    /// overlay 的录音 UI(计时/停止/取消)由 VC 驱动。
+    func lockToRecording() {
+        guard state == .streaming else { return }
+        asrGen += 1               // 作废 ASR 会话(停喂 + 丢迟到回调)
+        stream?.cancel(); stream = nil
+        currentText = nil; inputWarning = nil
+        state = .recording        // 采集与 wavWriter 继续(onChunk 仍在 tee)
+        AgentLog.info("voice", "locked to recording")
+    }
+
+    /// 停止录音,返回完整 WAV(nil = 没在录/空)。VC 据此跑转写 + 委托。
+    @discardableResult
+    func stopRecording() -> URL? {
+        guard state == .recording else { return nil }
+        recorder?.stop()          // flush 尾块到 wavWriter
+        let url = wavWriter?.finalize()
+        wavWriter = nil
+        state = .idle
+        AgentLog.info("voice", "stop recording → \(url?.lastPathComponent ?? "nil")")
+        return url
+    }
+
+    /// 取消录音,丢弃 WAV。
+    func cancelRecording() {
+        guard state == .recording else { return }
+        recorder?.cancel()
+        wavWriter?.discard(); wavWriter = nil
+        state = .idle
+        AgentLog.info("voice", "cancel recording")
     }
 
     // MARK: - AsrCallback(经 GenCallback 带上 gen)
@@ -227,6 +277,7 @@ final class VoiceController: AsrCallback {
         asrGen += 1                  // 作废当前会话的迟到回调
         stream?.cancel()
         recorder?.cancel()
+        wavWriter?.discard(); wavWriter = nil
         resetIdle()
         NSLog("[VoiceController] ESC cancel")
         AgentLog.info("voice", "cancel")
@@ -238,6 +289,7 @@ final class VoiceController: AsrCallback {
         asrGen += 1
         stream?.cancel()
         recorder?.cancel()
+        wavWriter?.discard(); wavWriter = nil
         hideOverlay()
         state = .idle
         currentText = nil
@@ -251,6 +303,7 @@ final class VoiceController: AsrCallback {
         currentText = nil
         inputWarning = nil
         stream = nil
+        wavWriter?.discard(); wavWriter = nil
         hideOverlay()
     }
 
@@ -266,6 +319,8 @@ final class VoiceController: AsrCallback {
             showCorrectingJS(currentText ?? "")
         case .preview:
             showOverlay("🎤 已识别", currentText ?? "")
+        case .recording:
+            return   // 录音态 overlay 由 VC 驱动(计时/停止/取消)
         }
     }
 
