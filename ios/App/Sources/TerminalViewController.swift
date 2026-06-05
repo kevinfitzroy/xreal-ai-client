@@ -45,6 +45,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var activeHostConfig: HostConfig?
     private var activeViaConfig: HostConfig?
     private var activeSessionName: String?
+    private let meetingRecorder = MeetingRecorder()
+    private var recordButton: UIButton?
     /// 自认为处于 tmux copy-mode(翻页/复制)。单一状态源:同时驱动语音警告 + ESC 键安全态配色 + 轮询确认。
     /// 设 true(进 copy-mode)→ ESC 变安全绿 + 起轮询;设 false(退出)→ 复原 + 停轮询。所有现有赋值点自动联动。
     private var tmuxModeLikely = false {
@@ -71,7 +73,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private enum ViewState { case home, list, terminal, logs }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
-    private var view_ = ViewState.list
+    private var view_ = ViewState.list {
+        didSet { updateRecordButton() }   // 录音按钮只在终端态露出
+    }
     private static let minPageTapInterval: CFTimeInterval = 0.22
     private static let noEchoGraceSeconds: TimeInterval = 3.8
 
@@ -164,6 +168,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         t.isHidden = true
         view.addSubview(t)
         self.term = t
+        setupRecordButton()   // 终端页角落录音按钮(叠在 term 之上)
 
         // 禁掉 SwiftTerm 的文本选择/编辑菜单手势(长按/双击选词/三击/拖选),与触摸翻页冲突;保留滚动 + 单击翻页。
         for gr in t.gestureRecognizers ?? [] {
@@ -1677,6 +1682,93 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         ])
         UIView.animate(withDuration: 0.25, animations: { lbl.alpha = 1 }) { _ in
             UIView.animate(withDuration: 0.4, delay: 1.8, options: []) { lbl.alpha = 0 } completion: { _ in lbl.removeFromSuperview() }
+        }
+    }
+
+    // MARK: - 终端页录音 → 自动转译 → 委托给当前 subproject(v1 角落按钮,体验后续再优化)
+
+    private func setupRecordButton() {
+        let btn = UIButton(type: .system)
+        btn.translatesAutoresizingMaskIntoConstraints = false
+        btn.addTarget(self, action: #selector(recordTap), for: .touchUpInside)
+        btn.backgroundColor = UIColor(white: 0, alpha: 0.32)
+        btn.layer.cornerRadius = 28
+        btn.isHidden = true
+        view.addSubview(btn)
+        NSLayoutConstraint.activate([
+            btn.widthAnchor.constraint(equalToConstant: 56),
+            btn.heightAnchor.constraint(equalToConstant: 56),
+            btn.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+            btn.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -72),
+        ])
+        recordButton = btn
+        styleRecordButton(recording: false)
+    }
+
+    private func styleRecordButton(recording: Bool) {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 30, weight: .regular)
+        recordButton?.setImage(UIImage(systemName: recording ? "stop.fill" : "mic.fill", withConfiguration: cfg), for: .normal)
+        recordButton?.tintColor = recording ? .systemRed : UIColor(white: 1, alpha: 0.9)
+    }
+
+    private func updateRecordButton() {
+        guard let btn = recordButton else { return }
+        let inTerminal = (view_ == .terminal)
+        if !inTerminal, meetingRecorder.isRecording {   // 离开终端中途 → 取消录音
+            meetingRecorder.cancel()
+            styleRecordButton(recording: false)
+        }
+        btn.isHidden = !inTerminal
+        if inTerminal { view.bringSubviewToFront(btn) }
+    }
+
+    @objc private func recordTap() {
+        meetingRecorder.isRecording ? finishRecordingAndDelegate() : startRecording()
+    }
+
+    private func startRecording() {
+        let begin = { [weak self] in
+            guard let self else { return }
+            if self.meetingRecorder.start() {
+                self.styleRecordButton(recording: true)
+                self.nativeToast("🎙 录音中…再点一下结束")
+            } else {
+                self.nativeToast("录音启动失败")
+            }
+        }
+        switch AVAudioSession.sharedInstance().recordPermission {
+        case .granted: begin()
+        case .denied:  nativeToast("麦克风权限被拒,去系统设置开启")
+        case .undetermined:
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                DispatchQueue.main.async { granted ? begin() : self.nativeToast("需要麦克风权限") }
+            }
+        @unknown default: begin()
+        }
+    }
+
+    private func finishRecordingAndDelegate() {
+        styleRecordButton(recording: false)
+        guard let file = meetingRecorder.stop() else { return }
+        guard let h = activeHostConfig, let session = activeSessionName else {
+            nativeToast("没有当前 subproject,无法委托")
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        let pname = h.projects.first(where: { $0.session == session })?.name ?? session
+        let target = MeetingDelegate.Target(host: h, via: activeViaConfig, session: session, projectName: pname)
+        nativeToast("转写中…完成后自动交给「\(pname)」")
+        Task { @MainActor in
+            defer { try? FileManager.default.removeItem(at: file) }
+            do {
+                let transcript = try await MeetingPipeline.process(inboxFile: file, enableSpeaker: true)
+                switch await MeetingDelegate.deliver(transcript: transcript.asMarkdown(), name: "录音", to: target) {
+                case .success:        self.nativeToast("✓ 已交给「\(pname)」")
+                case .failure(let e): self.nativeToast("委托失败:\(e)")
+                }
+            } catch {
+                self.nativeToast("转写失败:\(error)")
+            }
         }
     }
 
