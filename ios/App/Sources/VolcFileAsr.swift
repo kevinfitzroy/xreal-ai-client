@@ -70,6 +70,12 @@ enum VolcFileAsr {
         }
         guard http.statusCode == 200 else { throw FileAsrError.http(http.statusCode) }
 
+        #if DEBUG
+        // 验真实返回体、钉 parser:把 raw 响应(截断)打进日志面板。
+        if let raw = String(data: data, encoding: .utf8) {
+            AgentLog.info("meeting", "flash raw resp (\(data.count)B): \(raw.prefix(3000))")
+        }
+        #endif
         return try parse(data)
     }
 
