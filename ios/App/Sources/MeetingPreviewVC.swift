@@ -85,17 +85,25 @@ final class MeetingPreviewVC: UIViewController {
         showBlocker("委托中…")
         Task { @MainActor in
             let result = await MeetingDelegate.deliver(transcript: markdown, name: recName, to: target)
+            navigationController?.popToRootViewController(animated: false)   // 在 blocker 下收起选择器,回到预览页
             hideBlocker()
+            let presenter = navigationController?.topViewController ?? self
             switch result {
             case .success:
+                // 委托成功后确认是否删除 —— 可能委托错了地方,「保留」可再委托到别处。
                 let a = UIAlertController(title: "已交给「\(target.projectName)」",
-                                          message: "逐字稿已上传,并转交给该 agent 处理了。", preferredStyle: .alert)
-                a.addAction(UIAlertAction(title: "好", style: .default) { [weak self] _ in self?.dismiss(animated: true) })
-                present(a, animated: true)
+                                          message: "逐字稿已上传并转交。要删除这条录音吗?(委托错了可「保留」再重发)",
+                                          preferredStyle: .alert)
+                a.addAction(UIAlertAction(title: "保留", style: .cancel))
+                a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+                    self?.onDelete()
+                    self?.dismiss(animated: true)
+                })
+                presenter.present(a, animated: true)
             case .failure(let e):
                 let a = UIAlertController(title: "委托失败", message: "\(e)", preferredStyle: .alert)
                 a.addAction(UIAlertAction(title: "好", style: .default))
-                present(a, animated: true)
+                presenter.present(a, animated: true)
             }
         }
     }
