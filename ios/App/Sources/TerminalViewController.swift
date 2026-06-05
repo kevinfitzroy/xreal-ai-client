@@ -1591,7 +1591,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         triageItems = nil                 // host 变了 → 旧 digest 失效
         fleetTriage.reloadConfig()        // 可能导入了 correction.json(判官凭证)
         if result.asr, let creds = AsrCreds.load() {
-            voice.asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
+            voice.asr = VolcAsr(creds: creds)
             NSLog("[VC] ASR creds imported → VolcAsr(resource=\(creds.resourceId))")
             AgentLog.info("config", "ASR credentials loaded resource=\(creds.resourceId)")
         }
@@ -1862,7 +1862,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func setupVoice() {
         let asr: Asr
         if let creds = AsrCreds.load() {
-            asr = VolcAsr(appid: creds.appid, token: creds.token, resourceId: creds.resourceId)
+            asr = VolcAsr(creds: creds)
             NSLog("[VC] ASR = VolcAsr(resource=\(creds.resourceId))")
         } else {
             asr = MockAsr()

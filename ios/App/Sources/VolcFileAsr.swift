@@ -38,14 +38,13 @@ enum VolcFileAsr {
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(creds.appid, forHTTPHeaderField: "X-Api-App-Key")
-        req.setValue(creds.token, forHTTPHeaderField: "X-Api-Access-Key")
+        creds.applyAuth { req.setValue($1, forHTTPHeaderField: $0) }
         req.setValue(resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
         req.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Request-Id")
         req.setValue("-1", forHTTPHeaderField: "X-Api-Sequence")
 
         let body: [String: Any] = [
-            "user": ["uid": creds.appid],
+            "user": ["uid": creds.uid],
             "audio": ["data": wavData.base64EncodedString(), "format": "wav"],
             "request": [
                 "model_name": "bigmodel",

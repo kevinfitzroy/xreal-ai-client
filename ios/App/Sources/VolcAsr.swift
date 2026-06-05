@@ -24,13 +24,21 @@ protocol AsrCallback: AnyObject {
     func onError(_ reason: String)
 }
 
-/// ASR 凭证(`Documents/asr.json`,形如 `{provider,appid,token,resourceId}`)。
+/// ASR 凭证(`Documents/asr.json`)。兼容豆包**新旧两套鉴权**:
+/// - 旧版控制台:`{appid, token}` → header `X-Api-App-Key` + `X-Api-Access-Key`。
+/// - 新版控制台:`{apiKey}`(全平台通用单 key)→ header `X-Api-Key`。
+/// `resourceId` 是**流式** ASR 的资源(录音文件识别在 VolcFileAsr 里另用 auc_turbo)。
 struct AsrCreds {
     let appid: String
     let token: String
+    let apiKey: String          // 新版单 key;空 = 走旧版双 header
     let resourceId: String
 
     static let defaultResourceId = "volc.seedasr.sauc.duration"
+
+    var isNewScheme: Bool { !apiKey.isEmpty }
+    /// 请求体 user.uid:旧版用 appid;新版无独立 appid 时退回 apiKey。
+    var uid: String { appid.isEmpty ? apiKey : appid }
 
     /// 从私有存储读 asr.json;缺失/无效 → nil(VoiceController 回退 MockAsr)。
     static func load() -> AsrCreds? {
@@ -41,9 +49,22 @@ struct AsrCreds {
         }
         let appid = (o["appid"] as? String) ?? ""
         let token = (o["token"] as? String) ?? ""
-        guard !appid.isEmpty, !token.isEmpty else { return nil }
+        let apiKey = (o["apiKey"] as? String) ?? (o["apikey"] as? String) ?? (o["api_key"] as? String) ?? ""
+        // 新版只需 apiKey;旧版需 appid+token。两者皆无 → 无效。
+        guard !apiKey.isEmpty || (!appid.isEmpty && !token.isEmpty) else { return nil }
         let resource = (o["resourceId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? defaultResourceId
-        return AsrCreds(appid: appid, token: token, resourceId: resource)
+        return AsrCreds(appid: appid, token: token, apiKey: apiKey, resourceId: resource)
+    }
+
+    /// 写鉴权 header(新版单 `X-Api-Key`;旧版 `X-Api-App-Key` + `X-Api-Access-Key`)。
+    /// **不含** `X-Api-Resource-Id` —— 流式与录音文件资源不同,各调用方自行设置。
+    func applyAuth(_ set: (_ field: String, _ value: String) -> Void) {
+        if isNewScheme {
+            set("X-Api-Key", apiKey)
+        } else {
+            set("X-Api-App-Key", appid)
+            set("X-Api-Access-Key", token)
+        }
     }
 }
 
@@ -86,19 +107,12 @@ final class MockAsr: Asr {
 /// 接口 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`;鉴权走 HTTP header(无签名)。
 /// 失败语义:任何错误回 `onError`;服务端先关或超时但已有中间结果,则当 final 用。不 reconnect。
 final class VolcAsr: Asr {
-    private let appid: String
-    private let token: String
-    private let resourceId: String
+    private let creds: AsrCreds
 
-    init(appid: String, token: String, resourceId: String = AsrCreds.defaultResourceId) {
-        self.appid = appid
-        self.token = token
-        self.resourceId = resourceId
-    }
+    init(creds: AsrCreds) { self.creds = creds }
 
     func open(lang: String, hotwords: [String], callback: AsrCallback) -> AsrStream {
-        let s = VolcStream(appid: appid, token: token, resourceId: resourceId,
-                           hotwords: hotwords, cb: callback)
+        let s = VolcStream(creds: creds, hotwords: hotwords, cb: callback)
         s.start()
         return s
     }
@@ -106,7 +120,7 @@ final class VolcAsr: Asr {
     /// 单会话。所有可变状态在串行 `queue` 上访问(URLSessionWebSocketTask 回调来自其内部队列,
     /// 这里统一 hop 到 `queue` 串行化 → 等价 Android 的 `synchronized(lock)`)。
     private final class VolcStream: NSObject, AsrStream, URLSessionWebSocketDelegate {
-        private let appid: String, token: String, resourceId: String
+        private let creds: AsrCreds
         private let hotwords: [String]
         // strong: the stream owns its callback for the session (the GenCallback wrapper has no other
         // holder — weak would deallocate it before any result lands). The stream itself is owned by
@@ -125,24 +139,23 @@ final class VolcAsr: Asr {
         private var watchdog: DispatchWorkItem?
         private var pingWorkItem: DispatchWorkItem?
 
-        init(appid: String, token: String, resourceId: String, hotwords: [String], cb: AsrCallback) {
-            self.appid = appid; self.token = token; self.resourceId = resourceId
+        init(creds: AsrCreds, hotwords: [String], cb: AsrCallback) {
+            self.creds = creds
             self.hotwords = hotwords; self.cb = cb
             super.init()
         }
 
         func start() {
             var req = URLRequest(url: VolcStream.endpoint)
-            req.setValue(appid, forHTTPHeaderField: "X-Api-App-Key")
-            req.setValue(token, forHTTPHeaderField: "X-Api-Access-Key")
-            req.setValue(resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
+            creds.applyAuth { req.setValue($1, forHTTPHeaderField: $0) }
+            req.setValue(creds.resourceId, forHTTPHeaderField: "X-Api-Resource-Id")
             req.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Connect-Id")
             req.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Request-Id")
             let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
             self.session = session
             task = session.webSocketTask(with: req)
             task.resume()
-            AgentLog.info("asr", "WS start resource=\(resourceId)")
+            AgentLog.info("asr", "WS start resource=\(creds.resourceId) scheme=\(creds.isNewScheme ? "new" : "old")")
             receiveLoop()
         }
 
