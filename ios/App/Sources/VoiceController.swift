@@ -41,6 +41,8 @@ final class VoiceController: AsrCallback {
     /// 当前 project 显示名 / session 类型,喂给纠错 prompt(applyVoiceContext 设)。
     var projectName = ""
     var sessionType = "ssh"
+    /// 上滑 armed 锁定中:VC 占屏显示 armed(红带),流式 ASR partial 不要覆盖 overlay(仍更新 currentText)。
+    var armedLock = false
 
     private var state: State = .idle
     private var currentText: String?
@@ -93,6 +95,7 @@ final class VoiceController: AsrCallback {
         stream?.cancel()
         recorder?.cancel()
         wavWriter?.discard(); wavWriter = nil      // 清上一会话的 tee 残留
+        armedLock = false
         currentText = nil
         inputWarning = nil
         state = .streaming
@@ -171,6 +174,7 @@ final class VoiceController: AsrCallback {
         guard gen == asrGen else { return }
         guard state == .streaming || state == .asrPending else { return }
         currentText = text
+        if armedLock { return }   // armed 中由 VC 占屏(红带),别让流式 partial 把 overlay 重置回"聆听中"
         let status = state == .streaming ? "🎤 聆听中…" : "识别中…"
         showOverlay(status, text)
     }

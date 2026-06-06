@@ -1563,10 +1563,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             if voiceArmed {
                 if h > 0, y > h * 0.82 {   // 拉回底部 → 解除
                     voiceArmed = false
+                    voice.armedLock = false
                     voice.reshowStreaming()
                 }
             } else if y < voiceOverlay.armZoneBottomY() {   // 上滑过带 → 锁定
                 voiceArmed = true
+                voice.armedLock = true   // 占屏:流式 partial 别覆盖红带
                 voiceOverlay.showArmed(text: voice.currentPartial ?? "")
                 keyHaptic.impactOccurred()
             }
@@ -1709,6 +1711,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// 松手时手指在 overlay 上 → 锁进录音态(VoiceController 继续采集 + tee WAV;overlay 变录音 UI)。
     private func lockVoiceToRecording() {
         voiceKeyHeld = false               // 防 overlay 的 onVoicePress(false) 再触发 voiceUp
+        voice.armedLock = false
         voice.lockToRecording()
         voiceOverlay.showRecording()
         view.bringSubviewToFront(voiceOverlay)
