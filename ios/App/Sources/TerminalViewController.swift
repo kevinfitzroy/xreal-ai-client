@@ -46,6 +46,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var activeViaConfig: HostConfig?
     private var activeSessionName: String?
     private var voiceArmed = false   // 语音长按中,手指上滑到 overlay = armed(松手转录音)
+    private var recordingHUD: UIView?   // 录音转写期间的全屏阻塞 HUD(防误触)
     /// 自认为处于 tmux copy-mode(翻页/复制)。单一状态源:同时驱动语音警告 + ESC 键安全态配色 + 轮询确认。
     /// 设 true(进 copy-mode)→ ESC 变安全绿 + 起轮询;设 false(退出)→ 复原 + 停轮询。所有现有赋值点自动联动。
     private var tmuxModeLikely = false {
@@ -1557,7 +1558,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         case .changed:
             // 长按中手指上滑到 overlay card 之上 = armed(松手转录音);滑回去 = 取消、继续流式。
             guard voice.currentState == .streaming else { return }
-            let armed = g.location(in: voiceOverlay).y < voiceOverlay.cardTopY()
+            let armed = g.location(in: voiceOverlay).y < voiceOverlay.armZoneBottomY()
             if armed != voiceArmed {
                 voiceArmed = armed
                 if armed { voiceOverlay.showArmed(text: voice.currentPartial ?? ""); keyHaptic.impactOccurred() }
@@ -1721,27 +1722,88 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     /// 录好的 WAV → 转写(长录音自动分段)→ 委托给**当前打开的** subproject。
+    /// 全程**阻塞 HUD**(转圈)卡住其它操作防误触;完成变 ✓/✗。
     private func processRecordingAndDelegate(file: URL) {
         guard let h = activeHostConfig, let session = activeSessionName else {
-            nativeToast("没有当前 subproject,无法委托")
+            showRecordingHUD("没有当前 subproject", done: true, ok: false)
             try? FileManager.default.removeItem(at: file)
             return
         }
         let pname = h.projects.first(where: { $0.session == session })?.name ?? session
         let target = MeetingDelegate.Target(host: h, via: activeViaConfig, session: session, projectName: pname)
-        nativeToast("转写中…完成后自动交给「\(pname)」")
+        showRecordingHUD("转写并交给「\(pname)」…", done: false, ok: false)
         Task { @MainActor in
             defer { try? FileManager.default.removeItem(at: file) }
             do {
                 let transcript = try await MeetingPipeline.process(inboxFile: file, enableSpeaker: true)
                 switch await MeetingDelegate.deliver(transcript: transcript.asMarkdown(), name: "录音", to: target) {
-                case .success:        self.nativeToast("✓ 已交给「\(pname)」")
-                case .failure(let e): self.nativeToast("委托失败:\(e)")
+                case .success:        self.showRecordingHUD("已交给「\(pname)」", done: true, ok: true)
+                case .failure(let e): self.showRecordingHUD("委托失败:\(e)", done: true, ok: false)
                 }
             } catch {
-                self.nativeToast("转写失败:\(error)")
+                self.showRecordingHUD("转写失败:\(error)", done: true, ok: false)
             }
         }
+    }
+
+    /// 录音转写期间的全屏阻塞 HUD:处理中转圈(吞触摸,防误触);完成变 ✓/✗,点一下或 2.5s 自动收起。
+    private func showRecordingHUD(_ text: String, done: Bool, ok: Bool) {
+        recordingHUD?.removeFromSuperview()
+        let dim = UIView(frame: view.bounds)
+        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        dim.backgroundColor = UIColor(white: 0, alpha: 0.62)
+
+        let card = UIView()
+        card.backgroundColor = UIColor(white: 0.1, alpha: 0.97)
+        card.layer.cornerRadius = 14
+        card.translatesAutoresizingMaskIntoConstraints = false
+        dim.addSubview(card)
+
+        let top: UIView
+        if done {
+            let iv = UIImageView(image: UIImage(systemName: ok ? "checkmark.circle.fill" : "xmark.octagon.fill"))
+            iv.tintColor = ok ? .systemGreen : .systemRed
+            iv.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 34, weight: .regular)
+            top = iv
+        } else {
+            let spin = UIActivityIndicatorView(style: .large)
+            spin.color = .white; spin.startAnimating()
+            top = spin
+        }
+        top.translatesAutoresizingMaskIntoConstraints = false
+        let label = UILabel()
+        label.text = text; label.textColor = .white
+        label.font = .systemFont(ofSize: 15, weight: .medium)
+        label.numberOfLines = 0; label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(top); card.addSubview(label)
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: dim.centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: dim.centerYAnchor),
+            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            card.leadingAnchor.constraint(greaterThanOrEqualTo: dim.leadingAnchor, constant: 40),
+            card.trailingAnchor.constraint(lessThanOrEqualTo: dim.trailingAnchor, constant: -40),
+            top.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
+            top.centerXAnchor.constraint(equalTo: card.centerXAnchor),
+            label.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 14),
+            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            label.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
+        ])
+        view.addSubview(dim)
+        recordingHUD = dim
+
+        if done {   // 处理中不让收起(卡住);完成后点一下 / 2.5s 自动收
+            dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dismissRecordingHUD)))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self, weak dim] in
+                if self?.recordingHUD === dim { self?.dismissRecordingHUD() }
+            }
+        }
+    }
+
+    @objc private func dismissRecordingHUD() {
+        recordingHUD?.removeFromSuperview()
+        recordingHUD = nil
     }
 
     // MARK: - Hardware keyboard detection (SPEC §6.1)

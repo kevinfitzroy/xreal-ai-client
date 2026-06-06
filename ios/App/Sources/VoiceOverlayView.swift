@@ -22,6 +22,8 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private weak var voicePressGR: UILongPressGestureRecognizer?
     private static let cardBgNormal = UIColor(white: 0.08, alpha: 0.95)
     private static let cardBgArmed = UIColor(red: 0.22, green: 0.10, blue: 0.10, alpha: 0.96)
+    /// 固定位置的「上滑到这里转录音」目标带 —— 位置不随 card 文字增长漂移,armed 判定精准。
+    private let armHint = UILabel()
 
     // 纠错中(issue #16):状态行转圈动画 + 原文灰显 + 提示改"稍候"。spinner 由 overlay 自管,状态机不变。
     private var spinnerTimer: Timer?
@@ -87,6 +89,25 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         recordingControls.isHidden = true
         stack.addArrangedSubview(recordingControls)
 
+        // 固定位置的 armed 目标带(centerY = 高度的 58%,不随 card 漂移)。
+        armHint.text = "↑ 滑到这里 · 松手转录音"
+        armHint.font = .systemFont(ofSize: 13, weight: .semibold)
+        armHint.textColor = UIColor(white: 1, alpha: 0.92)
+        armHint.textAlignment = .center
+        armHint.backgroundColor = UIColor(white: 0, alpha: 0.5)
+        armHint.layer.cornerRadius = 17
+        armHint.clipsToBounds = true
+        armHint.isHidden = true
+        armHint.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(armHint)
+        NSLayoutConstraint.activate([
+            armHint.centerXAnchor.constraint(equalTo: centerXAnchor),
+            NSLayoutConstraint(item: armHint, attribute: .centerY, relatedBy: .equal,
+                               toItem: self, attribute: .bottom, multiplier: 0.58, constant: 0),
+            armHint.heightAnchor.constraint(equalToConstant: 34),
+            armHint.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+        ])
+
         cardBottomConstraint = card.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24)
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -127,6 +148,10 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         statusLabel.text = status
         textLabel.text = text
         textLabel.isHidden = text.isEmpty
+        // 流式态显示固定的 armed 目标带(供上滑锁定);其它态隐藏。
+        armHint.text = "↑ 滑到这里 · 松手转录音"
+        armHint.backgroundColor = UIColor(white: 0, alpha: 0.5)
+        armHint.isHidden = !status.contains("聆听")
         isHidden = false
         isUserInteractionEnabled = true
     }
@@ -157,6 +182,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         card.backgroundColor = Self.cardBgNormal
         tapGR?.isEnabled = true
         voicePressGR?.isEnabled = true
+        armHint.isHidden = true
     }
 
     /// armed 态(手指上滑到 overlay):提示「松手转录音」,保留当前识别文本。
@@ -172,6 +198,9 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         textLabel.isHidden = text.isEmpty
         hintLabel.isHidden = false
         hintLabel.text = "滑回去 = 继续语音输入"
+        armHint.text = "✓ 松手转录音"
+        armHint.backgroundColor = UIColor(red: 0.85, green: 0.26, blue: 0.26, alpha: 0.95)
+        armHint.isHidden = false
         isHidden = false
         isUserInteractionEnabled = true
     }
@@ -183,6 +212,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         textLabel.isHidden = true
         hintLabel.isHidden = true
         recordingControls.isHidden = false
+        armHint.isHidden = true
         tapGR?.isEnabled = false
         voicePressGR?.isEnabled = false
         isHidden = false
@@ -200,8 +230,9 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         statusLabel.text = String(format: "🔴 录音中 · %02d:%02d", secs / 60, secs % 60)
     }
 
-    /// overlay 坐标系里 card 顶部 y(≈ terminal 核心坐标),给上滑 armed 阈值用。
-    func cardTopY() -> CGFloat { card.frame.minY }
+    /// armed 阈值:固定目标带的底边(overlay 坐标 ≈ terminal 核心坐标)。手指上滑过此线 = 进入 overlay 区域。
+    /// 位置不随 card 文字增长漂移,判定稳定。
+    func armZoneBottomY() -> CGFloat { armHint.frame.maxY }
 
     @objc private func stopTap() { onStopRecording?() }
     @objc private func cancelTap() { onCancelRecording?() }
