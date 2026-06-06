@@ -1556,13 +1556,19 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             voiceArmed = false
             touchVoicePress(pressed: true)   // voiceDown(流式语音)
         case .changed:
-            // 长按中手指上滑到 overlay card 之上 = armed(松手转录音);滑回去 = 取消、继续流式。
+            // 滞回锁存:上滑过目标带 → armed 锁定;之后只有**拉回到屏幕底部附近**才解除(过冲没关系)。
             guard voice.currentState == .streaming else { return }
-            let armed = g.location(in: voiceOverlay).y < voiceOverlay.armZoneBottomY()
-            if armed != voiceArmed {
-                voiceArmed = armed
-                if armed { voiceOverlay.showArmed(text: voice.currentPartial ?? ""); keyHaptic.impactOccurred() }
-                else { voice.reshowStreaming() }
+            let y = g.location(in: voiceOverlay).y
+            let h = voiceOverlay.bounds.height
+            if voiceArmed {
+                if h > 0, y > h * 0.82 {   // 拉回底部 → 解除
+                    voiceArmed = false
+                    voice.reshowStreaming()
+                }
+            } else if y < voiceOverlay.armZoneBottomY() {   // 上滑过带 → 锁定
+                voiceArmed = true
+                voiceOverlay.showArmed(text: voice.currentPartial ?? "")
+                keyHaptic.impactOccurred()
             }
         case .ended:
             if voiceArmed { voiceArmed = false; lockVoiceToRecording() }   // 松手在 overlay 上 → 锁录音

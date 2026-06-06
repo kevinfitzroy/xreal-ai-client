@@ -149,7 +149,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         textLabel.text = text
         textLabel.isHidden = text.isEmpty
         // 流式态显示固定的 armed 目标带(供上滑锁定);其它态隐藏。
-        armHint.text = "↑ 滑到这里 · 松手转录音"
+        armHint.text = "↑ 上滑锁定录音"
         armHint.backgroundColor = UIColor(white: 0, alpha: 0.5)
         armHint.isHidden = !status.contains("聆听")
         isHidden = false
@@ -198,7 +198,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         textLabel.isHidden = text.isEmpty
         hintLabel.isHidden = false
         hintLabel.text = "滑回去 = 继续语音输入"
-        armHint.text = "✓ 松手转录音"
+        armHint.text = "✓ 松手录音 · 滑回底部取消"
         armHint.backgroundColor = UIColor(red: 0.85, green: 0.26, blue: 0.26, alpha: 0.95)
         armHint.isHidden = false
         isHidden = false
