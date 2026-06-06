@@ -105,6 +105,7 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.delegate = self
         table.register(HomeCell.self, forCellReuseIdentifier: "home")
         table.register(RecordingCell.self, forCellReuseIdentifier: "rec")
+        table.register(ProcessedSectionHeader.self, forHeaderFooterViewReuseIdentifier: ProcessedSectionHeader.reuseID)
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 72
         table.contentInset = UIEdgeInsets(top: 2, left: 0, bottom: 28, right: 0)
@@ -242,35 +243,27 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         }
     }
 
-    /// 「已处理」用自定义 header:可点击展开/折叠 + 计数 + chevron。其它 section 用系统默认。
+    /// 「已处理」用自定义可折叠 header(Files/Notes 折叠文件夹范式):箭头在前(展开旋转)+ 标题 + 右侧计数,
+    /// 整行可点带按压高亮、上下留白。其它 section 用系统默认。
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
         guard sectionOrder[section] == .processed else { return nil }
-        let h = UITableViewHeaderFooterView()
-        let title = UILabel()
-        title.text = "已处理 (\(recProcessed.count))"
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.textColor = UIColor(white: 1, alpha: 0.5)
-        title.translatesAutoresizingMaskIntoConstraints = false
-        let chevron = UIImageView(image: UIImage(systemName: processedExpanded ? "chevron.down" : "chevron.right"))
-        chevron.tintColor = UIColor(white: 1, alpha: 0.4)
-        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-        chevron.translatesAutoresizingMaskIntoConstraints = false
-        h.contentView.addSubview(title); h.contentView.addSubview(chevron)
-        NSLayoutConstraint.activate([
-            title.leadingAnchor.constraint(equalTo: h.contentView.layoutMarginsGuide.leadingAnchor),
-            title.centerYAnchor.constraint(equalTo: h.contentView.centerYAnchor),
-            chevron.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 6),
-            chevron.centerYAnchor.constraint(equalTo: title.centerYAnchor),
-        ])
-        h.tag = section
-        h.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleProcessed)))
+        let h = tableView.dequeueReusableHeaderFooterView(withIdentifier: ProcessedSectionHeader.reuseID) as! ProcessedSectionHeader
+        h.configure(count: recProcessed.count, expanded: processedExpanded)
+        h.onTap = { [weak self] in self?.toggleProcessed() }
         return h
+    }
+
+    func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        sectionOrder[section] == .processed ? 60 : UITableView.automaticDimension
+    }
+    func tableView(_ tableView: UITableView, estimatedHeightForHeaderInSection section: Int) -> CGFloat {
+        sectionOrder[section] == .processed ? 60 : 28
     }
 
     @objc private func toggleProcessed() {
         processedExpanded.toggle()
         guard let s = sectionOrder.firstIndex(of: .processed) else { return }
-        table.reloadSections(IndexSet(integer: s), with: .automatic)
+        table.reloadSections(IndexSet(integer: s), with: .fade)
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -463,6 +456,74 @@ private final class RecordingCell: UITableViewCell {
         let df = DateFormatter(); df.locale = Locale(identifier: "zh_CN")
         df.dateFormat = cal.isDate(date, equalTo: Date(), toGranularity: .year) ? "M月d日 HH:mm" : "yyyy年M月d日 HH:mm"
         return df.string(from: date)
+    }
+}
+
+/// 「已处理」可折叠 section header(Files/Notes 折叠文件夹范式):箭头(展开→down)+ 标题 + 右侧计数。
+/// 整行是一个 UIControl → 真实点击区 + 按压圆角高亮,上下留白与下方卡片拉开距离。
+private final class ProcessedSectionHeader: UITableViewHeaderFooterView {
+    static let reuseID = "processedHeader"
+    var onTap: (() -> Void)?
+
+    private let hit = UIControl()
+    private let chevron = UIImageView()
+    private let titleLabel = UILabel()
+    private let countLabel = UILabel()
+
+    override init(reuseIdentifier: String?) {
+        super.init(reuseIdentifier: reuseIdentifier)
+
+        chevron.tintColor = UIColor(white: 1, alpha: 0.55)
+        chevron.contentMode = .center
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        chevron.setContentHuggingPriority(.required, for: .horizontal)
+
+        titleLabel.text = "已处理"
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.textColor = UIColor(white: 1, alpha: 0.78)
+
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 14, weight: .regular)
+        countLabel.textColor = UIColor(white: 1, alpha: 0.4)
+        countLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        let row = UIStackView(arrangedSubviews: [chevron, titleLabel, UIView(), countLabel])
+        row.axis = .horizontal; row.spacing = 8; row.alignment = .center
+        row.isUserInteractionEnabled = false
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        hit.translatesAutoresizingMaskIntoConstraints = false
+        hit.layer.cornerRadius = 10
+        hit.addSubview(row)
+        hit.addTarget(self, action: #selector(fire), for: .touchUpInside)
+        hit.addTarget(self, action: #selector(highlightOn), for: [.touchDown, .touchDragEnter])
+        hit.addTarget(self, action: #selector(highlightOff), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+        contentView.addSubview(hit)
+
+        NSLayoutConstraint.activate([
+            hit.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            hit.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            hit.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            hit.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: hit.leadingAnchor, constant: 4),
+            row.trailingAnchor.constraint(equalTo: hit.trailingAnchor, constant: -6),
+            row.topAnchor.constraint(equalTo: hit.topAnchor),
+            row.bottomAnchor.constraint(equalTo: hit.bottomAnchor),
+            hit.heightAnchor.constraint(greaterThanOrEqualToConstant: 38),
+            chevron.widthAnchor.constraint(equalToConstant: 16),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(count: Int, expanded: Bool) {
+        countLabel.text = "\(count)"
+        chevron.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
+    }
+    @objc private func fire() { onTap?() }
+    @objc private func highlightOn() {
+        UIView.animate(withDuration: 0.08) { self.hit.backgroundColor = UIColor(white: 1, alpha: 0.09) }
+    }
+    @objc private func highlightOff() {
+        UIView.animate(withDuration: 0.18) { self.hit.backgroundColor = .clear }
     }
 }
 
