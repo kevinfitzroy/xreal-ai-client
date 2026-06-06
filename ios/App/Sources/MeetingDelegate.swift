@@ -16,6 +16,12 @@ enum MeetingDelegate {
         let projectName: String
     }
 
+    /// 非交互 SSH exec 的 PATH 通常只有 `/usr/bin:/bin:/usr/sbin:/sbin`,**不含 Homebrew/MacPorts** ——
+    /// macOS 上 tmux 在 `/usr/local/bin`(Intel)或 `/opt/homebrew/bin`(Apple Silicon),直接 `tmux` →
+    /// exit 127 command not found(真机经跳板 host 暴露,#20)。给远端命令前置补这两个前缀;Linux 的
+    /// `/usr/bin` 本就在默认 PATH 里,无副作用。
+    private static let pathPrefix = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"; "
+
     /// 投递逐字稿。成功返回远端文件绝对路径;失败返回 error。
     static func deliver(transcript: String, name: String, to t: Target) async -> Result<String, Error> {
         do {
@@ -32,7 +38,7 @@ enum MeetingDelegate {
                 // tmux 处于 copy-mode 时 send-keys 会打到翻页导航、报 command failed → 先探 pane_in_mode,
                 // 在 mode 里就 -X cancel 退出,再注入。全在一条远端命令里顺序完成,无竞态。
                 let s = shq(t.session)
-                let cmd = "if [ \"$(tmux display-message -p -t \(s) '#{pane_in_mode}' 2>/dev/null)\" = 1 ]; then tmux send-keys -t \(s) -X cancel; fi; tmux send-keys -t \(s) -l \(shq(prompt)); tmux send-keys -t \(s) Enter"
+                let cmd = pathPrefix + "if [ \"$(tmux display-message -p -t \(s) '#{pane_in_mode}' 2>/dev/null)\" = 1 ]; then tmux send-keys -t \(s) -X cancel; fi; tmux send-keys -t \(s) -l \(shq(prompt)); tmux send-keys -t \(s) Enter"
                 _ = try await conn.target.executeCommand(cmd)
 
                 await conn.closeAll()
@@ -57,7 +63,7 @@ enum MeetingDelegate {
         var delim = "XREAL_VOICE_EOF"
         while text.contains(delim) { delim += "_x" }
         let body = text.hasSuffix("\n") ? text : text + "\n"   // 定界符须独占一行
-        let cmd = "mkdir -p \(shq(dir)); cat > \(shq(remotePath)) <<'\(delim)'\n\(body)\(delim)\n"
+        let cmd = pathPrefix + "mkdir -p \(shq(dir)); cat > \(shq(remotePath)) <<'\(delim)'\n\(body)\(delim)\n"
         _ = try await client.executeCommand(cmd)
     }
 
