@@ -1,6 +1,5 @@
 import Foundation
 import Citadel
-import NIOCore
 
 /// 把一段**语音输入**逐字稿(产品想法 / 工作思考 / 多人讨论 / 会议…,不预设)委托给某个 AI-agent
 /// subproject:SFTP 写到远端 `/tmp/xreal-voice/`,再 `tmux send-keys` 注入一句"读这个文件、结合项目
@@ -25,12 +24,9 @@ enum MeetingDelegate {
                 let dir = "/tmp/xreal-voice"
                 let remotePath = "\(dir)/\(remoteFilename(name))"
 
-                let sftp = try await conn.target.openSFTP()
-                try? await sftp.createDirectory(atPath: dir)   // 已存在 → 忽略
-                let file = try await sftp.openFile(filePath: remotePath, flags: [.write, .create, .truncate])
-                try await file.write(ByteBuffer(bytes: Array(transcript.utf8)))
-                try await file.close()
-                try await sftp.close()
+                // #20:Citadel jump tunnel 上 SFTP 不工作(经跳板的 host 完全传不进东西)。逐字稿是纯文本,
+                // 改走 exec + 引号 heredoc 写远端文件 —— 和下面的 tmux send-keys 同一条 exec channel,跳板上正常。
+                try await writeTextFileViaExec(transcript, to: remotePath, dir: dir, on: conn.target)
 
                 let prompt = "这是我用语音录的一段话的转写,存到了 \(remotePath),先读它。它可能是一个产品想法、对最近工作的思考、一段多人讨论/头脑风暴,或别的——你结合本项目的背景,先弄清我想表达什么,再做最合适的回应(该整理就整理、该落成方案或任务就落、该一起讨论就讨论)。注意是语音转写,可能有同音错别字,按意图理解;多人对话里用「说话人N」区分不同的人。"
                 // tmux 处于 copy-mode 时 send-keys 会打到翻页导航、报 command failed → 先探 pane_in_mode,
@@ -50,6 +46,19 @@ enum MeetingDelegate {
             AgentLog.error("meeting", "delegate failed \(t.host.name)/\(t.session): \(error)")
             return .failure(error)
         }
+    }
+
+    /// 用一次 exec + **引号 heredoc** 把文本写到远端文件(替代在跳板上不通的 SFTP,#20)。引号定界符
+    /// `<<'EOF'` → 内容原样写入,不做变量/命令展开;定界符撞了转写内容就加后缀避开。heredoc 内容不是
+    /// 命令行参数,不受 ARG_MAX 限制,长逐字稿也安全。`mkdir -p` 建目录,`cat >` 截断写入。
+    private static func writeTextFileViaExec(
+        _ text: String, to remotePath: String, dir: String, on client: SSHClient
+    ) async throws {
+        var delim = "XREAL_VOICE_EOF"
+        while text.contains(delim) { delim += "_x" }
+        let body = text.hasSuffix("\n") ? text : text + "\n"   // 定界符须独占一行
+        let cmd = "mkdir -p \(shq(dir)); cat > \(shq(remotePath)) <<'\(delim)'\n\(body)\(delim)\n"
+        _ = try await client.executeCommand(cmd)
     }
 
     private static func remoteFilename(_ name: String) -> String {
