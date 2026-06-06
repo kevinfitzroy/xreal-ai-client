@@ -1556,27 +1556,37 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             voiceArmed = false
             touchVoicePress(pressed: true)   // voiceDown(流式语音)
         case .changed:
-            // 滞回锁存:上滑过目标带 → armed 锁定;之后只有**拉回到屏幕底部附近**才解除(过冲没关系)。
+            // 手指一离开按压区(上滑过 80% 高度)就**冻结流式刷新**(armedLock),整个上滑过程 overlay
+            // 不再被 ASR partial 打乱;过目标带 → 红色 armed;拉回底部(>86%)→ 解冻恢复流式(滞回防抖)。
             guard voice.currentState == .streaming else { return }
             let y = g.location(in: voiceOverlay).y
             let h = voiceOverlay.bounds.height
-            if voiceArmed {
-                if h > 0, y > h * 0.82 {   // 拉回底部 → 解除
-                    voiceArmed = false
+            guard h > 0 else { return }
+            if !voice.armedLock, y < h * 0.80 { voice.armedLock = true }   // 开始上滑 → 冻结
+            if voice.armedLock {
+                if y > h * 0.86 {                                          // 拉回底部 → 解冻恢复流式
                     voice.armedLock = false
+                    voiceArmed = false
                     voice.reshowStreaming()
+                } else {
+                    let nowArmed = y < voiceOverlay.armZoneBottomY()
+                    if nowArmed != voiceArmed {
+                        voiceArmed = nowArmed
+                        if nowArmed {
+                            voiceOverlay.showArmed(text: voice.currentPartial ?? "")
+                            keyHaptic.impactOccurred()
+                        } else {
+                            voiceOverlay.show(status: "🎤 聆听中…", text: voice.currentPartial ?? "")   // 回白带(冻结)
+                        }
+                    }
                 }
-            } else if y < voiceOverlay.armZoneBottomY() {   // 上滑过带 → 锁定
-                voiceArmed = true
-                voice.armedLock = true   // 占屏:流式 partial 别覆盖红带
-                voiceOverlay.showArmed(text: voice.currentPartial ?? "")
-                keyHaptic.impactOccurred()
             }
         case .ended:
             if voiceArmed { voiceArmed = false; lockVoiceToRecording() }   // 松手在 overlay 上 → 锁录音
-            else { touchVoicePress(pressed: false) }                       // 正常松手 → voiceUp
+            else { voice.armedLock = false; touchVoicePress(pressed: false) }   // 正常松手 → voiceUp(解冻)
         case .cancelled, .failed:
             voiceArmed = false
+            voice.armedLock = false
             touchVoicePress(pressed: false)
         default:
             break
