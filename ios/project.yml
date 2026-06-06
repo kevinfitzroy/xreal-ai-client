@@ -5,6 +5,23 @@ options:
     iOS: "17.0"
   createIntermediateGroups: true
 
+# 显式 **共享** app scheme(shared,跨 regenerate 稳定)→ Xcode 默认就选它跑整个 app
+# (含内嵌的 ShareExtension + RecordingWidget extension)。避免手滑选到 RecordingWidget scheme:
+# 那个 widget 只有 Live Activity、没主屏小组件,单跑会报「Failed to show Widget」(Code=8)。
+schemes:
+  Agent Station:
+    build:
+      targets:
+        XrealPOC: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+
 packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git

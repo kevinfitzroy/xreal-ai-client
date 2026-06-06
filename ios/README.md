@@ -17,11 +17,11 @@ Stage-A risk验证:把 Android 的终端 UI 栈(xterm.js + Base64 桥 + 字体)�
 ```bash
 cd ios
 xcodegen generate
-xcodebuild -project XrealPOC.xcodeproj -scheme XrealPOC \
+xcodebuild -project XrealPOC.xcodeproj -scheme "Agent Station" \
   -destination 'platform=iOS Simulator,name=iPhone 17' \
   -derivedDataPath ./DerivedData build
 xcrun simctl boot "iPhone 17"   # 若未启动
-APP=DerivedData/Build/Products/Debug-iphonesimulator/XrealPOC.app
+APP="DerivedData/Build/Products/Debug-iphonesimulator/Agent Station.app"
 xcrun simctl install booted "$APP"
 xcrun simctl launch --console booted io.github.kevinfitzroy.xrealclient
 xcrun simctl io booted screenshot /tmp/xreal-ios-poc.png
