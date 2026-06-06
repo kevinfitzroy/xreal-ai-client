@@ -151,6 +151,42 @@ enum HostStore {
         return text
     }
 
+    // MARK: - Delete a host (config page)
+
+    /// Remove the host named `name` from `hosts.json` (atomic rewrite to the bare-array form
+    /// loadHosts() accepts) and delete its now-orphaned key file. Server-side untouched — this only
+    /// drops the local config + private key. Returns true iff a record was removed. The key file is
+    /// deleted only when no *remaining* host references the same bare filename (defensive: staged
+    /// keys are per-host, so normally unique). SECURITY: bare-filename guard before any unlink;
+    /// never logs key bytes.
+    @discardableResult
+    static func deleteHost(named name: String) -> Bool {
+        let docs = documentsDir
+        let file = docs.appendingPathComponent("hosts.json")
+        guard let data = try? Data(contentsOf: file),
+              let root = parseStoredRoot(data) else { return false }
+        let removed = root.hosts.filter { ($0["name"] as? String) == name }
+        guard !removed.isEmpty else { return false }
+        let kept = root.hosts.filter { ($0["name"] as? String) != name }
+        do {
+            try writeStoredHosts(kept, to: file)
+        } catch {
+            NSLog("[HostStore] deleteHost '\(name)': write failed \(error)")
+            AgentLog.error("config", "deleteHost \(name): write failed")
+            return false
+        }
+        let keptKeys = Set(kept.compactMap { $0["key"] as? String })
+        for r in removed {
+            guard let keyName = r["key"] as? String, !keyName.isEmpty,
+                  !keyName.contains("/"), !keyName.contains(".."),   // bare-filename guard before unlink
+                  !keptKeys.contains(keyName) else { continue }
+            try? FileManager.default.removeItem(at: docs.appendingPathComponent(keyName))
+        }
+        NSLog("[HostStore] deleted host '\(name)' (record(s)=\(removed.count))")
+        AgentLog.info("config", "deleted host \(name)")
+        return true
+    }
+
     // MARK: - Valet "Open in" import (SPEC §8 real-device channel)
 
     enum ImportError: Error, CustomStringConvertible {

@@ -132,6 +132,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.backgroundColor = .systemBackground
         navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "slider.horizontal.3"),
+            style: .plain, target: self, action: #selector(presentHostManager))
 
         // 原生列表:全屏(内容自动避让安全区/状态栏);终端态被 term 盖住。
         deckList.translatesAutoresizingMaskIntoConstraints = false
@@ -988,6 +991,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         navigationController?.setNavigationBarHidden(false, animated: false) // 列表:恢复 nav bar(大标题)
         navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
+        if navigationItem.rightBarButtonItem == nil {   // 从 logs 回列表 → 恢复齿轮
+            navigationItem.rightBarButtonItem = UIBarButtonItem(
+                image: UIImage(systemName: "slider.horizontal.3"),
+                style: .plain, target: self, action: #selector(presentHostManager))
+        }
         setNeedsStatusBarAppearanceUpdate()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
     }
@@ -1016,6 +1024,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view_ = .logs
         navigationItem.title = ""
         navigationItem.largeTitleDisplayMode = .never
+        navigationItem.rightBarButtonItem = nil   // 齿轮只在列表态
         navigationController?.setNavigationBarHidden(false, animated: false)
         logPanel.refresh()
         logPanel.isHidden = false
@@ -1659,6 +1668,29 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     // MARK: - Valet "Open in" import → reload list (SPEC §8)
+    /// 列表态齿轮 → 「管理 Host」(滑动删除)。删除是改本地配置 + 私钥,服务器不受影响。
+    @objc func presentHostManager() {
+        guard view_ == .list else { return }
+        let mgr = HostManagerVC(hosts: hosts)
+        mgr.onDone = { [weak self] changed in if changed { self?.reloadHostsAfterDelete() } }
+        let nav = UINavigationController(rootViewController: mgr)
+        present(nav, animated: true)
+    }
+
+    /// 删除 host 后回灌:重读 hosts、清状态/保活/语音上下文(被删的可能正是活动身份),重建列表。
+    private func reloadHostsAfterDelete() {
+        hosts = HostStore.loadHosts()
+        statusByHost = [:]; reachable = nil; probedHosts = []
+        triageItems = nil
+        voice.shutdown(); applyVoiceContext(nil)
+        closeWarm()
+        NSLog("[VC] reloadHostsAfterDelete: now \(hosts.count) hosts")
+        AgentLog.info("config", "hosts reloaded after delete count=\(hosts.count)")
+        deckList.setEmptyText(hosts.isEmpty ? "暂无 host\n\nAirDrop 一个 .xrhosts 配置导入" : nil)
+        deckList.setSections(buildSections())
+        if !hosts.isEmpty { refreshManifests() }
+    }
+
     func reloadHostsAfterImport(_ result: HostStore.ImportResult) {
         NSLog("[VC] reloadHostsAfterImport: mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
         AgentLog.info("config", "imported mode=\(result.mode) hosts=\(result.hosts) asr=\(result.asr)")
