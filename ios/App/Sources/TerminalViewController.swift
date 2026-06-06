@@ -243,6 +243,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.addSubview(channelStrip)
 
         setupVoice()
+        RecordingLiveActivity.endStale()   // 清上次进程崩溃/被杀残留的录音 Live Activity
         fleetTriage.reloadConfig()   // 巡检判官(deepseek-v4-pro);无 correction.json → 降级
 
         // 录音后台投递:把 meta 里存的 {hostName,session} 解析成可投递 Target(用当前 hosts + via)。
@@ -1781,9 +1782,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.showRecording()
         view.bringSubviewToFront(voiceOverlay)
         keyHaptic.impactOccurred()
+        // 锁屏/灵动岛录音状态(#23 P2)。projectName = 当前 subproject(投递目标)。
+        let pname = activeSessionName.flatMap { s in
+            activeHostConfig?.projects.first(where: { $0.session == s })?.name ?? s
+        }
+        RecordingLiveActivity.start(projectName: pname)
     }
 
     private func finishVoiceRecording() {
+        RecordingLiveActivity.end()
         let file = voice.stopRecording()
         voiceOverlay.hide()
         guard let file else { return }
@@ -1791,6 +1798,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     private func cancelVoiceRecording() {
+        RecordingLiveActivity.end()
         voice.cancelRecording()
         voiceOverlay.hide()
     }

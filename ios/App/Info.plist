@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 锁屏录音(#23 P2):后台音频模式 → 息屏后 app 不挂起、录音继续;Live Activity 才名副其实。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!-- 录音 Live Activity(锁屏/灵动岛状态)。 -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>

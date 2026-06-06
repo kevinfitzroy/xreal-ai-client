@@ -32,12 +32,16 @@ targets:
         buildPhase: resources
       # 共享音频收件箱(App Group)—— 主 app 与 ShareExtension 都编译这一份。
       - path: Shared
+      # Live Activity 属性 —— 主 app 与 RecordingWidget extension 都编译这一份(类型须一致)。
+      - path: SharedLive
     dependencies:
       - package: Citadel
       - package: SwiftTerm
       # 嵌入「分享到 Agent Station」扩展(接收语音备忘录等分享的音频文件)。
       # 真机首次装需在 Xcode Run 一次开通 App Group provisioning(CLI 签不了带新能力的 profile)。
       - target: ShareExtension
+      # 嵌入录音 Live Activity widget extension(锁屏/灵动岛录音状态,#23 P2)。
+      - target: RecordingWidget
     postBuildScripts:
       - name: Stamp Git revision
         script: |
@@ -103,3 +107,24 @@ targets:
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: ShareExtension/ShareExtension.entitlements
+
+  # 录音 Live Activity widget extension(锁屏/灵动岛录音状态,#23 P2)。WidgetKit + ActivityKit;
+  # 不需 App Group(状态经 ActivityKit ContentState 传,不走共享容器)。真机首次装需 Xcode Run 一次开通 provisioning。
+  RecordingWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: RecordingWidget
+      - path: SharedLive
+    configFiles:
+      Debug: BuildSettings.xcconfig
+      Release: BuildSettings.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.RecordingWidget
+        PRODUCT_NAME: RecordingWidget
+        INFOPLIST_FILE: RecordingWidget/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
