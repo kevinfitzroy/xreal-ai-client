@@ -245,6 +245,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         setupVoice()
         fleetTriage.reloadConfig()   // 巡检判官(deepseek-v4-pro);无 correction.json → 降级
 
+        // 录音后台投递:把 meta 里存的 {hostName,session} 解析成可投递 Target(用当前 hosts + via)。
+        MeetingStore.shared.resolveTarget = { [weak self] t in
+            guard let self, let h = self.hosts.first(where: { $0.name == t.hostName }) else { return nil }
+            let via = h.via.flatMap { vn in self.hosts.first(where: { $0.name == vn }) }
+            return MeetingDelegate.Target(host: h, via: via, session: t.session, projectName: t.projectName)
+        }
+
         hosts = HostStore.loadHosts()
         NSLog("[VC] loaded \(hosts.count) hosts from hosts.json")
         AgentLog.info("app", "loaded hosts count=\(hosts.count)")
@@ -1180,7 +1187,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         } else {
             attention = hooksAttention()
         }
-        return .init(attention: attention, recordings: recordingRows(), working: working, offline: offline,
+        let all = recordingRows()
+        return .init(attention: attention,
+                     recordingsPending: all.filter { $0.state != "done" },
+                     recordingsProcessed: all.filter { $0.state == "done" },
+                     working: working, offline: offline,
                      hostCount: hosts.count, probing: probing, judgeActive: fleetTriage.hasJudge)
     }
 
@@ -1212,31 +1223,26 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func recordingRows() -> [HomePanelView.RecordingRow] {
         MeetingStore.shared.tasks().map {
             .init(id: $0.audioURL.lastPathComponent, name: $0.name,
-                  state: $0.state.rawValue, since: Int($0.receivedAt.timeIntervalSince1970))
+                  state: $0.state.rawValue, detail: $0.detail,
+                  since: Int($0.receivedAt.timeIntervalSince1970))
         }
     }
 
-    /// 点录音卡片:完成→预览逐字稿(可删);失败/待处理→(重)触发转写。委托给 subproject 是下一步。
+    /// 点录音卡片:已处理/待投递→预览(可委托/重投/删);待转译→开始转写;失败→重试/删除;进行中→忽略。
     private func onTapRecording(_ r: HomePanelView.RecordingRow) {
         guard let task = MeetingStore.shared.tasks().first(where: { $0.audioURL.lastPathComponent == r.id }) else { return }
         switch task.state {
         case .done:
-            let text = MeetingStore.shared.transcript(for: task) ?? "(空)"
-            let preview = MeetingPreviewVC(name: task.name, markdown: text, hosts: hosts) { [weak self] in
-                MeetingStore.shared.remove(task); self?.pushHome()
-            }
-            let nav = UINavigationController(rootViewController: preview)
-            nav.modalPresentationStyle = .fullScreen
-            nav.overrideUserInterfaceStyle = .dark
-            present(nav, animated: true)
+            presentPreview(for: task)                      // 已投递:预览,可重投到别的 session / 删
         case .received:
-            MeetingStore.shared.process(task.audioURL)
+            if task.transcribed { presentPreview(for: task) }   // 已转译,待投递 → 预览里选 subproject 委托
+            else { MeetingStore.shared.process(task.audioURL) } // 待转译 → 开始转写(有目标会自动投递)
         case .failed:
-            // 反复失败的条目:之前一点就立刻重转、根本删不掉 → 改成弹选择:重试 / 删除。
-            let a = UIAlertController(title: task.name, message: "这条转写失败了。", preferredStyle: .alert)
-            a.addAction(UIAlertAction(title: "重试转写", style: .default) { _ in
-                MeetingStore.shared.process(task.audioURL)
-            })
+            let a = UIAlertController(title: task.name, message: "这条「\(task.detail)」,可重试。", preferredStyle: .alert)
+            a.addAction(UIAlertAction(title: "重试", style: .default) { _ in MeetingStore.shared.retry(task) })
+            if task.transcribed {
+                a.addAction(UIAlertAction(title: "查看逐字稿", style: .default) { [weak self] _ in self?.presentPreview(for: task) })
+            }
             a.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
                 MeetingStore.shared.remove(task); self?.pushHome()
             })
@@ -1245,6 +1251,23 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         case .processing:
             break
         }
+    }
+
+    /// 录音逐字稿预览:删除 / 委托。委托成功 → markDelivered(移入「已处理」)。
+    private func presentPreview(for task: RecordingTask) {
+        let text = MeetingStore.shared.transcript(for: task) ?? "(空)"
+        let preview = MeetingPreviewVC(
+            name: task.name, markdown: text, hosts: hosts,
+            onDelete: { [weak self] in MeetingStore.shared.remove(task); self?.pushHome() },
+            onDelivered: { [weak self] target in
+                MeetingStore.shared.markDelivered(task, to: .init(
+                    hostName: target.host.name, session: target.session, projectName: target.projectName))
+                self?.pushHome()
+            })
+        let nav = UINavigationController(rootViewController: preview)
+        nav.modalPresentationStyle = .fullScreen
+        nav.overrideUserInterfaceStyle = .dark
+        present(nav, animated: true)
     }
 
     // MARK: - 舰队巡检 loop(SPEC §14)
@@ -1764,7 +1787,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let file = voice.stopRecording()
         voiceOverlay.hide()
         guard let file else { return }
-        processRecordingAndDelegate(file: file)
+        persistAndProcessRecording(file: file)
     }
 
     private func cancelVoiceRecording() {
@@ -1772,29 +1795,28 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.hide()
     }
 
-    /// 录好的 WAV → 转写(长录音自动分段)→ 委托给**当前打开的** subproject。
-    /// 全程**阻塞 HUD**(转圈)卡住其它操作防误触;完成变 ✓/✗。
-    private func processRecordingAndDelegate(file: URL) {
-        guard let h = activeHostConfig, let session = activeSessionName else {
-            showRecordingHUD("没有当前 subproject", done: true, ok: false)
-            try? FileManager.default.removeItem(at: file)
-            return
+    /// 录好的 WAV → **先落盘入收件箱(持久,不丢)**,写自动投递目标 = 当前 subproject,随即在后台
+    /// 转写 + 投递(走 MeetingStore;失败留在 Home「待处理」可重试)。非阻塞:给一句 toast 就放手回终端。
+    /// 这正是 #23 的要点:长录音哪怕中途失败,原始文件也已落盘,绝不凭空消失。
+    private func persistAndProcessRecording(file: URL) {
+        let target: RecordingMeta.Target?
+        if let h = activeHostConfig, let session = activeSessionName {
+            let pname = h.projects.first(where: { $0.session == session })?.name ?? session
+            target = .init(hostName: h.name, session: session, projectName: pname)
+        } else {
+            target = nil   // 没有当前 subproject:仍落盘转写,停在「待投递」,稍后在 Home 手动委托
         }
-        let pname = h.projects.first(where: { $0.session == session })?.name ?? session
-        let target = MeetingDelegate.Target(host: h, via: activeViaConfig, session: session, projectName: pname)
-        showRecordingHUD("转写并交给「\(pname)」…", done: false, ok: false)
-        Task { @MainActor in
-            defer { try? FileManager.default.removeItem(at: file) }
-            do {
-                let transcript = try await MeetingPipeline.process(inboxFile: file, enableSpeaker: true)
-                switch await MeetingDelegate.deliver(transcript: transcript.asMarkdown(), name: "录音", to: target) {
-                case .success:        self.showRecordingHUD("已交给「\(pname)」", done: true, ok: true)
-                case .failure(let e): self.showRecordingHUD("委托失败:\(e)", done: true, ok: false)
-                }
-            } catch {
-                self.showRecordingHUD("转写失败:\(error)", done: true, ok: false)
-            }
+        do {
+            _ = try MeetingStore.shared.ingestRecording(wav: file, target: target)
+            try? FileManager.default.removeItem(at: file)   // 已拷进收件箱,临时文件可删
+            nativeToast(target.map { "录音已保存,正在转写并交给「\($0.projectName)」…" }
+                        ?? "录音已保存,正在转写(稍后在 Home 委托)")
+        } catch {
+            // 收件箱不可用(App Group 异常):别删临时文件(至少本进程还在),阻塞 HUD 明确报错。
+            AgentLog.error("meeting", "ingest recording failed: \(error)")
+            showRecordingHUD("录音保存失败:\(error)", done: true, ok: false)
         }
+        pushHome()
     }
 
     /// 录音转写期间的全屏阻塞 HUD:处理中转圈(吞触摸,防误触);完成变 ✓/✗,点一下或 2.5s 自动收起。

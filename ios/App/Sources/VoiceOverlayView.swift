@@ -180,10 +180,14 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         recTimer?.invalidate(); recTimer = nil
         recordingControls.isHidden = true
         card.backgroundColor = Self.cardBgNormal
+        statusLabel.textColor = UIColor(white: 0.9, alpha: 1)   // 清掉录音超时的琥珀色
+        hintLabel.textColor = UIColor(white: 0.53, alpha: 1)
         tapGR?.isEnabled = true
         voicePressGR?.isEnabled = true
         armHint.isHidden = true
     }
+
+    private static let amber = UIColor(red: 1.0, green: 0.72, blue: 0.28, alpha: 1)
 
     /// armed 态(手指上滑到 overlay):提示「松手转录音」,保留当前识别文本。
     func showArmed(text: String) {
@@ -227,7 +231,23 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
 
     private func updateRecLabel() {
         let secs = max(0, Int(Date().timeIntervalSince(recStart ?? Date())))
+        let mins = secs / 60
         statusLabel.text = String(format: "🔴 录音中 · %02d:%02d", secs / 60, secs % 60)
+        // 时长建议提醒(issue #23 补充):0–15min 正常;15–30min 淡灰建议;>30min 琥珀 + 提示大文件慢。
+        if mins >= 30 {
+            statusLabel.textColor = Self.amber
+            hintLabel.text = "已超过建议时长 · 大文件处理较慢"
+            hintLabel.textColor = Self.amber
+            hintLabel.isHidden = false
+        } else if mins >= 15 {
+            statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
+            hintLabel.text = "建议 ≤30 分钟"
+            hintLabel.textColor = UIColor(white: 1, alpha: 0.45)
+            hintLabel.isHidden = false
+        } else {
+            statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
+            hintLabel.isHidden = true
+        }
     }
 
     /// armed 阈值:固定目标带的底边(overlay 坐标 ≈ terminal 核心坐标)。手指上滑过此线 = 进入 overlay 区域。

@@ -24,13 +24,16 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         let id: String          // 文件名,增量 diff 用
         let name: String
         let state: String       // received | processing | done | failed
+        let detail: String      // 子状态 / 失败原因(待转译 / 待投递 / 投递中 / 识别失败…)
         let since: Int          // 收到时间 epoch 秒
     }
 
     /// Home 视图模型(VC 从 hosts + statusByHost + MeetingStore 算好喂进来)。
+    /// 录音拆两级(issue #23):`pending` 始终展开;`processed` 默认折叠(点 header 展开)。
     struct Model {
         let attention: [HomeRow]
-        let recordings: [RecordingRow]
+        let recordingsPending: [RecordingRow]
+        let recordingsProcessed: [RecordingRow]
         let working: Int
         let offline: Int
         let hostCount: Int
@@ -50,8 +53,10 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     private let footLabel = UILabel()
 
     private var rows: [HomeRow] = []
-    private var recordings: [RecordingRow] = []
-    private enum Section { case attention, recordings }
+    private var recPending: [RecordingRow] = []
+    private var recProcessed: [RecordingRow] = []
+    private var processedExpanded = false   // 「已处理」默认折叠(issue #23)
+    private enum Section { case attention, pending, processed }
     private var sectionOrder: [Section] = []
     private var footText = ""
 
@@ -184,10 +189,12 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         footLabel.text = footText
         footLabel.isHidden = footText.isEmpty
 
-        recordings = m.recordings
+        recPending = m.recordingsPending
+        recProcessed = m.recordingsProcessed
         sectionOrder = []
         if !rows.isEmpty { sectionOrder.append(.attention) }
-        if !recordings.isEmpty { sectionOrder.append(.recordings) }
+        if !recPending.isEmpty { sectionOrder.append(.pending) }
+        if !recProcessed.isEmpty { sectionOrder.append(.processed) }
         table.reloadData()
     }
 
@@ -222,35 +229,71 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sectionOrder[section] {
         case .attention:  return rows.count
-        case .recordings: return recordings.count
+        case .pending:    return recPending.count
+        case .processed:  return processedExpanded ? recProcessed.count : 0   // 折叠时 0 行,只留 header
         }
     }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sectionOrder[section] {
         case .attention:  return "需要你关注"
-        case .recordings: return "录音转写"
+        case .pending:    return "待处理录音"
+        case .processed:  return nil   // 用自定义可点 header(viewForHeader)
         }
     }
 
+    /// 「已处理」用自定义 header:可点击展开/折叠 + 计数 + chevron。其它 section 用系统默认。
+    func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        guard sectionOrder[section] == .processed else { return nil }
+        let h = UITableViewHeaderFooterView()
+        let title = UILabel()
+        title.text = "已处理 (\(recProcessed.count))"
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = UIColor(white: 1, alpha: 0.5)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        let chevron = UIImageView(image: UIImage(systemName: processedExpanded ? "chevron.down" : "chevron.right"))
+        chevron.tintColor = UIColor(white: 1, alpha: 0.4)
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        chevron.translatesAutoresizingMaskIntoConstraints = false
+        h.contentView.addSubview(title); h.contentView.addSubview(chevron)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: h.contentView.layoutMarginsGuide.leadingAnchor),
+            title.centerYAnchor.constraint(equalTo: h.contentView.centerYAnchor),
+            chevron.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 6),
+            chevron.centerYAnchor.constraint(equalTo: title.centerYAnchor),
+        ])
+        h.tag = section
+        h.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleProcessed)))
+        return h
+    }
+
+    @objc private func toggleProcessed() {
+        processedExpanded.toggle()
+        guard let s = sectionOrder.firstIndex(of: .processed) else { return }
+        table.reloadSections(IndexSet(integer: s), with: .automatic)
+    }
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let rec: RecordingRow
         switch sectionOrder[indexPath.section] {
         case .attention:
             let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
             cell.configure(rows[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
             return cell
-        case .recordings:
-            let cell = tableView.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
-            cell.configure(recordings[indexPath.row], cardColor: Self.card)
-            return cell
+        case .pending:    rec = recPending[indexPath.row]
+        case .processed:  rec = recProcessed[indexPath.row]
         }
+        let cell = tableView.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
+        cell.configure(rec, cardColor: Self.card)
+        return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         switch sectionOrder[indexPath.section] {
         case .attention:  onSelect?(rows[indexPath.row])
-        case .recordings: onSelectRecording?(recordings[indexPath.row])
+        case .pending:    onSelectRecording?(recPending[indexPath.row])
+        case .processed:  onSelectRecording?(recProcessed[indexPath.row])
         }
     }
 
@@ -389,19 +432,22 @@ private final class RecordingCell: UITableViewCell {
         backgroundColor = cardColor
         nameLabel.text = r.name
         timeLabel.text = Self.timeText(r.since)
+        // 子状态文案由 store 给(待转译/待投递/投递中/识别失败…),这里只配色 + 转圈。
+        let text = r.detail.isEmpty ? r.state : r.detail
         switch r.state {
         case "processing":
             spinner.startAnimating()
-            stateLabel.text = "转写中"; stateLabel.textColor = Self.amber
+            stateLabel.text = text; stateLabel.textColor = Self.amber
         case "done":
             spinner.stopAnimating()
-            stateLabel.text = "完成"; stateLabel.textColor = Self.green
+            stateLabel.text = "已处理"; stateLabel.textColor = Self.green
         case "failed":
             spinner.stopAnimating()
-            stateLabel.text = "失败·重试"; stateLabel.textColor = Self.red
-        default:   // received
+            stateLabel.text = "\(text)·重试"; stateLabel.textColor = Self.red
+        default:   // received(待转译 / 待投递)
             spinner.stopAnimating()
-            stateLabel.text = "待处理"; stateLabel.textColor = UIColor(white: 1, alpha: 0.5)
+            stateLabel.text = text
+            stateLabel.textColor = r.detail == "待投递" ? Self.amber : UIColor(white: 1, alpha: 0.5)
         }
     }
 

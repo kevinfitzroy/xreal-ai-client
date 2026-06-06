@@ -8,6 +8,7 @@ final class MeetingPreviewVC: UIViewController {
     private let markdown: String
     private let hosts: [HostConfig]
     private let onDelete: () -> Void
+    private let onDelivered: (MeetingDelegate.Target) -> Void   // 委托成功 → 让 store markDelivered
 
     private let textView = UITextView()
     private let toolbar = UIToolbar()
@@ -15,8 +16,11 @@ final class MeetingPreviewVC: UIViewController {
 
     private static let bg = UIColor(red: 0.043, green: 0.047, blue: 0.063, alpha: 1)
 
-    init(name: String, markdown: String, hosts: [HostConfig], onDelete: @escaping () -> Void) {
-        self.recName = name; self.markdown = markdown; self.hosts = hosts; self.onDelete = onDelete
+    init(name: String, markdown: String, hosts: [HostConfig],
+         onDelete: @escaping () -> Void,
+         onDelivered: @escaping (MeetingDelegate.Target) -> Void = { _ in }) {
+        self.recName = name; self.markdown = markdown; self.hosts = hosts
+        self.onDelete = onDelete; self.onDelivered = onDelivered
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -90,6 +94,7 @@ final class MeetingPreviewVC: UIViewController {
             let presenter = navigationController?.topViewController ?? self
             switch result {
             case .success:
+                onDelivered(target)   // 通知 store:这条已投递 → 移入「已处理」(#23)
                 // 委托成功后确认是否删除 —— 可能委托错了地方,「保留」可再委托到别处。
                 let a = UIAlertController(title: "已交给「\(target.projectName)」",
                                           message: "逐字稿已上传并转交。要删除这条录音吗?(委托错了可「保留」再重发)",
