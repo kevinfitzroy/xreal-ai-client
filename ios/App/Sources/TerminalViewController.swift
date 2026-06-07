@@ -237,9 +237,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.view.bringSubviewToFront(self.terminalDrawer)
                 self.terminalDrawer.present(in: self.view.bounds)
             case .changed:
-                self.terminalDrawer.drag(toProgress: -ty / 220)              // 上滑 ty<0 → progress 升
+                let p = min(1, max(0, -ty / 220))                            // 上滑 ty<0 → progress 升
+                self.terminalDrawer.drag(toProgress: p)
+                self.keyBar?.alpha = 1 - p                                   // 抽屉升起 → 迷你条同步淡出让位
             case .ended, .cancelled, .failed:
-                self.terminalDrawer.settle(open: -ty > 80 || -vy > 600, velocity: vy)  // 位移够 / 甩得快都展开
+                let open = -ty > 80 || -vy > 600                             // 位移够 / 甩得快都展开
+                self.terminalDrawer.settle(open: open, velocity: vy)
+                UIView.animate(withDuration: 0.25) { self.keyBar?.alpha = open ? 0 : 1 }
             default: break
             }
         }
@@ -295,6 +299,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // 低频键抽屉(抓柄上滑展开;默认收起,不占不挡)。
         terminalDrawer.isHidden = true
         terminalDrawer.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
+        // 抽屉收起(下滑/点遮罩/任意关闭)→ 迷你条淡回。
+        terminalDrawer.onDismiss = { [weak self] in
+            UIView.animate(withDuration: 0.2) { self?.keyBar?.alpha = 1 }
+        }
         view.addSubview(terminalDrawer)
 
         terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
