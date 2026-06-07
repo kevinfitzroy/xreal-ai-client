@@ -18,6 +18,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private let cancelButton = UIButton(type: .system)
     private var recTimer: Timer?
     private var recStart: Date?
+    private var hideTimer: Timer?   // #28:处理态结果展示后的自动收起
     private weak var tapGR: UITapGestureRecognizer?
     private weak var voicePressGR: UILongPressGestureRecognizer?
     private static let cardBgNormal = UIColor(white: 0.08, alpha: 0.95)
@@ -178,6 +179,7 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     /// 复位录音/armed 视觉:停计时、隐按钮、卡片底色回常态、恢复 overlay 自身手势。
     private func resetRecordingChrome() {
         recTimer?.invalidate(); recTimer = nil
+        hideTimer?.invalidate(); hideTimer = nil   // 新一轮语音/收起 → 取消上一轮处理态的待收起
         recordingControls.isHidden = true
         card.backgroundColor = Self.cardBgNormal
         statusLabel.textColor = UIColor(white: 0.9, alpha: 1)   // 清掉录音超时的琥珀色
@@ -227,6 +229,34 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.updateRecLabel() }
         RunLoop.main.add(t, forMode: .common)
         recTimer = t
+    }
+
+    /// 处理中/结果态(issue #28):录音停止后 overlay **不 hide**,原地切到这个态,避免「点停止 → 中心空窗」。
+    /// 只一行状态文字(`⏳ 保存中…` / `✅ 已保存…` / `❌ 失败…`),无按钮、无识别文本、不响应点击。
+    /// 结果态由调用方 `scheduleAutoHide` 定时收起。
+    func showProcessing(_ status: String) {
+        stopSpinner()
+        recTimer?.invalidate(); recTimer = nil
+        hideTimer?.invalidate(); hideTimer = nil
+        recordingControls.isHidden = true
+        armHint.isHidden = true
+        tapGR?.isEnabled = false
+        voicePressGR?.isEnabled = false
+        card.backgroundColor = Self.cardBgNormal
+        statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
+        statusLabel.text = status
+        textLabel.isHidden = true
+        hintLabel.isHidden = true
+        isHidden = false
+        isUserInteractionEnabled = true
+    }
+
+    /// 处理结果态停留 `sec` 秒后自动 hide(期间任何新的 show*/hide 会取消它,见 resetRecordingChrome)。
+    func scheduleAutoHide(after sec: TimeInterval) {
+        hideTimer?.invalidate()
+        let t = Timer(timeInterval: sec, repeats: false) { [weak self] _ in self?.hide() }
+        RunLoop.main.add(t, forMode: .common)
+        hideTimer = t
     }
 
     private func updateRecLabel() {

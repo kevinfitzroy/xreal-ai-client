@@ -46,7 +46,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var activeViaConfig: HostConfig?
     private var activeSessionName: String?
     private var voiceArmed = false   // 语音长按中,手指上滑到 overlay = armed(松手转录音)
-    private var recordingHUD: UIView?   // 录音转写期间的全屏阻塞 HUD(防误触)
     /// 自认为处于 tmux copy-mode(翻页/复制)。单一状态源:同时驱动语音警告 + ESC 键安全态配色 + 轮询确认。
     /// 设 true(进 copy-mode)→ ESC 变安全绿 + 起轮询;设 false(退出)→ 复原 + 停轮询。所有现有赋值点自动联动。
     private var tmuxModeLikely = false {
@@ -1791,9 +1790,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func finishVoiceRecording() {
         RecordingLiveActivity.end()
-        let file = voice.stopRecording()
-        voiceOverlay.hide()
-        guard let file else { return }
+        guard let file = voice.stopRecording() else { voiceOverlay.hide(); return }
+        // #28:别 hide overlay(会在中心留空窗)——原地切到「处理中」态,由 persist 收尾成确认/错误 + 自动收起。
+        voiceOverlay.showProcessing("⏳ 保存录音…")
         persistAndProcessRecording(file: file)
     }
 
@@ -1804,8 +1803,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     /// 录好的 WAV → **先落盘入收件箱(持久,不丢)**,写自动投递目标 = 当前 subproject,随即在后台
-    /// 转写 + 投递(走 MeetingStore;失败留在 Home「待处理」可重试)。非阻塞:给一句 toast 就放手回终端。
-    /// 这正是 #23 的要点:长录音哪怕中途失败,原始文件也已落盘,绝不凭空消失。
+    /// 转写 + 投递(走 MeetingStore;失败留在 Home「待处理」可重试)。非阻塞:overlay 原地给个确认就放手回终端。
+    /// 这正是 #23 的要点:长录音哪怕中途失败,原始文件也已落盘,绝不凭空消失。过渡态见 #28。
     private func persistAndProcessRecording(file: URL) {
         let target: RecordingMeta.Target?
         if let h = activeHostConfig, let session = activeSessionName {
@@ -1817,75 +1816,19 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         do {
             _ = try MeetingStore.shared.ingestRecording(wav: file, target: target)
             try? FileManager.default.removeItem(at: file)   // 已拷进收件箱,临时文件可删
-            nativeToast(target.map { "录音已保存,正在转写并交给「\($0.projectName)」…" }
-                        ?? "录音已保存,正在转写(稍后在 Home 委托)")
+            // #28:在同一 overlay 上切成确认态(不再 hide + 底部 toast),无空窗;短暂后自动收起。
+            voiceOverlay.showProcessing(target.map { "✅ 已保存 · 转写后交给「\($0.projectName)」" }
+                                        ?? "✅ 已保存 · 待转写(在 Home 委托)")
+            voiceOverlay.scheduleAutoHide(after: 1.9)
         } catch {
-            // 收件箱不可用(App Group 异常):别删临时文件(至少本进程还在),阻塞 HUD 明确报错。
+            // 收件箱不可用(App Group 异常):别删临时文件(至少本进程还在),overlay 明确报错、停留久一点。
             AgentLog.error("meeting", "ingest recording failed: \(error)")
-            showRecordingHUD("录音保存失败:\(error)", done: true, ok: false)
+            voiceOverlay.showProcessing("❌ 录音保存失败:\(error)")
+            voiceOverlay.scheduleAutoHide(after: 2.6)
         }
         pushHome()
     }
 
-    /// 录音转写期间的全屏阻塞 HUD:处理中转圈(吞触摸,防误触);完成变 ✓/✗,点一下或 2.5s 自动收起。
-    private func showRecordingHUD(_ text: String, done: Bool, ok: Bool) {
-        recordingHUD?.removeFromSuperview()
-        let dim = UIView(frame: view.bounds)
-        dim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        dim.backgroundColor = UIColor(white: 0, alpha: 0.62)
-
-        let card = UIView()
-        card.backgroundColor = UIColor(white: 0.1, alpha: 0.97)
-        card.layer.cornerRadius = 14
-        card.translatesAutoresizingMaskIntoConstraints = false
-        dim.addSubview(card)
-
-        let top: UIView
-        if done {
-            let iv = UIImageView(image: UIImage(systemName: ok ? "checkmark.circle.fill" : "xmark.octagon.fill"))
-            iv.tintColor = ok ? .systemGreen : .systemRed
-            iv.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 34, weight: .regular)
-            top = iv
-        } else {
-            let spin = UIActivityIndicatorView(style: .large)
-            spin.color = .white; spin.startAnimating()
-            top = spin
-        }
-        top.translatesAutoresizingMaskIntoConstraints = false
-        let label = UILabel()
-        label.text = text; label.textColor = .white
-        label.font = .systemFont(ofSize: 15, weight: .medium)
-        label.numberOfLines = 0; label.textAlignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(top); card.addSubview(label)
-        NSLayoutConstraint.activate([
-            card.centerXAnchor.constraint(equalTo: dim.centerXAnchor),
-            card.centerYAnchor.constraint(equalTo: dim.centerYAnchor),
-            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
-            card.leadingAnchor.constraint(greaterThanOrEqualTo: dim.leadingAnchor, constant: 40),
-            card.trailingAnchor.constraint(lessThanOrEqualTo: dim.trailingAnchor, constant: -40),
-            top.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
-            top.centerXAnchor.constraint(equalTo: card.centerXAnchor),
-            label.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 14),
-            label.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            label.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
-            label.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -20),
-        ])
-        view.addSubview(dim)
-        recordingHUD = dim
-
-        if done {   // 处理中不让收起(卡住);完成后点一下 / 2.5s 自动收
-            dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dismissRecordingHUD)))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self, weak dim] in
-                if self?.recordingHUD === dim { self?.dismissRecordingHUD() }
-            }
-        }
-    }
-
-    @objc private func dismissRecordingHUD() {
-        recordingHUD?.removeFromSuperview()
-        recordingHUD = nil
-    }
 
     // MARK: - Hardware keyboard detection (SPEC §6.1)
     private func registerKeyboardObservers() {
