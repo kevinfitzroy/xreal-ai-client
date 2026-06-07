@@ -70,6 +70,7 @@ final class SubprojectPickerVC: UITableViewController {
     private func symbol(_ t: ProjectType) -> String {
         switch t {
         case .claude:  return "sparkles"
+        case .codex:   return "chevron.left.forwardslash.chevron.right"
         case .agent:   return "cpu"
         case .maestro: return "command"
         case .ssh:     return "terminal"

@@ -5,12 +5,12 @@ import Foundation
 /// source of truth is the per-host manifest (`<basePath>/.xreal/projects.json`).
 
 enum ProjectType: String {
-    case ssh, claude, agent, maestro
+    case ssh, claude, codex, agent, maestro
 
     init?(raw: String) { self.init(rawValue: raw.lowercased()) }
 
-    /// AI-agent class (Claude/agent/maestro) vs bare ssh shell. Drives the 🎤 voice
-    /// marker (out of Phase 1) but kept for parity.
+    /// AI-agent class (claude/codex/agent/maestro) vs bare ssh shell. Drives the 🎤 voice
+    /// marker (§4), tmux residency (§5), delegation eligibility, correction context.
     var isAiAgent: Bool { self != .ssh }
 }
 

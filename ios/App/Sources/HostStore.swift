@@ -123,8 +123,9 @@ enum HostStore {
 
     static func parseProject(_ p: [String: Any]) -> ProjectConfig? {
         guard let session = p["session"] as? String,
-              let typeRaw = p["type"] as? String,
-              let type = ProjectType(raw: typeRaw) else { return nil }
+              let typeRaw = p["type"] as? String else { return nil }
+        // 未知/未来 type 归 ssh 兜底(SPEC §3:别丢弃整条 project,至少能当裸终端打开)。
+        let type = ProjectType(raw: typeRaw) ?? .ssh
         let hotwords = (p["hotwords"] as? [String]) ?? []
         let cfg = ProjectConfig(
             session: session,

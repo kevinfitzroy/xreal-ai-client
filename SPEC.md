@@ -66,7 +66,7 @@
     {
       "session": "blog-rewrite",      // tmux session 名,唯一,只允许 [A-Za-z0-9_.-](客户端会拼进 shell 命令)
       "name": "博客重写",              // 显示名(可中文)
-      "type": "claude",               // maestro | claude | agent | ssh
+      "type": "claude",               // maestro | claude | codex | agent | ssh
       "dir": "/home/dev/work/blog",   // 工作目录绝对路径(给 Maestro 自己备忘;客户端不直接用)
       "group": "work",                // 可选:分组标签
       "startup": "claude --resume",   // 可选:重启备忘(客户端不执行)
@@ -81,8 +81,11 @@
 |---|---|---|
 | `maestro` | host 的 orchestrator,每 host 一个 | 是 |
 | `claude` | Claude Code 会话 | 是 |
+| `codex` | OpenAI Codex CLI 会话(与 claude 同构,见 #18) | 是 |
 | `agent` | 其它 AI agent | 是 |
 | `ssh` | 裸 shell(日志/REPL 等配角终端) | **否** |
+
+> 客户端把**所有非 `ssh` 类**都当 AI-agent 同等对待(🎤 前缀 §4、tmux 驻留 §5、委托目标、语义纠错上下文)——新增 agent 类型(如 `codex`)只需加进枚举 + 图标/标签映射,行为自动继承。**未知 type 必须容错**(归 `ssh` 兜底,别丢弃整条 project)。
 
 **maestro 置顶规则**:`type":"maestro"` 的项,客户端**pin 到该 host 列表首位**,给专属图标/色。Maestro 把自己列在首位,`session/name/type` 固定 `"maestro"/"Maestro"/"maestro"`。
 
@@ -140,7 +143,7 @@
 
 ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 shell,shell echo 回送,xterm.js 渲染。**语音路径不需要知道终端 UI 存在。**
 
-- **AI-agent 类会话**(`maestro`/`claude`/`agent`)注入时**加 `🎤 ` 前缀**(U+1F3A4 + 空格),让对端 agent 知道这是语音转写、可能有同音/断词错误,按意图理解。
+- **AI-agent 类会话**(`maestro`/`claude`/`codex`/`agent` —— 即所有非 `ssh`)注入时**加 `🎤 ` 前缀**(U+1F3A4 + 空格),让对端 agent 知道这是语音转写、可能有同音/断词错误,按意图理解。
 - **`ssh` 类**(裸 shell)**不加前缀**,直接注入。
 - **首字符是 `!` 或 `/` 时不加 `🎤 `**(即便 AI-agent 会话):`!` = 在 Claude Code 里直接执行 bash,`/` = Claude Code 内置斜杠命令;加了前缀这俩都会被当成普通文本而非命令。常与 §7.1 的"内置命令改写"配套(纠错把"做次压缩"改写成 `/compact` 后,注入必须裸送)。
 - **写入必须后台单线程**(平台无关的硬约束):主线程写会永久损坏 SSH 库的输出缓冲(见 [`CLAUDE.md`](CLAUDE.md) memory `input-path-constraints`)。
@@ -152,7 +155,7 @@ ASR 出文本后,客户端**直写 SSH outputStream**,字符走 SSH 到远端 sh
 ## 5. 会话 / SSH 契约
 
 - **session 驻留**:
-  - `claude`/`agent`/`maestro` 类 → 用 **tmux**(状态/预览需要 `capture-pane` 能力)。
+  - `claude`/`codex`/`agent`/`maestro` 类 → 用 **tmux**(状态/预览需要 `capture-pane` 能力)。
   - `ssh` 类 → abduco 或 tmux 均可。
   - 启动命令可配置(`SshConfig.startupCommand`,默认 `abduco -A dev bash`;agent 类由列表逻辑换成 tmux attach)。
 - **tmux 约定**(客户端拼 attach 命令时):

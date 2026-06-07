@@ -232,6 +232,7 @@ final class DeckProjectCell: UITableViewCell {
     private static func symbol(_ t: ProjectType) -> String {
         switch t {
         case .claude:  return "sparkles"
+        case .codex:   return "chevron.left.forwardslash.chevron.right"
         case .agent:   return "cpu"
         case .maestro: return "command"
         case .ssh:     return "terminal"
@@ -240,13 +241,14 @@ final class DeckProjectCell: UITableViewCell {
     private static func tint(_ t: ProjectType) -> UIColor {
         switch t {
         case .claude:  return .systemPurple
+        case .codex:   return .systemGreen
         case .agent:   return .systemTeal
         case .maestro: return .systemIndigo
         case .ssh:     return .systemGray
         }
     }
     private static func typeLabel(_ t: ProjectType) -> String {
-        switch t { case .claude: return "Claude"; case .agent: return "Agent"; case .maestro: return "Maestro"; case .ssh: return "SSH" }
+        switch t { case .claude: return "Claude"; case .codex: return "Codex"; case .agent: return "Agent"; case .maestro: return "Maestro"; case .ssh: return "SSH" }
     }
     /// 状态徽章:(系统色, 文案)。文案 nil = 不显示(unknown)。
     private static func badge(_ state: String?) -> (UIColor, String?) {

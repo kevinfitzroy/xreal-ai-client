@@ -180,7 +180,7 @@ class SettingsStore(ctx: Context) {
                         ProjectConfig(
                             sessionName = p.getString("session"),
                             displayName = p.optString("name", p.getString("session")),
-                            type = ProjectType.valueOf(p.getString("type").uppercase()),
+                            type = parseProjectType(p.optString("type")),
                             hotwords = p.optJSONArray("hotwords")
                                 ?.let { hw -> (0 until hw.length()).map { hw.getString(it) } }
                                 ?: emptyList(),

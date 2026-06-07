@@ -220,10 +220,11 @@
   const ICONS = {
     ssh:`<svg viewBox="0 0 24 24" fill="none" stroke="#8b93a7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l5 5-5 5"/><path d="M12 17h8"/></svg>`,
     claude:`<svg viewBox="0 0 24 24" fill="none" stroke="#d98a52" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6L5.6 18.4"/></svg>`,
+    codex:`<svg viewBox="0 0 24 24" fill="none" stroke="#9ece6a" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>`,
     agent:`<svg viewBox="0 0 24 24" fill="none" stroke="#7aa2f7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M12 8V4M8.5 13h.01M15.5 13h.01M9 19v2M15 19v2"/></svg>`,
     maestro:`<svg viewBox="0 0 24 24" fill="none" stroke="#bb9af7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v10"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="14" r="2.5"/></svg>`,
   };
-  const TYPE_LABEL = { ssh:'SSH', claude:'Claude Code', agent:'Agent', maestro:'Maestro' };
+  const TYPE_LABEL = { ssh:'SSH', claude:'Claude Code', codex:'Codex', agent:'Agent', maestro:'Maestro' };
   const STATUS = { work:{cls:'s-work',label:'工作中'}, wait:{cls:'s-wait',label:'等待反馈'}, idle:{cls:'s-idle',label:'未激活'}, offline:{cls:'s-offline',label:'已断开'} };
   const HOSTS = [
     { name:'beam-server', addr:'evan@104.21.x.x', up:true, projects:[

@@ -14,7 +14,7 @@ package io.github.kevinfitzroy.xrealclient
  * ([FleetFeatures.LIVE_STATUS]=false),当前不走。
  */
 
-enum class ProjectType { SSH, CLAUDE, AGENT, MAESTRO }   // MAESTRO = host orchestrator(每 host 一个,pin 首位)
+enum class ProjectType { SSH, CLAUDE, CODEX, AGENT, MAESTRO }   // MAESTRO = host orchestrator(每 host 一个,pin 首位);CODEX = OpenAI Codex CLI(与 CLAUDE 同构,#18)
 
 /** AI agent 类(对话端是 Claude Code,可领会语音意图);SSH 是裸 shell。决定语音注入是否加 🎤 marker。 */
 fun ProjectType.isAiAgent(): Boolean = this != ProjectType.SSH
@@ -107,6 +107,11 @@ fun ProjectStatus.jsKey(): String = when (this) {
 fun ProjectType.jsKey(): String = when (this) {
     ProjectType.SSH -> "ssh"
     ProjectType.CLAUDE -> "claude"
+    ProjectType.CODEX -> "codex"
     ProjectType.AGENT -> "agent"
     ProjectType.MAESTRO -> "maestro"
 }
+
+/** 字符串 → ProjectType,未知/未来 type 归 SSH 兜底(SPEC §3:别丢弃整条 project)。大小写不敏感。 */
+fun parseProjectType(raw: String?): ProjectType =
+    raw?.trim()?.uppercase()?.let { s -> ProjectType.entries.firstOrNull { it.name == s } } ?: ProjectType.SSH
