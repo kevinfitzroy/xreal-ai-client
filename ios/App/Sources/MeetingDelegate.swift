@@ -39,8 +39,13 @@ enum MeetingDelegate {
                 let prompt = "这是我用语音录的一段话的转写,存到了 \(remotePath),先读它。它可能是一个产品想法、对最近工作的思考、一段多人讨论/头脑风暴,或别的——你结合本项目的背景,先弄清我想表达什么,再做最合适的回应(该整理就整理、该落成方案或任务就落、该一起讨论就讨论)。注意是语音转写,可能有同音错别字,按意图理解;多人对话里用「说话人N」区分不同的人。"
                 // tmux 处于 copy-mode 时 send-keys 会打到翻页导航、报 command failed → 先探 pane_in_mode,
                 // 在 mode 里就 -X cancel 退出,再注入。全在一条远端命令里顺序完成,无竞态。
+                //
+                // #29:文本和 Enter 之间 sleep。Codex/Claude 这类 TUI 有「粘贴检测」——紧跟一批快速涌入字节的
+                // 换行被当多行输入的换行、不是提交;只有空闲后到达的独立 Enter 才算提交(虚拟键盘 Enter=CR 0x0D
+                // 能提交、send-keys Enter 同样是 CR 却不行,差异就在时序)。sleep 让 Enter 成为离散按键。
+                // 对 Claude 无害(本就能提交)。
                 let s = shq(t.session)
-                let inner = "if [ \"$(tmux display-message -p -t \(s) '#{pane_in_mode}' 2>/dev/null)\" = 1 ]; then tmux send-keys -t \(s) -X cancel; fi; tmux send-keys -t \(s) -l \(shq(prompt)); tmux send-keys -t \(s) Enter"
+                let inner = "if [ \"$(tmux display-message -p -t \(s) '#{pane_in_mode}' 2>/dev/null)\" = 1 ]; then tmux send-keys -t \(s) -X cancel; fi; tmux send-keys -t \(s) -l \(shq(prompt)); sleep 0.5; tmux send-keys -t \(s) Enter"
                 _ = try await conn.target.executeCommand(loginShell(inner))
 
                 await conn.closeAll()
