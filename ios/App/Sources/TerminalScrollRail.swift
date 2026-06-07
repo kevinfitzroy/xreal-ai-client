@@ -5,7 +5,7 @@ import UIKit
 /// 只把"拖了多少点"换算成整行数发给 delegate,具体怎么滚(本地缓冲 / tmux 深历史)由 VC 决定。
 protocol TerminalScrollRailDelegate: AnyObject {
     /// - Parameters:
-    ///   - lines: 行数。**>0 = 朝历史(上/旧),<0 = 朝最新(下/新)**(内容跟手指:手指下移→看历史)。
+    ///   - lines: 行数。**>0 = 朝历史(上/旧),<0 = 朝最新(下/新)**(拨轮跟滚动同向:上拨→历史,下拨→最新)。
     ///   - inertia: 是否惯性阶段(此时 VC 不触发 tmux 深历史接力,避免高速狂发 SSH)。
     /// - Returns: true=已消费(还能继续滚);false=到硬边(rail 停掉惯性)。
     @discardableResult
@@ -103,10 +103,12 @@ final class TerminalScrollRail: UIView {
         }
     }
 
-    /// 点位移→整行,发给 delegate;每次发一下逐格触觉。内容跟手指:手指下移(points>0)→ 朝历史(lines>0)。
+    /// 点位移→整行,发给 delegate;每次发一下逐格触觉。
+    /// 方向 = 拨轮跟滚动同向(非"内容跟手指"):手指上拨(points<0)→ 往上滚(历史/旧,lines>0);
+    /// 手指下拨(points>0)→ 往下滚(最新/新,lines<0)。
     @discardableResult
     private func emit(points: CGFloat, inertia: Bool) -> Bool {
-        residual += points * gain
+        residual -= points * gain
         var lines = Int(residual / lineHeight)
         if lines == 0 { return true }
         lines = max(-maxStepPerFrame, min(maxStepPerFrame, lines))
