@@ -31,6 +31,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private let channelStrip = UILabel()
     // 终端右缘无极拨轮 + 底部"新消息"药丸(滚上去看历史时,新输出不弹底,点药丸跳回最新)。
     private let scrollRail = TerminalScrollRail(frame: .zero)
+    private let terminalDrawer = TerminalDrawer(frame: .zero)   // 抓柄上滑展开的低频键抽屉
     private let newMsgPill = UIView()
     private let newMsgLabel = UILabel()
     private var newMsgCount = 0
@@ -205,7 +206,20 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             default: break
             }
         }
-        kb.onHandlePan = { _, _ in }   // Task 2 接抽屉
+        kb.onHandlePan = { [weak self] state, ty in
+            guard let self else { return }
+            switch state {
+            case .began:
+                self.terminalDrawer.frame = self.view.bounds
+                self.view.bringSubviewToFront(self.terminalDrawer)
+                self.terminalDrawer.present(in: self.view.bounds)
+            case .changed:
+                self.terminalDrawer.drag(toProgress: -ty / 220)   // 上滑 ty<0 → progress 升
+            case .ended, .cancelled, .failed:
+                self.terminalDrawer.settle(open: -ty > 80)
+            default: break
+            }
+        }
         self.keyBar = kb
         updateTermAccessory()
 
@@ -252,6 +266,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         newMsgPill.addSubview(newMsgLabel)
         newMsgPill.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(jumpToLatest)))
         view.addSubview(newMsgPill)
+
+        // 低频键抽屉(抓柄上滑展开;默认收起,不占不挡)。
+        terminalDrawer.isHidden = true
+        terminalDrawer.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
+        view.addSubview(terminalDrawer)
 
         terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
         terminalBottomCover.isHidden = true
@@ -1020,6 +1039,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         term.isHidden = true
         scrollRail.isHidden = true
         hideNewMsgPill()
+        terminalDrawer.dismiss()
         setChannelStrip(.hidden)
         terminalBottomCover.isHidden = true
         _ = becomeFirstResponder()      // 列表态 VC 收硬件键 → 列表导航
@@ -1470,6 +1490,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 self.term.isHidden = true
                 self.scrollRail.isHidden = true
                 self.hideNewMsgPill()
+                self.terminalDrawer.dismiss()
                 _ = self.becomeFirstResponder()
             }
             self.layoutTerm()
@@ -1513,6 +1534,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             self.term.isHidden = true
             self.scrollRail.isHidden = true
             self.hideNewMsgPill()
+            self.terminalDrawer.dismiss()
             self.terminalBottomCover.isHidden = true
             self.edgeDragging = false
             self.clearForcedKeyboardOverlap()
