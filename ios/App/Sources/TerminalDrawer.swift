@@ -106,6 +106,7 @@ final class TerminalDrawer: UIView {
             let action = s.action
             b.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
         }
+        b.addPressFX()   // 轻触感 + 按压缩放
         return b
     }
 
@@ -151,9 +152,16 @@ final class TerminalDrawer: UIView {
         layoutPanel()
     }
 
-    func settle(open: Bool) {
+    /// 落位:弹簧(不回弹)+ 吃松手速度,丝滑收尾。落点给一下触感。尊重「减弱动态」。
+    func settle(open: Bool, velocity: CGFloat = 0) {
         isHidden = false
-        UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
+        Haptics.light.impactOccurred()
+        let reduce = UIAccessibility.isReduceMotionEnabled
+        let remaining = max(1, panelHeight * (open ? (1 - progress) : progress))
+        let v = min(8, abs(velocity) / remaining)   // 归一化初速度(fraction/sec)
+        UIView.animate(withDuration: reduce ? 0 : 0.42, delay: 0,
+                       usingSpringWithDamping: 0.86, initialSpringVelocity: reduce ? 0 : v,
+                       options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
             self.progress = open ? 1 : 0
             self.dim.alpha = open ? 1 : 0
             self.layoutPanel()
@@ -176,7 +184,7 @@ final class TerminalDrawer: UIView {
         case .changed:
             drag(toProgress: 1 - ty / max(1, panelHeight))   // 下滑 ty>0 → progress 减
         case .ended, .cancelled, .failed:
-            settle(open: ty < panelHeight * 0.3)             // 下滑不到三成 → 弹回展开,否则收起
+            settle(open: ty < panelHeight * 0.3, velocity: g.velocity(in: self).y)   // 下滑不到三成 → 弹回展开
         default:
             break
         }

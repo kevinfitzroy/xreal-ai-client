@@ -40,3 +40,37 @@ enum TermStyle {
     static let keyRadius: CGFloat = 10   // 键
     static let space: CGFloat = 8
 }
+
+/// 复用触感发生器(预热好,降低首次延迟)。
+enum Haptics {
+    static let light = UIImpactFeedbackGenerator(style: .light)
+    static let soft = UIImpactFeedbackGenerator(style: .soft)
+    static func prepareAll() { light.prepare(); soft.prepare() }
+}
+
+extension UIButton {
+    /// 按压反馈:按下=轻触感 + 缩放 0.93,松手=弹簧回弹。尊重「减弱动态」。
+    func addPressFX() {
+        addAction(UIAction { [weak self] _ in
+            Haptics.light.impactOccurred()
+            self?.pressFX(down: true)
+        }, for: .touchDown)
+        let up = UIAction { [weak self] _ in self?.pressFX(down: false) }
+        addAction(up, for: .touchUpInside)
+        addAction(up, for: .touchUpOutside)
+        addAction(up, for: .touchCancel)
+        addAction(up, for: .touchDragExit)
+    }
+
+    func pressFX(down: Bool) {
+        if UIAccessibility.isReduceMotionEnabled {
+            transform = down ? CGAffineTransform(scaleX: 0.96, y: 0.96) : .identity
+            return
+        }
+        UIView.animate(withDuration: down ? 0.07 : 0.30, delay: 0,
+                       usingSpringWithDamping: down ? 1 : 0.55, initialSpringVelocity: 0,
+                       options: [.allowUserInteraction, .beginFromCurrentState]) {
+            self.transform = down ? CGAffineTransform(scaleX: 0.93, y: 0.93) : .identity
+        }
+    }
+}

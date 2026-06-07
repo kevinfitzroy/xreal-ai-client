@@ -16,8 +16,8 @@ final class TerminalKeyBar: UIInputView {
     var onAction: ((TerminalKeyAction) -> Void)?
     /// mic 长按:phase + 相对按下点的纵向位移(上滑为负)。
     var onVoiceGesture: ((UIGestureRecognizer.State, CGFloat) -> Void)?
-    /// 抓柄 pan:phase + 纵向位移(上滑为负)。
-    var onHandlePan: ((UIGestureRecognizer.State, CGFloat) -> Void)?
+    /// 抓柄 pan:phase + 纵向位移(上滑为负)+ 纵向速度(用于落位弹簧的初速度)。
+    var onHandlePan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
 
     /// 由 VC 按 tmux copy-mode 状态驱动:true → Esc 变"安全绿" + 副标题"退出滚动"。
     var escCopyModeSafe: Bool = false {
@@ -70,11 +70,13 @@ final class TerminalKeyBar: UIInputView {
         configurePlainKey(escButton, title: "⎋", sub: "Esc", esc: true)
         escButton.configurationUpdateHandler = { [weak self] b in self?.applyEscConfiguration(b) }
         escButton.addAction(UIAction { [weak self] _ in self?.onAction?(.esc) }, for: .touchUpInside)
+        escButton.addPressFX()
         addSubview(escButton)
 
         // Enter
         configurePlainKey(enterButton, title: "↵", sub: "Enter", esc: false)
         enterButton.addAction(UIAction { [weak self] _ in self?.onAction?(.enter) }, for: .touchUpInside)
+        enterButton.addPressFX()
         addSubview(enterButton)
 
         // Mic(按住说话 / 上滑转录音)
@@ -114,12 +116,16 @@ final class TerminalKeyBar: UIInputView {
 
     @objc private func micGesture(_ g: UILongPressGestureRecognizer) {
         let y = g.location(in: self).y
-        if g.state == .began { micStartY = y }
+        switch g.state {
+        case .began: micStartY = y; micButton.pressFX(down: true)
+        case .ended, .cancelled, .failed: micButton.pressFX(down: false)
+        default: break
+        }
         onVoiceGesture?(g.state, y - micStartY)
     }
 
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
-        onHandlePan?(g.state, g.translation(in: self).y)
+        onHandlePan?(g.state, g.translation(in: self).y, g.velocity(in: self).y)
     }
 
     private func configurePlainKey(_ b: UIButton, title: String, sub: String, esc: Bool) {

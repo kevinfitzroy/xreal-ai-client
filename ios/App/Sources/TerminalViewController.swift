@@ -228,17 +228,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             default: break
             }
         }
-        kb.onHandlePan = { [weak self] state, ty in
+        kb.onHandlePan = { [weak self] state, ty, vy in
             guard let self else { return }
             switch state {
             case .began:
+                self.keyHaptic.prepare(); self.keyHaptic.impactOccurred()   // 抓柄触感
                 self.terminalDrawer.frame = self.view.bounds
                 self.view.bringSubviewToFront(self.terminalDrawer)
                 self.terminalDrawer.present(in: self.view.bounds)
             case .changed:
-                self.terminalDrawer.drag(toProgress: -ty / 220)   // 上滑 ty<0 → progress 升
+                self.terminalDrawer.drag(toProgress: -ty / 220)              // 上滑 ty<0 → progress 升
             case .ended, .cancelled, .failed:
-                self.terminalDrawer.settle(open: -ty > 80)
+                self.terminalDrawer.settle(open: -ty > 80 || -vy > 600, velocity: vy)  // 位移够 / 甩得快都展开
             default: break
             }
         }
