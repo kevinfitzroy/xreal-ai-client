@@ -2004,6 +2004,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if up, !tmuxModeLikely {
             keyHaptic.prepare(); keyHaptic.impactOccurred()
             flashHistoryHint()
+            // 关键:进 copy-mode 前把 SwiftTerm 视口拉回底部 live 区。否则视口还停在本地缓冲顶部,
+            // tmux copy-mode 的重绘落在屏外(live 区),用户看不到历史。本地缓冲 ↔ tmux 两套滚动的交接点。
+            term.scroll(toPosition: 1)
         }
         termPage(up: up)
         return true
