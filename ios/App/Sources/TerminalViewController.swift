@@ -197,12 +197,42 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // 触屏虚拟键盘:无硬件键盘时挂为终端 inputAccessoryView。
         let kb = TerminalKeyBar(width: view.bounds.width)
         kb.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
-        // 迷你条 🎤:按住说话(.began/.ended);上滑转录音的 .changed 在 Task 3 接。
-        kb.onVoiceGesture = { [weak self] state, _ in
+        // 迷你条 🎤:按住说话;按住不松手上滑过门槛(90pt)→ armed → 松手锁长录音。ty<0=上滑。
+        kb.onVoiceGesture = { [weak self] state, ty in
             guard let self else { return }
             switch state {
-            case .began: self.touchVoicePress(pressed: true)
-            case .ended, .cancelled, .failed: self.touchVoicePress(pressed: false)
+            case .began:
+                self.voiceArmed = false
+                self.touchVoicePress(pressed: true)
+            case .changed:
+                guard self.voice.currentState == .streaming else { return }
+                let up = -ty
+                if !self.voice.armedLock, up > 30 { self.voice.armedLock = true }   // 起滑即冻结流式刷新
+                if self.voice.armedLock {
+                    if up < 18 {                                                     // 拉回底部 → 解冻恢复流式
+                        self.voice.armedLock = false
+                        self.voiceArmed = false
+                        self.voice.reshowStreaming()
+                    } else {
+                        let nowArmed = up > 90                                        // 上滑过门槛 → armed
+                        if nowArmed != self.voiceArmed {
+                            self.voiceArmed = nowArmed
+                            if nowArmed {
+                                self.voiceOverlay.showArmed(text: self.voice.currentPartial ?? "")
+                                self.keyHaptic.impactOccurred()
+                            } else {
+                                self.voiceOverlay.show(status: "🎤 聆听中…", text: self.voice.currentPartial ?? "")
+                            }
+                        }
+                    }
+                }
+            case .ended:
+                if self.voiceArmed { self.voiceArmed = false; self.lockVoiceToRecording() }
+                else { self.voice.armedLock = false; self.touchVoicePress(pressed: false) }
+            case .cancelled, .failed:
+                self.voiceArmed = false
+                self.voice.armedLock = false
+                self.touchVoicePress(pressed: false)
             default: break
             }
         }
