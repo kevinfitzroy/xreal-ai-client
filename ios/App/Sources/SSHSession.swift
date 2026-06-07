@@ -122,13 +122,19 @@ final class SSHSession {
         }
     }
 
-    /// 经 SFTP 把本地字节写到远端临时文件,**复用既有连接**(同 execCapture 用独立 channel,不新建 SSH;
-    /// 经 via 跳板时也跟着隧道走)。给"粘贴图片"用:远端落盘后把绝对路径插进终端,Claude Code 按路径读图。
-    /// 远端固定目录 `/tmp/xreal-paste/`(已存在则忽略 mkdir)。返回远端绝对路径;未连接/失败 → nil。
+    /// 把本地字节写到远端临时文件,**复用既有连接**(不新建 SSH;经 via 跳板时也跟着隧道走)。
+    /// 给"粘贴图片"用:远端落盘后把绝对路径插进终端,Claude Code 按路径读图。远端固定目录 `/tmp/xreal-paste/`。
+    /// 返回远端绝对路径;未连接/失败 → nil。
+    ///
+    /// **直连走 SFTP**(对大图更快);**经跳板走 exec+base64**(#20:Citadel jump tunnel 上 SFTP 不工作,
+    /// 但 exec channel 正常)。是否跳板看 `self.jumpClient`。
     func uploadToRemoteTemp(_ data: Data, filename: String) async -> String? {
         guard let client = self.client else { return nil }
         let dir = "/tmp/xreal-paste"
         let remotePath = "\(dir)/\(filename)"
+        if jumpClient != nil {
+            return await uploadViaExec(client: client, data: data, dir: dir, remotePath: remotePath)
+        }
         do {
             let sftp = try await client.openSFTP()
             do {
@@ -145,6 +151,35 @@ final class SSHSession {
             }
         } catch {
             AgentLog.warn("terminal", "sftp upload failed path=\(remotePath): \(String(describing: error).prefix(140))")
+            return nil
+        }
+    }
+
+    /// 经跳板的二进制写入(#20):base64 走 **引号 heredoc** 写到 `<path>.b64`(内容不是命令行参数,不撞
+    /// ARG_MAX),再 `base64 -d`(GNU)`/-D`(BSD/macOS)解码到目标、清理临时。base64 单行、定界符独占一行
+    /// 不会撞;base64/mkdir/cat 都在基础 PATH,无需 login-shell。成功打 `XREAL_OK` 标记。
+    private func uploadViaExec(client: SSHClient, data: Data, dir: String, remotePath: String) async -> String? {
+        let b64 = data.base64EncodedString()          // 单行,字符集 [A-Za-z0-9+/=],无引号/特殊符
+        let b64file = remotePath + ".b64"
+        let delim = "XREAL_PASTE_B64_EOF"
+        let cmd = """
+        mkdir -p '\(dir)'
+        cat > '\(b64file)' <<'\(delim)'
+        \(b64)
+        \(delim)
+        if base64 -d < '\(b64file)' > '\(remotePath)' 2>/dev/null || base64 -D < '\(b64file)' > '\(remotePath)' 2>/dev/null; then rm -f '\(b64file)'; echo XREAL_OK; else rm -f '\(b64file)' '\(remotePath)'; echo XREAL_FAIL; fi
+        """
+        do {
+            var buf = try await client.executeCommand(cmd)
+            let out = buf.readString(length: buf.readableBytes) ?? ""
+            guard out.contains("XREAL_OK") else {
+                AgentLog.warn("terminal", "exec(base64) upload failed path=\(remotePath) out=\(out.prefix(60))")
+                return nil
+            }
+            AgentLog.info("terminal", "exec(base64) upload ok (via jump) path=\(remotePath) bytes=\(data.count)")
+            return remotePath
+        } catch {
+            AgentLog.warn("terminal", "exec(base64) upload error path=\(remotePath): \(String(describing: error).prefix(140))")
             return nil
         }
     }
