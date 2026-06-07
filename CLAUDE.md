@@ -193,6 +193,9 @@ GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正
 
 如果嫌每次写 `JAVA_HOME` 麻烦,可以 `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` 加进 `~/.zshrc`,或在 shell 里直接 `export` 一次。
 
+> **iOS 编译期可选功能**:`ios/App/Sources/BuildFeatures.swift` 集中放编译期开关(改常量 → 重编生效)。当前:
+> `scrollRail`(终端右缘无极拨轮,#24,**默认关** = 点击半屏翻页;弱网更稳,故 opt-in)。改完需 `cd ios && xcodegen generate`(若动过文件)再 build。详见 [`ios/README.md`](ios/README.md) 「拨轮(可选)」。
+
 ### 10.2 测试 / lint
 
 | 操作 | 命令 | 备注 |

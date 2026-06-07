@@ -38,6 +38,17 @@ printf '2222'     > "$DC/Documents/poc_port"   # 缺省 22
 throwaway sshd(碰不到用户真实 ~/.ssh):见 commit 说明 / 任务报告里的 sshd_config
 (高端口 + 自带 authorized_keys + `PubkeyAcceptedAlgorithms +ssh-rsa`,因为 Citadel 0.12 RSA 走 legacy ssh-rsa)。
 
+## 拨轮(可选功能,#24)
+
+终端右缘**无极拨轮**(连续滚 + 触顶接力 tmux 深历史 + 底部"新消息"药丸)是 **编译期可选** 功能,**默认关**。
+
+- **开关**:`ios/App/Sources/BuildFeatures.swift` 的 `static let scrollRail`。
+  - `false`(默认)= **点击半屏翻页**(点上半屏=上、中段=下,发 `Shift+↑/↓` 给 tmux copy-mode)。一次一格、一次 SSH 往返,**弱网更稳**。
+  - `true` = 右缘隐形拨轮(手指搭上显形、连续滚、惯性、逐行触觉)。本地缓冲丝滑滚,触顶按行发 SSH 接力 tmux —— **网络差时可能卡/抖**,故默认关。
+- **改完重编即生效**(`static let` 常量,关时不进运行路径):改 `scrollRail` → `cd ios && xcodegen generate`(若新加过文件)→ `xcodebuild`。
+- 手感常量(摩擦/增益/触觉疏密/接力限速)在 `TerminalScrollRail.swift` 顶部 + `TerminalViewController` 的 `handoffMinInterval`,真机给反馈后调。
+- 实现只取自 PR #25 的拨轮部分(其捆绑的"语音底部控制重做"未并入,单独评审)。
+
 ## 注意
 - 不 commit(用户没让)。`*.xcodeproj`、`DerivedData/`、throwaway key 已进 `.gitignore`。
 - 真机另说:需代码签名(`devicectl install` 要签名 .app),POC 不覆盖。
