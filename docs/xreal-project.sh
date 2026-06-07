@@ -23,8 +23,10 @@
 #      ② cron/crond 服务真在跑(@reboot 只在服务起着时触发;最小化云镜像常没起 → 行白装)。maestro 启动应自检二者。
 #   替代方案(更"正"但通常要 sudo 开 linger):systemd user service,见 agent-setup-guide.md。
 #
-#   <type> ∈ claude | agent | ssh | maestro
+#   <type> ∈ claude | codex | agent | ssh | maestro
 #     claude  — Claude Code 项目(启动命令默认 `claude`)
+#     codex   — OpenAI Codex CLI 项目(默认 `codex`;deepseek/official 用 --cmd 'codex --profile <名>'。
+#               状态 hooks 走 .codex/config.toml;⚠️ Codex 无 SessionEnd → 不报 disconnected,见 #18)
 #     agent   — 其它 AI agent(默认 `claude`,用 XREAL_AGENT_CMD 或 --cmd 改)
 #     ssh     — 普通 shell(配角终端:日志/REPL/手工命令,不自动起程序)
 #     maestro — Maestro 自己(host orchestrator,起在 <base>,每 host 一个,app 会 pin 到首位)
@@ -121,14 +123,11 @@ os.replace(tmp, path)
 PY
 }
 
-# 给一个 AI-agent project 部署「状态上报」:Claude Code hooks → agent-status.sh 写 <base>/.xreal/status.json。
-# session 名烤进 hook 命令(运行时零识别);app 一次性 cat status.json 显示 working/waiting/disconnected。
-# 幂等:agent-status.sh 不存在才写;settings.json 用 python merge(保留已有键,只覆盖我们这几个事件)。
-deploy_status_hooks() {
-  local dir="$1" session="$2" xr="$BASE/.xreal"
-  mkdir -p "$xr"
-  if [ ! -x "$xr/agent-status.sh" ]; then
-    cat > "$xr/agent-status.sh" <<'STATUS_SH'
+# 写状态上报脚本 agent-status.sh(claude 与 codex 共用,输出形状一样)。幂等:不存在才写。
+ensure_status_script() {
+  local xr="$1"; mkdir -p "$xr"
+  [ -x "$xr/agent-status.sh" ] && return 0
+  cat > "$xr/agent-status.sh" <<'STATUS_SH'
 #!/usr/bin/env bash
 # Claude Code hook 调用:agent-status.sh <session> <state>。写 status/<session>.json(状态不变保留 since)+ 聚合 status.json。
 set -euo pipefail
@@ -146,8 +145,15 @@ AGG="$(dirname "$DIR")/status.json"
   printf ']}'; } > "$AGG.tmp" && mv "$AGG.tmp" "$AGG"
 exit 0
 STATUS_SH
-    chmod +x "$xr/agent-status.sh"
-  fi
+  chmod +x "$xr/agent-status.sh"
+}
+
+# 给一个 AI-agent project 部署「状态上报」:Claude Code hooks → agent-status.sh 写 <base>/.xreal/status.json。
+# session 名烤进 hook 命令(运行时零识别);app 一次性 cat status.json 显示 working/waiting/disconnected。
+# 幂等:agent-status.sh 不存在才写;settings.json 用 python merge(保留已有键,只覆盖我们这几个事件)。
+deploy_status_hooks() {
+  local dir="$1" session="$2" xr="$BASE/.xreal"
+  ensure_status_script "$xr"
   mkdir -p "$dir/.claude"
   P_XR="$xr" P_SESSION="$session" P_DEST="$dir/.claude/settings.json" python3 - <<'PY'
 import json, os
@@ -169,6 +175,44 @@ PY
   echo "状态 hooks → $dir/.claude/settings.json (session=$session)"
 }
 
+# 给一个 Codex project 部署状态上报:复用 agent-status.sh,hooks 配进 project 的 .codex/config.toml。
+# 事件映射(Codex 无 SessionEnd → 不报 disconnected,退出停在 waiting,降级;见 orchestrator-CLAUDE.md / #18):
+#   UserPromptSubmit→working · Stop/SessionStart→waiting · PermissionRequest→needs-permission
+# 幂等:用 marker 注释判断,已有则跳过(append 到 config.toml 末尾,用 [[hooks.X]] 数组表,不破坏已有内容)。
+# ⚠️ 接入第一验:repo-local .codex/config.toml 的 hooks 在**交互** session 里可能不触发(codex#17532)。
+#    若状态不更新,回退 $CODEX_HOME(~/.codex/config.toml)全局 hooks,详见 orchestrator-CLAUDE.md。
+deploy_codex_status_hooks() {
+  local dir="$1" session="$2" xr="$BASE/.xreal"
+  ensure_status_script "$xr"
+  mkdir -p "$dir/.codex"
+  local cfg="$dir/.codex/config.toml"
+  if [ -f "$cfg" ] && grep -q 'xreal-status-hooks' "$cfg"; then
+    echo "Codex 状态 hooks 已在 $cfg(跳过)"; return 0
+  fi
+  cat >> "$cfg" <<TOML
+
+# >>> xreal-status-hooks (session=$session) — 自动生成,别手改。Codex 无 SessionEnd → 不报 disconnected。
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "$xr/agent-status.sh $session working"
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "$xr/agent-status.sh $session waiting"
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "$xr/agent-status.sh $session waiting"
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "$xr/agent-status.sh $session needs-permission"
+# <<< xreal-status-hooks
+TOML
+  echo "Codex 状态 hooks → $cfg (session=$session) ⚠️ 真 host 上验 hooks 是否 fire(codex#17532),不 fire 回退全局"
+}
+
 # 给 manifest 里所有 AI-agent project 部署/刷新状态 hooks(现有 project 一次性铺开;ssh 配角终端跳过)。
 cmd_hooks() {
   [ -f "$MANIFEST" ] || { echo "(manifest 还不存在)"; return 0; }
@@ -177,14 +221,17 @@ import json, os
 for p in json.load(open(os.environ["P_MANIFEST"])).get("projects", []):
     print(f'{p.get("type","")}\t{p.get("session","")}\t{p.get("dir","")}')
 PY
-    case "$type" in claude|agent|maestro) [ -n "$dir" ] && deploy_status_hooks "$dir" "$session";; esac
+    case "$type" in
+      claude|agent|maestro) [ -n "$dir" ] && deploy_status_hooks "$dir" "$session";;
+      codex)                [ -n "$dir" ] && deploy_codex_status_hooks "$dir" "$session";;
+    esac
   done
 }
 
 cmd_new() {
   local type="${1:-}" session="${2:-}"; shift 2 2>/dev/null || { echo "用法: new <type> <session> [显示名] [选项]" >&2; exit 2; }
   local name="" dir="" group="" startup="" attach=0
-  case "$type" in claude|agent|ssh|maestro) ;; *) echo "type 必须是 claude|agent|ssh|maestro" >&2; exit 2;; esac
+  case "$type" in claude|codex|agent|ssh|maestro) ;; *) echo "type 必须是 claude|codex|agent|ssh|maestro" >&2; exit 2;; esac
   [[ "$session" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "session 名只能用 [A-Za-z0-9_.-](会拼进 shell): $session" >&2; exit 2; }
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -209,16 +256,19 @@ cmd_new() {
       # maestro 死、没人能远程唤醒。已有事故:loop 被 Ctrl-C 带走掉回裸 shell)。
       maestro) startup='trap : INT; while :; do claude --continue 2>/dev/null || claude; sleep 1; done';;
       claude)  startup="claude";;
+      codex)   startup="codex";;   # deepseek/official:--cmd 'codex --profile <名>'(key 不进 git/manifest)
       agent)   startup="${XREAL_AGENT_CMD:-claude}";;
       ssh)     startup="";;   # 普通 shell,不自动起程序
     esac
   fi
 
   mkdir -p "$dir"
-  # AI-agent 项目:若工作目录还没有 CLAUDE.md,seed 一份「语音输入约定」(见 orchestrator-CLAUDE.md §6.2)。
-  # 已有 CLAUDE.md(自带的 repo)则不动 —— 由 Maestro 自行把那段追加进去,别覆盖人家的。
-  if { [ "$type" = claude ] || [ "$type" = agent ]; } && [ ! -e "$dir/CLAUDE.md" ]; then
-    cat > "$dir/CLAUDE.md" <<'MD'
+  # AI-agent 项目:若工作目录还没有指令文件,seed 一份「语音输入约定」(见 orchestrator-CLAUDE.md §6.2)。
+  # claude/agent 用 CLAUDE.md;codex 用 AGENTS.md(Codex 的项目指令文件)。已有则不动 —— 由 Maestro 自行追加,别覆盖。
+  local instr=""
+  case "$type" in claude|agent) instr="CLAUDE.md";; codex) instr="AGENTS.md";; esac
+  if [ -n "$instr" ] && [ ! -e "$dir/$instr" ]; then
+    cat > "$dir/$instr" <<'MD'
 ## 语音输入约定(xreal-ai-client)
 
 本会话的用户用 AR 眼镜 + 语音操作。以 `🎤 ` 开头的用户消息 = **语音转写**,可能有同音字 / 断词 / 专名识别错误。
@@ -227,10 +277,13 @@ cmd_new() {
 - **专名反复错** → 主动提示用户:"要把『X』加进这个项目的热词表吗?" 用户同意后,让 Maestro 把它加进本项目 manifest 的 `hotwords`。热词表是 **project 级**的,各项目独立。
 - 非 `🎤 ` 开头的消息是键盘输入,正常对待。
 MD
-    echo "seed 了语音约定 CLAUDE.md @ $dir/CLAUDE.md"
+    echo "seed 了语音约定 $instr @ $dir/$instr"
   fi
-  # AI-agent 项目(都跑 claude):部署状态上报 hooks。下次 claude 启动即生效。
-  case "$type" in claude|agent|maestro) deploy_status_hooks "$dir" "$session";; esac
+  # AI-agent 项目:部署状态上报 hooks。下次启动即生效。claude/agent/maestro 走 Claude Code hooks;codex 走 .codex。
+  case "$type" in
+    claude|agent|maestro) deploy_status_hooks "$dir" "$session";;
+    codex)                deploy_codex_status_hooks "$dir" "$session";;
+  esac
   if tmux has-session -t "$session" 2>/dev/null; then
     echo "tmux session '$session' 已存在,复用(不重起程序)"
   elif [ -n "$startup" ]; then
