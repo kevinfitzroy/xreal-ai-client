@@ -2181,10 +2181,17 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
         let stamp = Int(Date().timeIntervalSince1970 * 1000)
         let name = "paste-\(stamp).\(ext)"
-        setChannelStrip(.checking, "粘贴图片上传中…(\(data.count / 1024)KB)")
+        let kb = data.count / 1024
+        setChannelStrip(.checking, "粘贴图片上传中…(\(kb)KB)")
         let gen = sessionGen
         Task {
-            let path = await ssh.uploadToRemoteTemp(data, filename: name)
+            // 经跳板是分块上传(多次往返,会慢几秒)→ 回显百分比,免得看着像卡死。直连 SFTP 一步到位、不回调。
+            let path = await ssh.uploadToRemoteTemp(data, filename: name) { [weak self] frac in
+                Task { @MainActor in
+                    guard let self, self.view_ == .terminal, self.sessionGen == gen, self.ssh != nil else { return }
+                    self.setChannelStrip(.checking, "粘贴图片上传中… \(Int(frac * 100))%(\(kb)KB)")
+                }
+            }
             await MainActor.run {
                 guard self.view_ == .terminal, self.sessionGen == gen, self.ssh != nil else { return }
                 if let path {

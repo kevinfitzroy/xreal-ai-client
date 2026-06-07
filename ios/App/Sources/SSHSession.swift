@@ -128,12 +128,12 @@ final class SSHSession {
     ///
     /// **直连走 SFTP**(对大图更快);**经跳板走 exec+base64**(#20:Citadel jump tunnel 上 SFTP 不工作,
     /// 但 exec channel 正常)。是否跳板看 `self.jumpClient`。
-    func uploadToRemoteTemp(_ data: Data, filename: String) async -> String? {
+    func uploadToRemoteTemp(_ data: Data, filename: String, onProgress: ((Double) -> Void)? = nil) async -> String? {
         guard let client = self.client else { return nil }
         let dir = "/tmp/xreal-paste"
         let remotePath = "\(dir)/\(filename)"
         if jumpClient != nil {
-            return await uploadViaExec(client: client, data: data, dir: dir, remotePath: remotePath)
+            return await uploadViaExec(client: client, data: data, dir: dir, remotePath: remotePath, onProgress: onProgress)
         }
         do {
             let sftp = try await client.openSFTP()
@@ -155,31 +155,41 @@ final class SSHSession {
         }
     }
 
-    /// 经跳板的二进制写入(#20):base64 走 **引号 heredoc** 写到 `<path>.b64`(内容不是命令行参数,不撞
-    /// ARG_MAX),再 `base64 -d`(GNU)`/-D`(BSD/macOS)解码到目标、清理临时。base64 单行、定界符独占一行
-    /// 不会撞;base64/mkdir/cat 都在基础 PATH,无需 login-shell。成功打 `XREAL_OK` 标记。
-    private func uploadViaExec(client: SSHClient, data: Data, dir: String, remotePath: String) async -> String? {
-        let b64 = data.base64EncodedString()          // 单行,字符集 [A-Za-z0-9+/=],无引号/特殊符
+    /// 经跳板的二进制写入(#20):**分块** append。一条 exec 命令塞整张图的 base64(几 MB)会超 SSH 单包上限
+    /// → `NIOSSHError.tcpShutdown` 整条连接断(实测)。所以把 base64 切成每块 ≤24KB(远低于 SSH 规范保证的
+    /// 32KB 最小最大包),每块一条 `printf %s '<块>' >>/> file.b64`;最后 `base64 -d`(GNU)`/-D`(BSD/macOS)
+    /// 解码到目标、清理。base64 字符集 `[A-Za-z0-9+/=]` 无引号,单引号包裹安全;printf/base64 都在基础 PATH。
+    /// 代价:大图 = 多次往返(每次一个 exec channel),经跳板会慢几秒,但**稳**。成功打 `XREAL_OK`。
+    private func uploadViaExec(client: SSHClient, data: Data, dir: String, remotePath: String,
+                              onProgress: ((Double) -> Void)?) async -> String? {
+        let chars = Array(data.base64EncodedString())   // 单行 base64
+        let total = chars.count
+        let chunkSize = 24_000
         let b64file = remotePath + ".b64"
-        let delim = "XREAL_PASTE_B64_EOF"
-        let cmd = """
-        mkdir -p '\(dir)'
-        cat > '\(b64file)' <<'\(delim)'
-        \(b64)
-        \(delim)
-        if base64 -d < '\(b64file)' > '\(remotePath)' 2>/dev/null || base64 -D < '\(b64file)' > '\(remotePath)' 2>/dev/null; then rm -f '\(b64file)'; echo XREAL_OK; else rm -f '\(b64file)' '\(remotePath)'; echo XREAL_FAIL; fi
-        """
         do {
-            var buf = try await client.executeCommand(cmd)
+            var idx = 0
+            var first = true
+            while idx < total {
+                let end = min(idx + chunkSize, total)
+                let chunk = String(chars[idx..<end])
+                // 首块建目录 + 截断写(>);后续追加(>>)。
+                let cmd = (first ? "mkdir -p '\(dir)'; " : "")
+                    + "printf %s '\(chunk)' \(first ? ">" : ">>") '\(b64file)'"
+                _ = try await client.executeCommand(cmd)
+                idx = end; first = false
+                onProgress?(Double(idx) / Double(max(1, total)))
+            }
+            let decode = "if base64 -d < '\(b64file)' > '\(remotePath)' 2>/dev/null || base64 -D < '\(b64file)' > '\(remotePath)' 2>/dev/null; then rm -f '\(b64file)'; echo XREAL_OK; else rm -f '\(b64file)' '\(remotePath)'; echo XREAL_FAIL; fi"
+            var buf = try await client.executeCommand(decode)
             let out = buf.readString(length: buf.readableBytes) ?? ""
             guard out.contains("XREAL_OK") else {
-                AgentLog.warn("terminal", "exec(base64) upload failed path=\(remotePath) out=\(out.prefix(60))")
+                AgentLog.warn("terminal", "exec(base64) decode failed path=\(remotePath) out=\(out.prefix(60))")
                 return nil
             }
-            AgentLog.info("terminal", "exec(base64) upload ok (via jump) path=\(remotePath) bytes=\(data.count)")
+            AgentLog.info("terminal", "exec(base64) upload ok (via jump) path=\(remotePath) bytes=\(data.count) chunks=\((total + chunkSize - 1) / chunkSize)")
             return remotePath
         } catch {
-            AgentLog.warn("terminal", "exec(base64) upload error path=\(remotePath): \(String(describing: error).prefix(140))")
+            AgentLog.warn("terminal", "exec(base64) chunked upload error path=\(remotePath): \(String(describing: error).prefix(140))")
             return nil
         }
     }
