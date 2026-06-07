@@ -238,7 +238,21 @@ final class HomePanelView: UIView, UITableViewDelegate {
                 snap.appendItems(fresh(recProcessed.map { .recording($0.id) }), toSection: .processed)
             }
         }
+        // 数据刷新(非动画):diffable 只按 id 增删、不重配同 id 的 cell → 录音状态/关注卡内容(状态/why/时长)
+        // 会 stale。强制重配仍存在的 item(只重配旧快照里已有的,避免对新 item 误调)。折叠动画(toggle)
+        // 不重配,保持纯 insert/delete 协调。
+        if !animating {
+            let existing = Set(dataSource.snapshot().itemIdentifiers)
+            let reconf = snap.itemIdentifiers.filter(existing.contains)
+            if !reconf.isEmpty { snap.reconfigureItems(reconf) }
+        }
         dataSource.apply(snap, animatingDifferences: animating)
+        // diffable apply 也不刷 section header → 「已处理 (N)」计数会 stale;数据刷新后手动刷可见的那个。
+        if !animating,
+           let s = snap.sectionIdentifiers.firstIndex(of: .processed),
+           let h = table.headerView(forSection: s) as? ProcessedSectionHeader {
+            h.configure(count: recProcessed.count, expanded: processedExpanded)
+        }
     }
 
     private func sectionKind(at index: Int) -> HSection? {
