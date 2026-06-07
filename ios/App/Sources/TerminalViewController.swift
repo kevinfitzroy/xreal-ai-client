@@ -240,6 +240,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             case .changed:
                 let p = min(1, max(0, -ty / 220))                            // 上滑 ty<0 → progress 升
                 self.terminalDrawer.drag(toProgress: p)
+                self.drawerReserved = self.terminalDrawer.openHeight * p     // 终端跟手实时挤压(直接,无动画)
+                self.layoutTerm()
                 self.keyBar?.alpha = 1 - p                                   // 抽屉升起 → 迷你条同步淡出让位
             case .ended, .cancelled, .failed:
                 let open = -ty > 80 || -vy > 600                             // 位移够 / 甩得快都展开
@@ -1469,8 +1471,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let h = Self.terminalCornerInset
         let x = safe.left + h
         let top = safe.top + 6
-        // 抽屉展开时占用 drawerReserved(挤压终端);否则:有软键盘 overlap 已含底部,无则留 home indicator 安全区。
-        let bottom = drawerReserved > 0 ? drawerReserved : (overlap > 0 ? overlap : safe.bottom + 6)
+        // 抽屉占用 drawerReserved 时挤压终端;取 max 让"超过常规底(迷你条/安全区)才开始压",交接点相等不跳。
+        let bottom = max(drawerReserved, overlap > 0 ? overlap : safe.bottom + 6)
         let width = max(0, view.bounds.width - x - safe.right - h)
         let height = max(0, view.bounds.height - top - bottom)
         return CGRect(x: x, y: top, width: width, height: height)
