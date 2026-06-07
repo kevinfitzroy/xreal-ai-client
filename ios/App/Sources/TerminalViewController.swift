@@ -173,11 +173,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.addSubview(t)
         self.term = t
 
-        // 禁掉 SwiftTerm 的文本选择/编辑菜单手势(长按/双击选词/三击/拖选),与触摸翻页冲突;保留滚动 + 单击翻页。
+        // 禁掉 SwiftTerm 自带手势:长按/双击选词,**以及原生滚动 pan**——滚动统一交给右缘拨轮 scrollRail,
+        // 避免正文拖动(原生滚动)与拨轮各滚各的「双重滚动」。拨轮是独立 view、语音长按/右滑回列表是后加的手势,均不受影响。
         for gr in t.gestureRecognizers ?? [] {
             if gr is UILongPressGestureRecognizer { gr.isEnabled = false }
             else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
-            else if gr is UIPanGestureRecognizer, gr !== t.panGestureRecognizer { gr.isEnabled = false }
+            else if gr is UIPanGestureRecognizer { gr.isEnabled = false }
         }
         // terminal 触摸分区:底部语音热区(翻页改由右缘拨轮 scrollRail 接管,不再点屏翻页)。
         let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermVoicePress(_:)))
