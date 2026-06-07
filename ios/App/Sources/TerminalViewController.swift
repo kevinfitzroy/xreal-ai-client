@@ -196,6 +196,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // 触屏虚拟键盘:无硬件键盘时挂为终端 inputAccessoryView。
         let kb = TerminalKeyBar(width: view.bounds.width)
         kb.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
+        // 迷你条 🎤:按住说话(.began/.ended);上滑转录音的 .changed 在 Task 3 接。
+        kb.onVoiceGesture = { [weak self] state, _ in
+            guard let self else { return }
+            switch state {
+            case .began: self.touchVoicePress(pressed: true)
+            case .ended, .cancelled, .failed: self.touchVoicePress(pressed: false)
+            default: break
+            }
+        }
+        kb.onHandlePan = { _, _ in }   // Task 2 接抽屉
         self.keyBar = kb
         updateTermAccessory()
 
