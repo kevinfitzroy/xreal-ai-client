@@ -1,24 +1,30 @@
 import UIKit
 
-/// 终端低频键的上拉抽屉(VC 管理的覆盖层,默认收起)。由迷你条抓柄上滑拉起;点遮罩 / 面板下滑收起。
-/// 3×3 零空位,对齐设计 mock v8:
+/// 终端低频键的上拉抽屉(VC 管理的覆盖层,默认收起)。展开时由 VC **挤压终端区**(终端缩小 reflow),
+/// 抽屉占住底部腾出的空间——不遮挡正文、无变暗遮罩;面板之上的触摸穿透给终端(终端仍可用)。
+/// 3×3 零空位(mock v8):
 /// ```
 /// Paste     Del Word   ^C Break
 /// ⇧⇥ Mode   ↑          ^B Ctrl-B
 /// ←         ↓          →
 /// ```
-/// 方向键蓝调、Break 红调。键动作复用 `TerminalKeyAction` → VC `handleKeyBarAction`。
+/// 方向键蓝调、Break 红调。键动作复用 `TerminalKeyAction` → VC `handleKeyBarAction`。下滑面板收起。
 final class TerminalDrawer: UIView {
     var onAction: ((TerminalKeyAction) -> Void)?
     var onDismiss: (() -> Void)?
 
-    private let dim = UIView()
     private let panel = UIView()
     private let grabPill = UIView()
     private var buttons: [UIButton] = []
     private var progress: CGFloat = 0       // 0 收起 → 1 展开
     private var panelHeight: CGFloat = 0
     private var repeatTimer: Timer?
+
+    /// 展开时占用的高度(供 VC 扣进 termBaseFrame 挤压终端)。
+    var openHeight: CGFloat {
+        if panelHeight <= 0 { panelHeight = computePanelHeight() }
+        return panelHeight
+    }
 
     private enum Kind { case normal, arrow, brk }
     private struct Spec { let title: String; let sub: String; let action: TerminalKeyAction; let kind: Kind }
@@ -45,11 +51,6 @@ final class TerminalDrawer: UIView {
         isHidden = true
         backgroundColor = .clear
 
-        dim.backgroundColor = UIColor(white: 0, alpha: 0.38)
-        dim.alpha = 0
-        addSubview(dim)
-        dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dimTap)))
-
         panel.backgroundColor = TermStyle.surface
         panel.layer.cornerRadius = 16
         panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
@@ -69,6 +70,12 @@ final class TerminalDrawer: UIView {
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    /// 只接面板区域的触摸;面板之上(终端区)穿透 → 终端不被挡、仍可用。
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let v = super.hitTest(point, with: event)
+        return v === self ? nil : v
+    }
 
     private func makeButton(_ s: Spec) -> UIButton {
         let b = UIButton(type: .system)
@@ -117,7 +124,6 @@ final class TerminalDrawer: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        dim.frame = bounds
         panelHeight = computePanelHeight()
         layoutPanel()
     }
@@ -139,7 +145,6 @@ final class TerminalDrawer: UIView {
 
     // MARK: 开合(由迷你条抓柄 / 自身手势驱动)
 
-    /// 起手:就位(progress 保持当前,通常 0)并显示,后续 `drag(toProgress:)` 跟手抬升。
     func present(in container: CGRect) {
         frame = container
         setNeedsLayout(); layoutIfNeeded()
@@ -148,22 +153,20 @@ final class TerminalDrawer: UIView {
 
     func drag(toProgress p: CGFloat) {
         progress = max(0, min(1, p))
-        dim.alpha = progress
         layoutPanel()
     }
 
-    /// 落位:弹簧(不回弹)+ 吃松手速度,丝滑收尾。落点给一下触感。尊重「减弱动态」。
+    /// 落位:弹簧(不回弹)+ 吃松手速度。落点给一下触感。尊重「减弱动态」。
     func settle(open: Bool, velocity: CGFloat = 0) {
         isHidden = false
         Haptics.light.impactOccurred()
         let reduce = UIAccessibility.isReduceMotionEnabled
         let remaining = max(1, panelHeight * (open ? (1 - progress) : progress))
-        let v = min(8, abs(velocity) / remaining)   // 归一化初速度(fraction/sec)
+        let v = min(8, abs(velocity) / remaining)
         UIView.animate(withDuration: reduce ? 0 : 0.42, delay: 0,
                        usingSpringWithDamping: 0.86, initialSpringVelocity: reduce ? 0 : v,
                        options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]) {
             self.progress = open ? 1 : 0
-            self.dim.alpha = open ? 1 : 0
             self.layoutPanel()
         } completion: { _ in
             if !open { self.isHidden = true; self.onDismiss?() }
@@ -175,8 +178,6 @@ final class TerminalDrawer: UIView {
         guard !isHidden else { return }
         settle(open: false)
     }
-
-    @objc private func dimTap() { dismiss() }
 
     @objc private func panelPan(_ g: UIPanGestureRecognizer) {
         let ty = g.translation(in: self).y

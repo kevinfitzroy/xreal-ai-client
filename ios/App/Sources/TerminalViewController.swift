@@ -32,6 +32,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // 终端右缘无极拨轮 + 底部"新消息"药丸(滚上去看历史时,新输出不弹底,点药丸跳回最新)。
     private let scrollRail = TerminalScrollRail(frame: .zero)
     private let terminalDrawer = TerminalDrawer(frame: .zero)   // 抓柄上滑展开的低频键抽屉
+    private var drawerReserved: CGFloat = 0                     // 抽屉展开时占用的底部高度(挤压终端)
     private let newMsgPill = UIView()
     private let newMsgLabel = UILabel()
     private var newMsgCount = 0
@@ -243,6 +244,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             case .ended, .cancelled, .failed:
                 let open = -ty > 80 || -vy > 600                             // 位移够 / 甩得快都展开
                 self.terminalDrawer.settle(open: open, velocity: vy)
+                self.setDrawerReserved(open ? self.terminalDrawer.openHeight : 0)  // 挤压 / 还原终端
                 UIView.animate(withDuration: 0.25) { self.keyBar?.alpha = open ? 0 : 1 }
             default: break
             }
@@ -299,9 +301,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         // 低频键抽屉(抓柄上滑展开;默认收起,不占不挡)。
         terminalDrawer.isHidden = true
         terminalDrawer.onAction = { [weak self] a in self?.handleKeyBarAction(a) }
-        // 抽屉收起(下滑/点遮罩/任意关闭)→ 迷你条淡回。
+        // 抽屉收起(下滑/任意关闭)→ 还原终端尺寸 + 迷你条淡回。
         terminalDrawer.onDismiss = { [weak self] in
-            UIView.animate(withDuration: 0.2) { self?.keyBar?.alpha = 1 }
+            guard let self else { return }
+            self.setDrawerReserved(0)
+            UIView.animate(withDuration: 0.2) { self.keyBar?.alpha = 1 }
         }
         view.addSubview(terminalDrawer)
 
@@ -1465,8 +1469,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         let h = Self.terminalCornerInset
         let x = safe.left + h
         let top = safe.top + 6
-        // 有软键盘时 overlap 已含底部(键盘在 home indicator 之上,不重复扣);无键盘时留 home indicator 安全区。
-        let bottom = overlap > 0 ? overlap : safe.bottom + 6
+        // 抽屉展开时占用 drawerReserved(挤压终端);否则:有软键盘 overlap 已含底部,无则留 home indicator 安全区。
+        let bottom = drawerReserved > 0 ? drawerReserved : (overlap > 0 ? overlap : safe.bottom + 6)
         let width = max(0, view.bounds.width - x - safe.right - h)
         let height = max(0, view.bounds.height - top - bottom)
         return CGRect(x: x, y: top, width: width, height: height)
@@ -1970,6 +1974,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     // MARK: - 右缘无极拨轮(TerminalScrollRailDelegate)+ 滚动锁/新消息药丸
+
+    /// 设抽屉占用高度 + 动画挤压/还原终端(term.frame 变 → SwiftTerm resize 一次 → 一次 SIGWINCH)。
+    private func setDrawerReserved(_ h: CGFloat) {
+        guard drawerReserved != h else { return }
+        drawerReserved = h
+        UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+            self.layoutTerm()
+        }
+    }
 
     private func layoutScrollRail() {
         guard let term else { return }
