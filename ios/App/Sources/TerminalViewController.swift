@@ -67,7 +67,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
     private var edgeDragging = false
-    private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
     private weak var listLogPan: UIPanGestureRecognizer?   // 现管 home↔logs(原 list↔logs)
@@ -76,7 +75,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var homeDragging = false
 
     private enum ViewState { case home, list, terminal, logs }
-    private enum TerminalTouchZone { case voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
     private var view_ = ViewState.list
     private static let noEchoGraceSeconds: TimeInterval = 3.8
@@ -181,13 +179,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
             else if gr is UIPanGestureRecognizer { gr.isEnabled = false }
         }
-        // terminal 触摸分区:底部语音热区(翻页改由右缘拨轮 scrollRail 接管,不再点屏翻页)。
-        let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermVoicePress(_:)))
-        voicePress.minimumPressDuration = 0
-        voicePress.cancelsTouchesInView = true
-        voicePress.delegate = self
-        t.addGestureRecognizer(voicePress)
-        self.termVoicePress = voicePress
+        // 语音入口已迁到迷你条 🎤(终端正文不再有隐形语音热区)。保留右滑回列表。
         let returnPan = UIPanGestureRecognizer(target: self, action: #selector(handleTermReturnPan(_:)))
         returnPan.delegate = self
         returnPan.cancelsTouchesInView = false
@@ -590,10 +582,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if let termVoicePress, gestureRecognizer === termVoicePress {
-            guard view_ == .terminal, !term.isHidden else { return false }
-            return terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height) == .voice
-        }
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         if let termReturnPan, gestureRecognizer === termReturnPan {
             guard view_ == .terminal, !term.isHidden else { return false }
@@ -1676,58 +1664,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
-    @objc private func handleTermVoicePress(_ g: UILongPressGestureRecognizer) {
-        switch g.state {
-        case .began:
-            voiceArmed = false
-            touchVoicePress(pressed: true)   // voiceDown(流式语音)
-        case .changed:
-            // 手指一离开按压区(上滑过 80% 高度)就**冻结流式刷新**(armedLock),整个上滑过程 overlay
-            // 不再被 ASR partial 打乱;过目标带 → 红色 armed;拉回底部(>86%)→ 解冻恢复流式(滞回防抖)。
-            guard voice.currentState == .streaming else { return }
-            let y = g.location(in: voiceOverlay).y
-            let h = voiceOverlay.bounds.height
-            guard h > 0 else { return }
-            if !voice.armedLock, y < h * 0.80 { voice.armedLock = true }   // 开始上滑 → 冻结
-            if voice.armedLock {
-                if y > h * 0.86 {                                          // 拉回底部 → 解冻恢复流式
-                    voice.armedLock = false
-                    voiceArmed = false
-                    voice.reshowStreaming()
-                } else {
-                    let nowArmed = y < voiceOverlay.armZoneBottomY()
-                    if nowArmed != voiceArmed {
-                        voiceArmed = nowArmed
-                        if nowArmed {
-                            voiceOverlay.showArmed(text: voice.currentPartial ?? "")
-                            keyHaptic.impactOccurred()
-                        } else {
-                            voiceOverlay.show(status: "🎤 聆听中…", text: voice.currentPartial ?? "")   // 回白带(冻结)
-                        }
-                    }
-                }
-            }
-        case .ended:
-            if voiceArmed { voiceArmed = false; lockVoiceToRecording() }   // 松手在 overlay 上 → 锁录音
-            else { voice.armedLock = false; touchVoicePress(pressed: false) }   // 正常松手 → voiceUp(解冻)
-        case .cancelled, .failed:
-            voiceArmed = false
-            voice.armedLock = false
-            touchVoicePress(pressed: false)
-        default:
-            break
-        }
-    }
-
-    /// 终端触摸分区:仅保留**底部语音热区**(滚动改由右缘拨轮 scrollRail 接管,不再点屏翻页)。
-    private func terminalTouchZone(at p: CGPoint, height: CGFloat) -> TerminalTouchZone {
-        guard height > 0 else { return .none }
-        return p.y >= height * 13 / 15 ? .voice : .none
-    }
-
-    private func terminalBottomVoiceZoneHeight(in height: CGFloat) -> CGFloat {
-        max(0, height * 2 / 15)
-    }
+    /// 语音已迁到迷你条 🎤;终端正文不再有隐形语音热区。此值保留为 0(overlay/rail 布局仍调用,但不再扣底部)。
+    private func terminalBottomVoiceZoneHeight(in height: CGFloat) -> CGFloat { 0 }
 
     private func touchVoicePress(pressed: Bool) {
         if pressed {
