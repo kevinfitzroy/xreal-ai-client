@@ -11,7 +11,7 @@ import Network
 /// (点 cell 进 project、下拉刷新、滑动、状态栏可见);终端态 = **原生 SwiftTerm `TerminalView`**(沉浸式全屏)。
 /// WKWebView/index.html 已退出 iOS(只留 Android)。两个 view 叠放,按 view_ 显隐切换;
 /// 物理键(8BitDo)经 pressesBegan:列表态 → deckList 选择/打开;终端态 → SwiftTerm 直接编码;F1/F2 拦截。
-final class TerminalViewController: UIViewController, TerminalViewDelegate, TerminalHostKeyHandler, UIGestureRecognizerDelegate {
+final class TerminalViewController: UIViewController, TerminalViewDelegate, TerminalHostKeyHandler, UIGestureRecognizerDelegate, TerminalScrollRailDelegate {
 
     // 沉浸式全屏**只在终端态**(AR 眼镜):隐藏状态栏 + home indicator。列表态恢复标准 iOS chrome。
     override var prefersStatusBarHidden: Bool { view_ == .terminal }
@@ -27,9 +27,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var term: TerminalHostView!
     // 语音预览浮层(原生)。
     private let voiceOverlay = VoiceOverlayView()
-    private let pageCueView = UIImageView()
     private let terminalBottomCover = UIView()
     private let channelStrip = UILabel()
+    // 终端右缘无极拨轮 + 底部"新消息"药丸(滚上去看历史时,新输出不弹底,点药丸跳回最新)。
+    private let scrollRail = TerminalScrollRail(frame: .zero)
+    private let newMsgPill = UIView()
+    private let newMsgLabel = UILabel()
+    private var newMsgCount = 0
+    private var lastHandoffAt: CFTimeInterval = 0
+    private static let handoffMinInterval: CFTimeInterval = 0.12   // tmux 深历史接力限速(每拍一次 SSH)
     // 触屏虚拟键盘(原生),无硬件键盘时挂为终端的 inputAccessoryView。
     private var keyBar: TerminalKeyBar!
     // 按键震动(VC 主窗口上下文触发;keybar 在键盘窗口里触发观测不到震动)。
@@ -40,7 +46,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var cachedKeyBarOverlap: CGFloat = 0
     private var cachedKeyBarWidth: CGFloat = 0
     private var lastDelWordHapticAt: CFTimeInterval = 0
-    private var lastPageTapAt: CFTimeInterval = 0
     private var activeProjectType: ProjectType?
     private var activeHostConfig: HostConfig?
     private var activeViaConfig: HostConfig?
@@ -61,7 +66,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
     private var edgeDragging = false
-    private weak var termPageTap: UITapGestureRecognizer?
     private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
@@ -71,10 +75,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var homeDragging = false
 
     private enum ViewState { case home, list, terminal, logs }
-    private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
+    private enum TerminalTouchZone { case voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
     private var view_ = ViewState.list
-    private static let minPageTapInterval: CFTimeInterval = 0.22
     private static let noEchoGraceSeconds: TimeInterval = 3.8
 
     // Active PTY session(终端态活动;**列表态保活中也非 nil**,见 iOS.7)。
@@ -176,12 +179,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             else if let tap = gr as? UITapGestureRecognizer, tap.numberOfTapsRequired >= 2 { gr.isEnabled = false }
             else if gr is UIPanGestureRecognizer, gr !== t.panGestureRecognizer { gr.isEnabled = false }
         }
-        // terminal 触摸分区(SPEC §6):只按 term.frame 核心显示区切 5 份;vkey/inputAccessoryView 不参与计算。
-        let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
-        pageTap.cancelsTouchesInView = false
-        pageTap.delegate = self
-        t.addGestureRecognizer(pageTap)
-        self.termPageTap = pageTap
+        // terminal 触摸分区:底部语音热区(翻页改由右缘拨轮 scrollRail 接管,不再点屏翻页)。
         let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermVoicePress(_:)))
         voicePress.minimumPressDuration = 0
         voicePress.cancelsTouchesInView = true
@@ -224,11 +222,26 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.onStopRecording = { [weak self] in self?.finishVoiceRecording() }
         voiceOverlay.onCancelRecording = { [weak self] in self?.cancelVoiceRecording() }
         view.addSubview(voiceOverlay)
-        pageCueView.isHidden = true
-        pageCueView.alpha = 0
-        pageCueView.isUserInteractionEnabled = false
-        pageCueView.contentMode = .center
-        view.addSubview(pageCueView)
+        // 右缘无极拨轮(隐形触摸区,触摸显形;上下拖滚 + 惯性 + 逐行触觉)。
+        scrollRail.delegate = self
+        scrollRail.isHidden = true
+        view.addSubview(scrollRail)
+        // 底部"新消息"药丸:滚上去看历史时新输出不弹底,点它跳回最新。
+        newMsgPill.isHidden = true
+        newMsgPill.backgroundColor = UIColor(red: 0.15, green: 0.39, blue: 0.92, alpha: 1)
+        newMsgPill.layer.cornerRadius = 16
+        newMsgPill.layer.shadowColor = UIColor.black.cgColor
+        newMsgPill.layer.shadowOpacity = 0.35
+        newMsgPill.layer.shadowRadius = 8
+        newMsgPill.layer.shadowOffset = CGSize(width: 0, height: 3)
+        newMsgLabel.text = "▼ 新消息"
+        newMsgLabel.textColor = .white
+        newMsgLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        newMsgLabel.textAlignment = .center
+        newMsgPill.addSubview(newMsgLabel)
+        newMsgPill.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(jumpToLatest)))
+        view.addSubview(newMsgPill)
+
         terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
         terminalBottomCover.isHidden = true
         view.addSubview(terminalBottomCover)
@@ -517,11 +530,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if let termPageTap, gestureRecognizer === termPageTap {
-            guard view_ == .terminal, !term.isHidden, voice.currentState == .idle else { return false }
-            let zone = terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height)
-            return zone == .pageUp || zone == .pageDown
-        }
         if let termVoicePress, gestureRecognizer === termVoicePress {
             guard view_ == .terminal, !term.isHidden else { return false }
             return terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height) == .voice
@@ -703,7 +711,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 if self.channelStripState == .checking || self.channelStripState == .suspect || self.channelStripState == .reconnecting {
                     self.setChannelStrip(.hidden)
                 }
+                // 滚动锁:用户滚上去看历史(非底部)时,记下"有新内容"→ 底部药丸提示,不打断阅读。
+                let wasAtBottom = !self.term.canScroll || self.term.scrollPosition >= 0.999
                 self.term.feed(byteArray: ArraySlice(data))
+                if self.view_ == .terminal, !wasAtBottom, !self.tmuxModeLikely, self.term.canScroll {
+                    self.newMsgCount += 1
+                    self.showNewMsgPill()
+                }
             }
         }
         s.onClosed = { [weak self] in
@@ -965,10 +979,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         slideTerminal(toX: 0)
         view.bringSubviewToFront(term)
         view.bringSubviewToFront(channelStrip)
-        view.bringSubviewToFront(pageCueView)
+        view.bringSubviewToFront(scrollRail)
+        view.bringSubviewToFront(newMsgPill)
         view.bringSubviewToFront(voiceOverlay)
         view.bringSubviewToFront(terminalBottomCover)
         term.isHidden = false
+        scrollRail.isHidden = false
         _ = term.becomeFirstResponder()
         DispatchQueue.main.async { [weak self] in
             guard let self, self.view_ == .terminal, !self.edgeDragging else { return }
@@ -981,7 +997,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
     private func showListView(reloadList: Bool = true) {
         voiceOverlay.hide()
-        pageCueView.isHidden = true
         logPanel.isHidden = true
         logDragging = false
         homePanel.isHidden = true
@@ -992,6 +1007,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         _ = term.resignFirstResponder()
         clearForcedKeyboardOverlap()
         term.isHidden = true
+        scrollRail.isHidden = true
+        hideNewMsgPill()
         setChannelStrip(.hidden)
         terminalBottomCover.isHidden = true
         _ = becomeFirstResponder()      // 列表态 VC 收硬件键 → 列表导航
@@ -1389,6 +1406,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.frame = f
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
         layoutChannelStrip()
+        layoutScrollRail()
         if !terminalBottomCover.isHidden {
             terminalBottomCover.frame = CGRect(
                 x: x,
@@ -1406,9 +1424,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         slideTerminal(toX: view.bounds.width)
         view.bringSubviewToFront(term)
         view.bringSubviewToFront(channelStrip)
-        view.bringSubviewToFront(pageCueView)
+        view.bringSubviewToFront(scrollRail)
+        view.bringSubviewToFront(newMsgPill)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
+        scrollRail.isHidden = false
         _ = term.becomeFirstResponder()
     }
     private func cancelTerminalSlide(toX x: CGFloat, hideAfter: Bool = false) {
@@ -1420,6 +1440,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 _ = self.term.resignFirstResponder()
                 self.clearForcedKeyboardOverlap()
                 self.term.isHidden = true
+                self.scrollRail.isHidden = true
+                self.hideNewMsgPill()
                 _ = self.becomeFirstResponder()
             }
             self.layoutTerm()
@@ -1431,9 +1453,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if !edgeDragging { slideTerminal(toX: view.bounds.width) }
         view.bringSubviewToFront(term)
         view.bringSubviewToFront(channelStrip)
-        view.bringSubviewToFront(pageCueView)
+        view.bringSubviewToFront(scrollRail)
+        view.bringSubviewToFront(newMsgPill)
         view.bringSubviewToFront(voiceOverlay)
         term.isHidden = false
+        scrollRail.isHidden = false
         _ = term.becomeFirstResponder()
         navigationController?.setNavigationBarHidden(true, animated: false)
         setNeedsStatusBarAppearanceUpdate()
@@ -1459,6 +1483,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             self.slideTerminal(toX: width)
         } completion: { _ in
             self.term.isHidden = true
+            self.scrollRail.isHidden = true
+            self.hideNewMsgPill()
             self.terminalBottomCover.isHidden = true
             self.edgeDragging = false
             self.clearForcedKeyboardOverlap()
@@ -1515,6 +1541,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.frame = f
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
         layoutChannelStrip()
+        layoutScrollRail()
     }
 
     private func layoutChannelStrip() {
@@ -1525,20 +1552,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             width: term.frame.width,
             height: Self.channelStripHeight
         )
-    }
-
-    /// terminal 触摸分区:上半屏(0–0.5)→ 翻页上;中段(0.5–0.8)→ 翻页下;底部热区由 `handleTermVoicePress` 接管。
-    @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
-        guard view_ == .terminal else { return }
-        let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
-        guard zone == .pageUp || zone == .pageDown else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastPageTapAt >= Self.minPageTapInterval else { return }
-        lastPageTapAt = now
-        keyHaptic.prepare(); keyHaptic.impactOccurred()
-        let up = zone == .pageUp
-        termPage(up: up)
-        showPageCue(up: up)
     }
 
     func termPage(up: Bool) {
@@ -1626,18 +1639,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
-    /// 上/下翻页分界:落在终端核心区的**正中线**(0.5)。原为 0.4 偏高,导致向下翻页区压到中线以上、
-    /// 视觉上"吃掉"了向上翻页区(用户反馈)。向下翻页区下边界保持 0.8,其下留缓冲再接语音热区。
-    private static let pageSplitFraction: CGFloat = 0.5
-    private static let pageDownEndFraction: CGFloat = 4.0 / 5.0
-
+    /// 终端触摸分区:仅保留**底部语音热区**(滚动改由右缘拨轮 scrollRail 接管,不再点屏翻页)。
     private func terminalTouchZone(at p: CGPoint, height: CGFloat) -> TerminalTouchZone {
-        // `height` 来自 term.bounds.height,也就是已经排除 vkey 后的 terminal 核心高度。
         guard height > 0 else { return .none }
-        if p.y < height * Self.pageSplitFraction { return .pageUp }
-        if p.y < height * Self.pageDownEndFraction { return .pageDown }
-        if p.y >= height * 13 / 15 { return .voice }
-        return .none
+        return p.y >= height * 13 / 15 ? .voice : .none
     }
 
     private func terminalBottomVoiceZoneHeight(in height: CGFloat) -> CGFloat {
@@ -1649,30 +1654,6 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             keyHaptic.prepare(); keyHaptic.impactOccurred()
         }
         voiceKeyAction(pressed: pressed)
-    }
-
-    private func showPageCue(up: Bool) {
-        let split = term.bounds.height * Self.pageSplitFraction
-        let zoneY = term.frame.minY + (up ? 0 : split)
-        let zoneH = up ? split : term.bounds.height * Self.pageDownEndFraction - split
-        let zoneFrame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: zoneH)
-        let config = UIImage.SymbolConfiguration(pointSize: 58, weight: .semibold)
-        pageCueView.image = UIImage(systemName: up ? "arrow.up" : "arrow.down", withConfiguration: config)
-        pageCueView.tintColor = UIColor.white.withAlphaComponent(0.64)
-        pageCueView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
-        pageCueView.frame = zoneFrame
-        pageCueView.layer.borderWidth = 1 / UIScreen.main.scale
-        pageCueView.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-        pageCueView.layer.removeAllAnimations()
-        pageCueView.isHidden = false
-        pageCueView.alpha = 1
-        view.bringSubviewToFront(pageCueView)
-        view.bringSubviewToFront(voiceOverlay)
-        UIView.animate(withDuration: 0.32, delay: 0.50, options: [.curveEaseIn, .allowUserInteraction]) {
-            self.pageCueView.alpha = 0
-        } completion: { _ in
-            self.pageCueView.isHidden = true
-        }
     }
 
     // MARK: - App foreground → refetch status(列表态)
@@ -1955,7 +1936,132 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     // MARK: - SwiftTerm delegate(终端 → app)
     func send(source: TerminalView, data: ArraySlice<UInt8>) { sendToActivePTY(Data(data)) }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) { ssh?.resize(cols: newCols, rows: newRows) }
-    func scrolled(source: TerminalView, position: Double) {}
+    func scrolled(source: TerminalView, position: Double) {
+        if position >= 0.999 { newMsgCount = 0; hideNewMsgPill() }   // 回到底 → 清新消息提示 + 恢复跟随
+    }
+
+    // MARK: - 右缘无极拨轮(TerminalScrollRailDelegate)+ 滚动锁/新消息药丸
+
+    private func layoutScrollRail() {
+        guard let term else { return }
+        positionRail(in: term.frame)
+    }
+
+    private func positionRail(in f: CGRect) {
+        let voiceH = terminalBottomVoiceZoneHeight(in: f.height)
+        let w = TerminalScrollRail.hitWidth
+        scrollRail.frame = CGRect(x: f.maxX - w, y: f.minY, width: w, height: max(0, f.height - voiceH))
+        let rows = max(1, term?.getTerminal().rows ?? 24)
+        scrollRail.lineHeight = max(8, f.height / CGFloat(rows))
+        layoutNewMsgPill(in: f, voiceH: voiceH)
+    }
+
+    private func layoutNewMsgPill(in f: CGRect, voiceH: CGFloat) {
+        newMsgLabel.sizeToFit()
+        let w = max(110, newMsgLabel.bounds.width + 28)
+        let h: CGFloat = 32
+        newMsgPill.frame = CGRect(x: f.midX - w / 2, y: f.maxY - voiceH - h - 12, width: w, height: h)
+        newMsgLabel.frame = newMsgPill.bounds
+    }
+
+    /// rail 回调:把"滚 N 行"翻译成本地 SwiftTerm 滚动 / tmux 深历史接力。
+    /// `lines>0`=朝历史(上/旧),`<0`=朝最新(下/新)。返回 false=到硬边(rail 停惯性)。
+    @discardableResult
+    func terminalScrollRail(_ rail: TerminalScrollRail, scrollLines lines: Int, inertia: Bool) -> Bool {
+        guard view_ == .terminal, !term.isHidden, voice.currentState == .idle else { return false }
+        if lines > 0 {                       // 朝历史
+            if tmuxModeLikely { return handoffScroll(up: true) }            // 已在 copy-mode → 继续翻深历史
+            if term.canScroll, term.scrollPosition > 0 {
+                term.scrollUp(lines: lines)
+                updatePinAfterScroll()
+                return true
+            }
+            // 本地到顶(或无本地缓冲) → tmux 深历史接力(仅 tmux 类 project,且非惯性,避免狂发 SSH)
+            if activeProjectType?.isAiAgent == true, !inertia { return handoffScroll(up: true) }
+            return false                     // 纯 SSH 到顶 / 惯性到顶 → 停
+        } else if lines < 0 {                // 朝最新
+            if tmuxModeLikely { return handoffScroll(up: false) }
+            if term.canScroll {
+                term.scrollDown(lines: -lines)
+                updatePinAfterScroll()
+                return true
+            }
+            return false
+        }
+        return true
+    }
+
+    func terminalScrollRailDidBegin(_ rail: TerminalScrollRail) {}
+    func terminalScrollRailDidEnd(_ rail: TerminalScrollRail) {}
+
+    /// tmux 深历史接力:限速发 Shift+↑/↓(复用 termPage,内置置 tmuxModeLikely + copy-mode 轮询)。
+    /// 首次进 copy-mode 给一震 + 一闪提示。返回 true=视为已消费(吞掉限速期内的多余调用,保持手势连续)。
+    @discardableResult
+    private func handoffScroll(up: Bool) -> Bool {
+        let now = CACurrentMediaTime()
+        guard now - lastHandoffAt >= Self.handoffMinInterval else { return true }
+        lastHandoffAt = now
+        if up, !tmuxModeLikely {
+            keyHaptic.prepare(); keyHaptic.impactOccurred()
+            flashHistoryHint()
+        }
+        termPage(up: up)
+        return true
+    }
+
+    private func updatePinAfterScroll() {
+        if !term.canScroll || term.scrollPosition >= 0.999 { newMsgCount = 0; hideNewMsgPill() }
+    }
+
+    private func showNewMsgPill() {
+        newMsgLabel.text = "▼ 新消息"
+        if let term { layoutNewMsgPill(in: term.frame, voiceH: terminalBottomVoiceZoneHeight(in: term.frame.height)) }
+        view.bringSubviewToFront(newMsgPill)
+        guard newMsgPill.isHidden else { return }
+        newMsgPill.isHidden = false
+        newMsgPill.alpha = 0
+        UIView.animate(withDuration: 0.2) { self.newMsgPill.alpha = 1 }
+    }
+
+    private func hideNewMsgPill() {
+        guard !newMsgPill.isHidden else { return }
+        UIView.animate(withDuration: 0.18, animations: { self.newMsgPill.alpha = 0 }) { _ in
+            self.newMsgPill.isHidden = true
+        }
+    }
+
+    @objc private func jumpToLatest() {
+        if tmuxModeLikely {                  // 在 tmux 深历史 → ESC 退 copy-mode 回到底
+            tmuxModeLikely = false
+            sendToActivePTY(Data([27]))
+        } else {
+            term.scroll(toPosition: 1)       // 本地缓冲 → 直接到底
+        }
+        newMsgCount = 0
+        hideNewMsgPill()
+        keyHaptic.prepare(); keyHaptic.impactOccurred()
+    }
+
+    /// 进 tmux 深历史时一闪而过的提示(非常驻),提醒按 Esc 可退。
+    private func flashHistoryHint() {
+        guard let term else { return }
+        let l = UILabel()
+        l.text = "历史模式 · Esc 退"
+        l.font = .systemFont(ofSize: 12, weight: .semibold)
+        l.textColor = .white
+        l.backgroundColor = UIColor(white: 0, alpha: 0.62)
+        l.textAlignment = .center
+        l.sizeToFit()
+        let w = l.bounds.width + 24, h = l.bounds.height + 12
+        l.frame = CGRect(x: term.frame.midX - w / 2, y: term.frame.minY + 44, width: w, height: h)
+        l.layer.cornerRadius = h / 2
+        l.clipsToBounds = true
+        l.alpha = 0
+        view.addSubview(l)
+        UIView.animate(withDuration: 0.15, animations: { l.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.4, delay: 0.8, options: []) { l.alpha = 0 } completion: { _ in l.removeFromSuperview() }
+        }
+    }
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     func clipboardCopy(source: TerminalView, content: Data) {}

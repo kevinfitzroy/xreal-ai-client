@@ -34,3 +34,4 @@ ios/App/Frameworks/
 
 # 本地调研工具(含真实 frp server IP,不进 repo;见 issue #5 Mac 休眠断连调研)
 scripts/monitor-frp.sh
+.superpowers/
