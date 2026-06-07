@@ -132,7 +132,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        view.backgroundColor = Self.terminalBackgroundColor   // 终端安全区边距铺深色(列表态由 deckList 自身背景覆盖)
         navigationItem.title = "Agent Station"
         navigationItem.largeTitleDisplayMode = .always
         navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -1394,10 +1394,27 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         forcedKeyboardOverlap = nil
     }
 
+    /// 屏幕圆角避让:左右(及无键盘时的底部)额外留白,防止四角圆角切掉首/末列字母。
+    private static let terminalCornerInset: CGFloat = 10
+
     private func termBaseFrame() -> CGRect {
         let overlap = forcedKeyboardOverlap ?? keyboardOverlap
-        // terminal 核心区 = 整屏扣掉 vkey/inputAccessoryView overlap;5-unit 热区和 overlay 三段都基于这个 frame。
-        return CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - overlap))
+        // terminal 核心区 = 整屏扣掉**安全区**(刘海/灵动岛/home indicator)+ 圆角内边距 + vkey overlap。
+        // term + voiceOverlay + channelStrip + scrollRail + 触摸分区全基于此 frame,改这里一处即全局适配。
+        let safe = view.safeAreaInsets
+        let h = Self.terminalCornerInset
+        let x = safe.left + h
+        let top = safe.top + 6
+        // 有软键盘时 overlap 已含底部(键盘在 home indicator 之上,不重复扣);无键盘时留 home indicator 安全区。
+        let bottom = overlap > 0 ? overlap : safe.bottom + 6
+        let width = max(0, view.bounds.width - x - safe.right - h)
+        let height = max(0, view.bounds.height - top - bottom)
+        return CGRect(x: x, y: top, width: width, height: height)
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        if view_ == .terminal { layoutTerm() }   // 旋转/首次布局拿到真实安全区后重排终端
     }
     private func slideTerminal(toX x: CGFloat) {
         let base = termBaseFrame()
