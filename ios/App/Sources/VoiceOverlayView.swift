@@ -20,8 +20,16 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private var recStart: Date?
     private weak var tapGR: UITapGestureRecognizer?
     private weak var voicePressGR: UILongPressGestureRecognizer?
-    private static let cardBgNormal = UIColor(white: 0.08, alpha: 0.95)
+    private static let cardBgNormal = TermStyle.surface
     private static let cardBgArmed = UIColor(red: 0.22, green: 0.10, blue: 0.10, alpha: 0.96)
+    // 小巧录音条(替代原录音大卡片;贴底横排:● 计时 · 录音中 ···· 取消 | 结束)。
+    private let recordingBar = UIView()
+    private let recDot = UIView()
+    private let recTimeLabel = UILabel()
+    private let recStateLabel = UILabel()
+    private let recCancelBtn = UIButton(type: .system)
+    private let recStopBtn = UIButton(type: .system)
+    private var recBarBottom: NSLayoutConstraint!
     /// 固定位置的「上滑到这里转录音」目标带 —— 位置不随 card 文字增长漂移,armed 判定精准。
     private let armHint = UILabel()
 
@@ -49,8 +57,10 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
         // self 由 VC 设成 terminal 核心 frame(已排除 vkey);overlay 三段只在核心区内生效。
 
         card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = UIColor(white: 0.08, alpha: 0.95)
-        card.layer.cornerRadius = 12
+        card.backgroundColor = Self.cardBgNormal
+        card.layer.cornerRadius = TermStyle.radius
+        card.layer.borderWidth = 1
+        card.layer.borderColor = TermStyle.border.cgColor
         addSubview(card)
 
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -122,6 +132,49 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
         ])
 
+        // —— 小巧录音条(贴底横排:● 计时 · 录音中 ···· 取消 | 结束)——
+        recordingBar.translatesAutoresizingMaskIntoConstraints = false
+        recordingBar.backgroundColor = TermStyle.chrome
+        recordingBar.layer.cornerRadius = TermStyle.radius
+        recordingBar.layer.borderWidth = 1
+        recordingBar.layer.borderColor = UIColor(red: 0.42, green: 0.18, blue: 0.18, alpha: 1).cgColor
+        recordingBar.isHidden = true
+        addSubview(recordingBar)
+        recDot.translatesAutoresizingMaskIntoConstraints = false
+        recDot.backgroundColor = UIColor(red: 1, green: 0.36, blue: 0.32, alpha: 1)
+        recDot.layer.cornerRadius = 4.5
+        recTimeLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .bold)
+        recTimeLabel.textColor = UIColor(red: 1, green: 0.84, blue: 0.83, alpha: 1)
+        recStateLabel.text = "录音中"
+        recStateLabel.font = .systemFont(ofSize: 12)
+        recStateLabel.textColor = UIColor(red: 0.86, green: 0.62, blue: 0.62, alpha: 1)
+        var cc = UIButton.Configuration.plain(); cc.title = "取消"
+        cc.baseForegroundColor = TermStyle.muted; cc.buttonSize = .small
+        recCancelBtn.configuration = cc
+        recCancelBtn.addTarget(self, action: #selector(cancelTap), for: .touchUpInside)
+        var sc = UIButton.Configuration.filled(); sc.title = "结束"
+        sc.baseBackgroundColor = TermStyle.danger; sc.baseForegroundColor = .white
+        sc.cornerStyle = .medium; sc.buttonSize = .small
+        recStopBtn.configuration = sc
+        recStopBtn.addTarget(self, action: #selector(stopTap), for: .touchUpInside)
+        let recSpacer = UIView()
+        let recStack = UIStackView(arrangedSubviews: [recDot, recTimeLabel, recStateLabel, recSpacer, recCancelBtn, recStopBtn])
+        recStack.axis = .horizontal; recStack.alignment = .center; recStack.spacing = 8
+        recStack.translatesAutoresizingMaskIntoConstraints = false
+        recordingBar.addSubview(recStack)
+        recBarBottom = recordingBar.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24)
+        NSLayoutConstraint.activate([
+            recordingBar.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            recordingBar.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            recBarBottom,
+            recordingBar.heightAnchor.constraint(equalToConstant: 50),
+            recDot.widthAnchor.constraint(equalToConstant: 9),
+            recDot.heightAnchor.constraint(equalToConstant: 9),
+            recStack.leadingAnchor.constraint(equalTo: recordingBar.leadingAnchor, constant: 14),
+            recStack.trailingAnchor.constraint(equalTo: recordingBar.trailingAnchor, constant: -10),
+            recStack.centerYAnchor.constraint(equalTo: recordingBar.centerYAnchor),
+        ])
+
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.delegate = self
         addGestureRecognizer(tap)
@@ -179,6 +232,8 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private func resetRecordingChrome() {
         recTimer?.invalidate(); recTimer = nil
         recordingControls.isHidden = true
+        recordingBar.isHidden = true
+        card.isHidden = false
         card.backgroundColor = Self.cardBgNormal
         statusLabel.textColor = UIColor(white: 0.9, alpha: 1)   // 清掉录音超时的琥珀色
         hintLabel.textColor = UIColor(white: 0.53, alpha: 1)
@@ -212,10 +267,8 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     /// 录音锁定态:计时 + 停止/取消按钮;停用 overlay 自身手势让按钮收触摸。
     func showRecording() {
         stopSpinner()
-        card.backgroundColor = Self.cardBgNormal
-        textLabel.isHidden = true
-        hintLabel.isHidden = true
-        recordingControls.isHidden = false
+        card.isHidden = true            // 隐藏大卡,改用小巧录音条
+        recordingBar.isHidden = false
         armHint.isHidden = true
         tapGR?.isEnabled = false
         voicePressGR?.isEnabled = false
@@ -232,21 +285,18 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
     private func updateRecLabel() {
         let secs = max(0, Int(Date().timeIntervalSince(recStart ?? Date())))
         let mins = secs / 60
-        statusLabel.text = String(format: "🔴 录音中 · %02d:%02d", secs / 60, secs % 60)
-        // 时长建议提醒(issue #23 补充):0–15min 正常;15–30min 淡灰建议;>30min 琥珀 + 提示大文件慢。
+        recTimeLabel.text = String(format: "%d:%02d", mins, secs % 60)
+        // 时长建议:0–15min 正常;15–30min 建议;>30min 琥珀提醒(小巧条上压缩成一句状态)。
+        let normal = UIColor(red: 1, green: 0.84, blue: 0.83, alpha: 1)
         if mins >= 30 {
-            statusLabel.textColor = Self.amber
-            hintLabel.text = "已超过建议时长 · 大文件处理较慢"
-            hintLabel.textColor = Self.amber
-            hintLabel.isHidden = false
+            recTimeLabel.textColor = Self.amber
+            recStateLabel.text = "录音中 · 偏长,处理较慢"
         } else if mins >= 15 {
-            statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
-            hintLabel.text = "建议 ≤30 分钟"
-            hintLabel.textColor = UIColor(white: 1, alpha: 0.45)
-            hintLabel.isHidden = false
+            recTimeLabel.textColor = normal
+            recStateLabel.text = "录音中 · 建议≤30分"
         } else {
-            statusLabel.textColor = UIColor(white: 0.9, alpha: 1)
-            hintLabel.isHidden = true
+            recTimeLabel.textColor = normal
+            recStateLabel.text = "录音中"
         }
     }
 
@@ -277,7 +327,9 @@ final class VoiceOverlayView: UIView, UIGestureRecognizerDelegate {
 
     private func updateCardBottom() {
         guard cardBottomConstraint != nil else { return }
-        cardBottomConstraint.constant = -max(24, reservedBottomInset + 12)
+        let c = -max(24, reservedBottomInset + 12)
+        cardBottomConstraint.constant = c
+        recBarBottom?.constant = c
     }
 
     private func isBelowCard(_ p: CGPoint) -> Bool { p.y > card.frame.maxY }

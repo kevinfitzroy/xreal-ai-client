@@ -50,12 +50,14 @@ final class TerminalDrawer: UIView {
         addSubview(dim)
         dim.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(dimTap)))
 
-        panel.backgroundColor = UIColor(red: 0.06, green: 0.08, blue: 0.11, alpha: 0.99)
+        panel.backgroundColor = TermStyle.surface
         panel.layer.cornerRadius = 16
         panel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        panel.layer.borderWidth = 1
+        panel.layer.borderColor = TermStyle.border.cgColor
         addSubview(panel)
 
-        grabPill.backgroundColor = UIColor(white: 0.42, alpha: 1)
+        grabPill.backgroundColor = TermStyle.grab
         grabPill.layer.cornerRadius = 2.5
         panel.addSubview(grabPill)
         panel.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panelPan(_:))))
@@ -71,19 +73,19 @@ final class TerminalDrawer: UIView {
     private func makeButton(_ s: Spec) -> UIButton {
         let b = UIButton(type: .system)
         var cfg = UIButton.Configuration.plain()
-        cfg.background.cornerRadius = 10
+        cfg.background.cornerRadius = TermStyle.keyRadius
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
         cfg.background.strokeWidth = 1
         switch s.kind {
         case .normal:
-            cfg.background.backgroundColor = UIColor(white: 1, alpha: 0.10)
-            cfg.background.strokeColor = UIColor(white: 1, alpha: 0.16)
+            cfg.background.backgroundColor = TermStyle.keyBg
+            cfg.background.strokeColor = TermStyle.keyBorder
         case .arrow:
-            cfg.background.backgroundColor = UIColor(red: 0.30, green: 0.40, blue: 0.60, alpha: 0.20)
-            cfg.background.strokeColor = UIColor(red: 0.36, green: 0.44, blue: 0.60, alpha: 1)
+            cfg.background.backgroundColor = TermStyle.arrowBg
+            cfg.background.strokeColor = TermStyle.arrowBorder
         case .brk:
-            cfg.background.backgroundColor = UIColor(red: 0.75, green: 0.22, blue: 0.17, alpha: 0.20)
-            cfg.background.strokeColor = UIColor(red: 0.66, green: 0.22, blue: 0.18, alpha: 1)
+            cfg.background.backgroundColor = TermStyle.dangerBg
+            cfg.background.strokeColor = TermStyle.dangerBorder
         }
         var t = AttributedString(s.title)
         t.font = .systemFont(ofSize: s.kind == .arrow ? 18 : (s.title.count > 1 ? 14 : 18), weight: .semibold)
@@ -94,9 +96,9 @@ final class TerminalDrawer: UIView {
         }
         cfg.titleAlignment = .center
         b.configuration = cfg
-        b.tintColor = s.kind == .arrow ? UIColor(red: 0.81, green: 0.88, blue: 1, alpha: 1)
-                    : s.kind == .brk   ? UIColor(red: 1, green: 0.72, blue: 0.69, alpha: 1)
-                    :                    UIColor(white: 0.92, alpha: 1)
+        b.tintColor = s.kind == .arrow ? TermStyle.arrowInk
+                    : s.kind == .brk   ? TermStyle.dangerInk
+                    :                    TermStyle.ink
         if s.action == .delWord {
             b.addTarget(self, action: #selector(delWordDown), for: .touchDown)
             b.addTarget(self, action: #selector(repeatUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])

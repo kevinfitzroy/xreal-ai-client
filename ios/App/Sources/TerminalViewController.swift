@@ -96,7 +96,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var keepWarmWork: DispatchWorkItem?
     private static let keepWarmSeconds: Double = 90   // 短时间保活;超时关 client(tmux session 服务端仍在)
     private static let maxReconnectAttempts = 5              // 指数退避:1s→2s→4s→8s→16s,总约31s
-    private static let terminalBackgroundColor = UIColor(red: 0x28 / 255.0, green: 0x29 / 255.0, blue: 0x2b / 255.0, alpha: 1)
+    private static let terminalBackgroundColor = TermStyle.term
     private static let terminalForegroundColor = UIColor(red: 0xd6 / 255.0, green: 0xd8 / 255.0, blue: 0xdc / 255.0, alpha: 1)
     private static let channelStripHeight: CGFloat = 18
     private static let listResumeStartFraction: CGFloat = 0.25   // 右侧 75% 区域都可左滑回最近终端
@@ -275,14 +275,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         view.addSubview(scrollRail)
         // 底部"新消息"药丸:滚上去看历史时新输出不弹底,点它跳回最新。
         newMsgPill.isHidden = true
-        newMsgPill.backgroundColor = UIColor(red: 0.15, green: 0.39, blue: 0.92, alpha: 1)
+        newMsgPill.backgroundColor = TermStyle.chrome
         newMsgPill.layer.cornerRadius = 16
+        newMsgPill.layer.borderWidth = 1
+        newMsgPill.layer.borderColor = TermStyle.accent.cgColor
         newMsgPill.layer.shadowColor = UIColor.black.cgColor
         newMsgPill.layer.shadowOpacity = 0.35
         newMsgPill.layer.shadowRadius = 8
         newMsgPill.layer.shadowOffset = CGSize(width: 0, height: 3)
         newMsgLabel.text = "▼ 新消息"
-        newMsgLabel.textColor = .white
+        newMsgLabel.textColor = TermStyle.accent
         newMsgLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         newMsgLabel.textAlignment = .center
         newMsgPill.addSubview(newMsgLabel)

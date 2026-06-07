@@ -55,13 +55,13 @@ final class TerminalKeyBar: UIInputView {
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
         allowsSelfSizing = true
         overrideUserInterfaceStyle = .dark
-        backgroundColor = UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1)
+        backgroundColor = TermStyle.chrome
 
         // 抓柄(上滑展开抽屉)
         addSubview(handle)
         let pill = UIView()
         pill.tag = Self.pillTag
-        pill.backgroundColor = UIColor(white: 0.42, alpha: 1)
+        pill.backgroundColor = TermStyle.grab
         pill.layer.cornerRadius = 2.5
         handle.addSubview(pill)
         handle.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:))))
@@ -80,8 +80,8 @@ final class TerminalKeyBar: UIInputView {
         // Mic(按住说话 / 上滑转录音)
         var mcfg = UIButton.Configuration.plain()
         mcfg.background.backgroundColor = UIColor(red: 0.17, green: 0.31, blue: 0.23, alpha: 1)
-        mcfg.background.cornerRadius = 12
-        mcfg.background.strokeColor = UIColor(red: 0.24, green: 0.55, blue: 0.37, alpha: 1)
+        mcfg.background.cornerRadius = TermStyle.radius
+        mcfg.background.strokeColor = TermStyle.accent
         mcfg.background.strokeWidth = 1
         var mt = AttributedString("🎤 按住说话"); mt.font = .systemFont(ofSize: 14, weight: .semibold)
         mcfg.attributedTitle = mt
@@ -124,8 +124,8 @@ final class TerminalKeyBar: UIInputView {
 
     private func configurePlainKey(_ b: UIButton, title: String, sub: String, esc: Bool) {
         var cfg = UIButton.Configuration.plain()
-        cfg.background.backgroundColor = UIColor(white: 1, alpha: 0.12)
-        cfg.background.cornerRadius = 10
+        cfg.background.backgroundColor = TermStyle.keyBg
+        cfg.background.cornerRadius = TermStyle.keyRadius
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)
         var t = AttributedString(title); t.font = .systemFont(ofSize: 19, weight: .bold)
         cfg.attributedTitle = t
@@ -134,11 +134,11 @@ final class TerminalKeyBar: UIInputView {
         cfg.titlePadding = 1
         cfg.titleAlignment = .center
         b.configuration = cfg
-        b.tintColor = UIColor(white: 0.92, alpha: 1)
+        b.tintColor = TermStyle.ink
         if !esc {
             b.configurationUpdateHandler = { btn in
                 var c = btn.configuration
-                c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
+                c?.background.backgroundColor = btn.isHighlighted ? TermStyle.keyHighlight : TermStyle.keyBg
                 btn.configuration = c
             }
         }
@@ -154,7 +154,7 @@ final class TerminalKeyBar: UIInputView {
             var sub = AttributedString("退出滚动"); sub.font = .systemFont(ofSize: 7, weight: .semibold)
             c?.attributedSubtitle = sub
         } else {
-            c?.background.backgroundColor = btn.isHighlighted ? UIColor(white: 1, alpha: 0.34) : UIColor(white: 1, alpha: 0.12)
+            c?.background.backgroundColor = btn.isHighlighted ? TermStyle.keyHighlight : TermStyle.keyBg
             var sub = AttributedString("Esc"); sub.font = .systemFont(ofSize: 8, weight: .regular)
             c?.attributedSubtitle = sub
         }
