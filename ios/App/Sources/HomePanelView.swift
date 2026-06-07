@@ -5,7 +5,7 @@ import UIKit
 /// 深色 console 风:顶部 brand wordmark + 大数字 hero(几个 agent 等你)+ 计数 pill(运行/离线)+
 /// 「需要你关注」卡片(name + 一句话 why + host·session·时长 + 紧急度配色)。数据来自 §14 巡检 digest;
 /// 未巡检/无判官时 hooks 降级(§14.4)。overlay 面板范式同 LogPanelView(VC 用 slide 显隐)。
-final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
+final class HomePanelView: UIView, UITableViewDelegate {
 
     /// 一个「需要你关注」的 agent(跨 host 聚合后的一行)。
     struct HomeRow {
@@ -56,9 +56,13 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     private var recPending: [RecordingRow] = []
     private var recProcessed: [RecordingRow] = []
     private var processedExpanded = false   // 「已处理」默认折叠(issue #23)
-    private enum Section { case attention, pending, processed }
-    private var sectionOrder: [Section] = []
     private var footText = ""
+
+    // diffable:折叠/展开走 snapshot 动画(协调高度变化 → 丝滑)。
+    private var dataSource: HomeDataSource!
+    private var attentionByID: [String: HomeRow] = [:]   // item id → 原始结构(cellProvider 查回)
+    private var recByID: [String: RecordingRow] = [:]
+    private func aid(_ r: HomeRow) -> String { "\(r.host)|\(r.session)|\(r.name)" }
 
     private static let bg = UIColor(red: 0.043, green: 0.047, blue: 0.063, alpha: 1)   // 近黑 console 底
     private static let card = UIColor(red: 0.094, green: 0.102, blue: 0.125, alpha: 1)  // 卡片底
@@ -101,7 +105,6 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.translatesAutoresizingMaskIntoConstraints = false
         table.backgroundColor = .clear
         table.separatorStyle = .none
-        table.dataSource = self
         table.delegate = self
         table.register(HomeCell.self, forCellReuseIdentifier: "home")
         table.register(RecordingCell.self, forCellReuseIdentifier: "rec")
@@ -109,6 +112,21 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 72
         table.contentInset = UIEdgeInsets(top: 2, left: 0, bottom: 28, right: 0)
+
+        dataSource = HomeDataSource(tableView: table) { [weak self] tv, indexPath, item in
+            guard let self else { return UITableViewCell() }
+            switch item {
+            case .attention(let id):
+                let cell = tv.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
+                if let r = self.attentionByID[id] { cell.configure(r, cardColor: Self.card, ageText: Self.ageText) }
+                return cell
+            case .recording(let id):
+                let cell = tv.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
+                if let r = self.recByID[id] { cell.configure(r, cardColor: Self.card) }
+                return cell
+            }
+        }
+        dataSource.defaultRowAnimation = .fade
 
         emptyLabel.font = .systemFont(ofSize: 15, weight: .regular)
         emptyLabel.textColor = UIColor(white: 1, alpha: 0.45)
@@ -192,11 +210,40 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
 
         recPending = m.recordingsPending
         recProcessed = m.recordingsProcessed
-        sectionOrder = []
-        if !rows.isEmpty { sectionOrder.append(.attention) }
-        if !recPending.isEmpty { sectionOrder.append(.pending) }
-        if !recProcessed.isEmpty { sectionOrder.append(.processed) }
-        table.reloadData()
+        attentionByID = Dictionary(rows.map { (aid($0), $0) }, uniquingKeysWith: { a, _ in a })
+        recByID = Dictionary((recPending + recProcessed).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // 数据刷新(轮询)不做动画,避免每次巡检都抖;折叠/展开才动画(toggleProcessed)。
+        applySnapshot(animating: false)
+    }
+
+    /// 按当前数据 + 折叠态构建 snapshot。`.processed` section 永远在(只要有已处理录音),
+    /// 折叠时不塞 item(只剩可点 header)→ 展开/收拢就是一次 item insert/delete 的协调动画。
+    private func applySnapshot(animating: Bool) {
+        var snap = NSDiffableDataSourceSnapshot<HSection, HItem>()
+        // 防御性去重:diffable 撞重复 id 会崩。现有数据天然唯一(inbox 单目录文件名 + state 二分),
+        // 这里只是兜底——万一上游 id 唯一性被破坏,顶多少显示一行,绝不崩。保序保留首次出现。
+        var seen = Set<HItem>()
+        func fresh(_ items: [HItem]) -> [HItem] { items.filter { seen.insert($0).inserted } }
+        if !rows.isEmpty {
+            snap.appendSections([.attention])
+            snap.appendItems(fresh(rows.map { .attention(aid($0)) }), toSection: .attention)
+        }
+        if !recPending.isEmpty {
+            snap.appendSections([.pending])
+            snap.appendItems(fresh(recPending.map { .recording($0.id) }), toSection: .pending)
+        }
+        if !recProcessed.isEmpty {
+            snap.appendSections([.processed])
+            if processedExpanded {
+                snap.appendItems(fresh(recProcessed.map { .recording($0.id) }), toSection: .processed)
+            }
+        }
+        dataSource.apply(snap, animatingDifferences: animating)
+    }
+
+    private func sectionKind(at index: Int) -> HSection? {
+        let secs = dataSource.snapshot().sectionIdentifiers
+        return index < secs.count ? secs[index] : nil
     }
 
     private func rebuildPills(working: Int, offline: Int) {
@@ -223,30 +270,12 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         return l
     }
 
-    // MARK: - UITableView
-
-    func numberOfSections(in tableView: UITableView) -> Int { sectionOrder.count }
-
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        switch sectionOrder[section] {
-        case .attention:  return rows.count
-        case .pending:    return recPending.count
-        case .processed:  return processedExpanded ? recProcessed.count : 0   // 折叠时 0 行,只留 header
-        }
-    }
-
-    func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        switch sectionOrder[section] {
-        case .attention:  return "需要你关注"
-        case .pending:    return "待处理录音"
-        case .processed:  return nil   // 用自定义可点 header(viewForHeader)
-        }
-    }
+    // MARK: - UITableViewDelegate(cell/section 数据由 diffable dataSource 提供;这里只管 header 视图/高度/选中)
 
     /// 「已处理」用自定义可折叠 header(Files/Notes 折叠文件夹范式):箭头在前(展开旋转)+ 标题 + 右侧计数,
-    /// 整行可点带按压高亮、上下留白。其它 section 用系统默认。
+    /// 整行可点带按压高亮、上下留白。其它 section 用系统默认(标题由 HomeDataSource 给)。
     func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        guard sectionOrder[section] == .processed else { return nil }
+        guard sectionKind(at: section) == .processed else { return nil }
         let h = tableView.dequeueReusableHeaderFooterView(withIdentifier: ProcessedSectionHeader.reuseID) as! ProcessedSectionHeader
         h.configure(count: recProcessed.count, expanded: processedExpanded)
         h.onTap = { [weak self] in self?.toggleProcessed() }
@@ -254,39 +283,28 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
     }
 
     func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        sectionOrder[section] == .processed ? 60 : UITableView.automaticDimension
+        sectionKind(at: section) == .processed ? 60 : UITableView.automaticDimension
     }
     func tableView(_ tableView: UITableView, estimatedHeightForHeaderInSection section: Int) -> CGFloat {
-        sectionOrder[section] == .processed ? 60 : 28
+        sectionKind(at: section) == .processed ? 60 : 28
     }
 
     @objc private func toggleProcessed() {
         processedExpanded.toggle()
-        guard let s = sectionOrder.firstIndex(of: .processed) else { return }
-        table.reloadSections(IndexSet(integer: s), with: .fade)
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let rec: RecordingRow
-        switch sectionOrder[indexPath.section] {
-        case .attention:
-            let cell = tableView.dequeueReusableCell(withIdentifier: "home", for: indexPath) as! HomeCell
-            cell.configure(rows[indexPath.row], cardColor: Self.card, ageText: Self.ageText)
-            return cell
-        case .pending:    rec = recPending[indexPath.row]
-        case .processed:  rec = recProcessed[indexPath.row]
+        // 箭头弹簧旋转(立即,跟手);行展开/收拢走 snapshot 协调动画。
+        if let s = dataSource.snapshot().sectionIdentifiers.firstIndex(of: .processed),
+           let h = table.headerView(forSection: s) as? ProcessedSectionHeader {
+            h.setExpanded(processedExpanded, animated: true)
         }
-        let cell = tableView.dequeueReusableCell(withIdentifier: "rec", for: indexPath) as! RecordingCell
-        cell.configure(rec, cardColor: Self.card)
-        return cell
+        applySnapshot(animating: true)
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        switch sectionOrder[indexPath.section] {
-        case .attention:  onSelect?(rows[indexPath.row])
-        case .pending:    onSelectRecording?(recPending[indexPath.row])
-        case .processed:  onSelectRecording?(recProcessed[indexPath.row])
+        guard let item = dataSource.itemIdentifier(for: indexPath) else { return }
+        switch item {
+        case .attention(let id):  if let r = attentionByID[id] { onSelect?(r) }
+        case .recording(let id):  if let r = recByID[id] { onSelectRecording?(r) }
         }
     }
 
@@ -298,6 +316,31 @@ final class HomePanelView: UIView, UITableViewDataSource, UITableViewDelegate {
         if secs < 3600 { return "\(secs / 60)m" }
         if secs < 86400 { return "\(secs / 3600)h" }
         return "\(secs / 86400)d"
+    }
+}
+
+// MARK: - diffable 身份 + dataSource(snapshot 驱动折叠动画)
+
+/// section 标识。`.processed` 用自定义可点 header,其余系统默认标题(见 HomeDataSource)。
+private enum HSection: Hashable { case attention, pending, processed }
+
+/// item 标识(diffable 要 Hashable 且唯一)。attention 用 host|session|name;recording 用文件名 id。
+private enum HItem: Hashable {
+    case attention(String)
+    case recording(String)
+}
+
+/// 子类化只为给 `.attention`/`.pending` 提供系统默认 header 标题(diffable dataSource 不走 delegate 的
+/// titleForHeaderInSection)。`.processed` 返回 nil → 由 viewForHeaderInSection 出自定义可折叠 header。
+private final class HomeDataSource: UITableViewDiffableDataSource<HSection, HItem> {
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        let secs = snapshot().sectionIdentifiers
+        guard section < secs.count else { return nil }
+        switch secs[section] {
+        case .attention: return "需要你关注"
+        case .pending:   return "待处理录音"
+        case .processed: return nil
+        }
     }
 }
 
@@ -475,6 +518,7 @@ private final class ProcessedSectionHeader: UITableViewHeaderFooterView {
 
         chevron.tintColor = UIColor(white: 1, alpha: 0.55)
         chevron.contentMode = .center
+        chevron.image = UIImage(systemName: "chevron.right")   // 固定图,展开靠 transform 旋转(丝滑)
         chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         chevron.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -516,7 +560,18 @@ private final class ProcessedSectionHeader: UITableViewHeaderFooterView {
 
     func configure(count: Int, expanded: Bool) {
         countLabel.text = "\(count)"
-        chevron.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
+        setExpanded(expanded, animated: false)
+    }
+
+    /// 箭头旋转:展开 = chevron.right 顺时针转 90° → 指下;收起回正。带 = 弹簧动画。
+    func setExpanded(_ expanded: Bool, animated: Bool) {
+        let t: CGAffineTransform = expanded ? CGAffineTransform(rotationAngle: .pi / 2) : .identity
+        guard animated else { chevron.transform = t; return }
+        UIView.animate(withDuration: 0.34, delay: 0,
+                       usingSpringWithDamping: 0.72, initialSpringVelocity: 0.4,
+                       options: [.curveEaseOut, .allowUserInteraction]) {
+            self.chevron.transform = t
+        }
     }
     @objc private func fire() { onTap?() }
     @objc private func highlightOn() {
