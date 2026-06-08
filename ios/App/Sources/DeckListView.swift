@@ -232,7 +232,7 @@ final class DeckProjectCell: UITableViewCell {
     private static func symbol(_ t: ProjectType) -> String {
         switch t {
         case .claude:  return "sparkles"
-        case .codex:   return "chevron.left.forwardslash.chevron.right"
+        case .codex:   return "hexagon"
         case .agent:   return "cpu"
         case .maestro: return "command"
         case .ssh:     return "terminal"
@@ -241,12 +241,13 @@ final class DeckProjectCell: UITableViewCell {
     private static func tint(_ t: ProjectType) -> UIColor {
         switch t {
         case .claude:  return .systemPurple
-        case .codex:   return .systemGreen
+        case .codex:   return Self.codexGreen   // OpenAI 官方绿 #10a37f(两端一致)
         case .agent:   return .systemTeal
         case .maestro: return .systemIndigo
         case .ssh:     return .systemGray
         }
     }
+    static let codexGreen = UIColor(red: 0.063, green: 0.639, blue: 0.498, alpha: 1)   // #10a37f
     private static func typeLabel(_ t: ProjectType) -> String {
         switch t { case .claude: return "Claude"; case .codex: return "Codex"; case .agent: return "Agent"; case .maestro: return "Maestro"; case .ssh: return "SSH" }
     }
