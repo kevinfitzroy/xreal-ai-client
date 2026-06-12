@@ -128,6 +128,25 @@ enum XrayConfig {
         let ps: String
     }
 
+    /// vless share link 字段(SPEC §5.1)。与 vmess 不同:vless 是**明文 URI**(非 base64 JSON),
+    /// 无内置加密,安全全交给传输层 TLS/**Reality**。Reality 必带 publicKey(pbk)+ fingerprint(fp)。
+    struct VlessLink {
+        let address: String
+        let port: Int
+        let id: String           // uuid
+        let flow: String         // xtls-rprx-vision(Reality 常配)/ 空
+        let security: String     // reality / tls / none
+        let sni: String          // serverName
+        let fingerprint: String  // fp,uTLS 指纹(Reality 必需,缺省 chrome)
+        let publicKey: String    // pbk(Reality 必需)
+        let shortId: String      // sid(Reality)
+        let spiderX: String      // spx(Reality,可选)
+        let network: String      // tcp / ws / grpc
+        let path: String         // ws/grpc path
+        let host: String         // ws Host header
+        let ps: String           // #name
+    }
+
     static func parseVmess(_ url: String) throws -> VmessLink {
         guard url.hasPrefix("vmess://") else { throw XrayError.badConfig("不是 vmess:// 链接") }
         let raw = String(url.dropFirst("vmess://".count)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,6 +174,41 @@ enum XrayConfig {
             path: str("path"),
             allowInsecure: str("insecure") == "1" || ((obj["insecure"] as? Bool) ?? false),
             ps: str("ps")
+        )
+    }
+
+    /// 解析 vless 明文 URI:`vless://<uuid>@<host>:<port>?security=reality&pbk=..&sid=..&fp=..&flow=..&type=tcp#name`。
+    /// 与 parseVmess(base64 JSON)不同,vless 是标准 URL → 用 URLComponents 拆。Reality 缺 pbk 直接判错(否则连不上)。
+    static func parseVless(_ url: String) throws -> VlessLink {
+        guard url.hasPrefix("vless://") else { throw XrayError.badConfig("不是 vless:// 链接") }
+        guard let comps = URLComponents(string: url) else { throw XrayError.badConfig("vless URL 解析失败") }
+        guard let id = comps.user, !id.isEmpty else { throw XrayError.badConfig("vless 缺 uuid") }
+        guard let host = comps.host, !host.isEmpty else { throw XrayError.badConfig("vless 缺 host") }
+        guard let port = comps.port, (1...65535).contains(port) else { throw XrayError.badConfig("vless port 非法") }
+        var q: [String: String] = [:]
+        for item in comps.queryItems ?? [] where item.value != nil { q[item.name] = item.value }
+        func qv(_ k: String) -> String { q[k] ?? "" }
+        let security = qv("security").isEmpty ? "none" : qv("security")
+        let network = qv("type").isEmpty ? "tcp" : qv("type")
+        let pbk = qv("pbk")
+        if security.lowercased() == "reality" && pbk.isEmpty {
+            throw XrayError.badConfig("vless reality 缺 publicKey(pbk)")
+        }
+        return VlessLink(
+            address: host,
+            port: port,
+            id: id,
+            flow: qv("flow"),
+            security: security,
+            sni: qv("sni").isEmpty ? qv("peer") : qv("sni"),
+            fingerprint: qv("fp"),
+            publicKey: pbk,
+            shortId: qv("sid"),
+            spiderX: qv("spx"),
+            network: network,
+            path: qv("path"),
+            host: qv("host"),
+            ps: comps.fragment ?? ""
         )
     }
 
@@ -207,6 +261,90 @@ enum XrayConfig {
             ss["wsSettings"] = ws
         }
         return ss
+    }
+
+    static func buildVless(link: VlessLink, localPort: Int, targetHost: String, targetPort: Int, serverIp: String?) throws -> String {
+        let inbound: [String: Any] = [
+            "tag": "ssh-in",
+            "listen": "127.0.0.1",
+            "port": localPort,
+            "protocol": "dokodemo-door",
+            "settings": [
+                "address": targetHost,
+                "port": targetPort,
+                "network": "tcp",
+                "followRedirect": false,
+            ],
+        ]
+        var user: [String: Any] = ["id": link.id, "encryption": "none"]
+        if !link.flow.isEmpty { user["flow"] = link.flow }   // XTLS flow 只在 outbound user 上
+        let vnext: [String: Any] = [
+            "address": serverIp ?? link.address,
+            "port": link.port,
+            "users": [user],
+        ]
+        let outbound: [String: Any] = [
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": ["vnext": [vnext]],
+            "streamSettings": vlessStreamSettings(link),
+        ]
+        let root: [String: Any] = [
+            "log": ["loglevel": "warning"],
+            "inbounds": [inbound],
+            "outbounds": [outbound],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: root, options: [])
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    private static func vlessStreamSettings(_ link: VlessLink) -> [String: Any] {
+        var ss: [String: Any] = ["network": link.network]
+        let sni = link.sni.isEmpty ? link.address : link.sni
+        switch link.security.lowercased() {
+        case "reality":
+            ss["security"] = "reality"
+            var r: [String: Any] = [
+                "serverName": sni,
+                "publicKey": link.publicKey,
+                "fingerprint": link.fingerprint.isEmpty ? "chrome" : link.fingerprint,  // uTLS 指纹必填
+            ]
+            if !link.shortId.isEmpty { r["shortId"] = link.shortId }
+            if !link.spiderX.isEmpty { r["spiderX"] = link.spiderX }
+            ss["realitySettings"] = r
+        case "tls":
+            ss["security"] = "tls"
+            var t: [String: Any] = ["serverName": sni, "allowInsecure": false]
+            if !link.fingerprint.isEmpty { t["fingerprint"] = link.fingerprint }
+            ss["tlsSettings"] = t
+        default:
+            break   // security=none:裸 tcp(少见,合法)
+        }
+        if link.network.lowercased() == "ws" {
+            var ws: [String: Any] = ["path": link.path.isEmpty ? "/" : link.path]
+            if !link.host.isEmpty { ws["headers"] = ["Host": link.host] }
+            ss["wsSettings"] = ws
+        }
+        return ss
+    }
+
+    /// 统一入口:按 `url` 前缀分派 vmess/vless,解析 → resolve 域名(gomobile xray 内部 DNS 会超时,
+    /// 故传入 IP,SNI 仍域名)→ 生成 xray JSON。XrayProxy 只调这个;新增协议只在此加分支。
+    static func makeConfig(url: String, localPort: Int, targetHost: String, targetPort: Int,
+                           resolve: (String) -> String?) throws -> (config: String, server: String, port: Int, ip: String?) {
+        if url.hasPrefix("vless://") {
+            let link = try parseVless(url)
+            let ip = resolve(link.address)
+            let cfg = try buildVless(link: link, localPort: localPort, targetHost: targetHost, targetPort: targetPort, serverIp: ip)
+            return (cfg, link.address, link.port, ip)
+        }
+        if url.hasPrefix("vmess://") {
+            let link = try parseVmess(url)
+            let ip = resolve(link.address)
+            let cfg = try build(link: link, localPort: localPort, targetHost: targetHost, targetPort: targetPort, serverIp: ip)
+            return (cfg, link.address, link.port, ip)
+        }
+        throw XrayError.badConfig("不支持的代理协议(仅 vmess/vless):\(url.prefix(12))")
     }
 
     private static func decodeBase64(_ s: String) -> Data? {
@@ -279,10 +417,9 @@ enum XrayProxy {
             AgentLog.error("xray", "\(hostName): bridge missing")
             throw XrayError.unavailable("Xraybridge.framework 未集成,SSH-over-443 不可用")
         }
-        let link = try XrayConfig.parseVmess(proxy.url)
-        let serverIp = resolveAddress(link.address)
-        let config = try XrayConfig.build(link: link, localPort: proxy.localPort, targetHost: targetHost, targetPort: targetPort, serverIp: serverIp)
-        XrayDebugLog.append("start \(hostName) proxy=\(proxy.name) localPort=\(proxy.localPort) vmess=\(link.address):\(link.port) resolved=\(serverIp ?? "-")")
+        let made = try XrayConfig.makeConfig(url: proxy.url, localPort: proxy.localPort, targetHost: targetHost, targetPort: targetPort, resolve: resolveAddress)
+        let config = made.config
+        XrayDebugLog.append("start \(hostName) proxy=\(proxy.name) localPort=\(proxy.localPort) server=\(made.server):\(made.port) resolved=\(made.ip ?? "-")")
         AgentLog.info("xray", "\(hostName): start proxy=\(proxy.name) localPort=\(proxy.localPort) target=\(targetHost):\(targetPort)")
         try bridge.start(key: key, config: config)
 
@@ -297,7 +434,7 @@ enum XrayProxy {
         Thread.sleep(forTimeInterval: 0.5)
         XrayDebugLog.append("started \(hostName) localPort=\(proxy.localPort)")
         AgentLog.info("xray", "\(hostName): started localPort=\(proxy.localPort)")
-        NSLog("[XrayProxy] start \(key) via \(link.address)\(serverIp.map { "[\($0)]" } ?? ""):\(link.port) → 127.0.0.1:\(proxy.localPort)")
+        NSLog("[XrayProxy] start \(key) via \(made.server)\(made.ip.map { "[\($0)]" } ?? ""):\(made.port) → 127.0.0.1:\(proxy.localPort)")
     }
 
     static func stopAll() {

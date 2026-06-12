@@ -36,7 +36,7 @@ struct SshConfig {
     let privateKeyPem: String
 }
 
-/// Host-owned tunnel for SSH-over-443 (SPEC §5.1). `url` is a standard `vmess://` share link.
+/// Host-owned tunnel for SSH-over-443 (SPEC §5.1). `url` is a standard `vmess://` or `vless://` (Reality) share link.
 struct ProxyConfig {
     let name: String
     let localPort: Int
