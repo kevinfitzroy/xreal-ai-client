@@ -4,7 +4,8 @@ import Foundation
 /// 终端页录音的 Live Activity 控制(issue #23 P2)。锁屏 / 灵动岛显示「正在录音 + 计时」,缓解息屏后
 /// 「到底还在不在录」的焦虑。展示型(无交互按钮),解锁后回 app 上滑停止。
 ///
-/// 配合 `UIBackgroundModes: audio`(Info.plist)—— 否则息屏 app 被挂起、录音会停,Live Activity 也就名不副实。
+/// ⚠️ 已移除 `UIBackgroundModes: audio`(App Store 2.5.4 拒,见 Info.plist 注释 + issue #30):息屏/切后台后
+/// app 会被挂起、录音停;本 Live Activity 当前只在「前台锁定录音」期间名副其实。若日后恢复后台续录需重加该键。
 /// 计时靠 widget 端 `Text(timerInterval:)` 自走,这里只在 开始/结束 各发一次,不做每秒 push。
 enum RecordingLiveActivity {
     private static var current: Activity<RecordingActivityAttributes>?
