@@ -301,10 +301,10 @@ final class VolcAsr: Asr {
         private func schedulePing() {
             let item = DispatchWorkItem { [weak self] in
                 guard let self, !self.cancelled, !self.done else { return }
-                self.task.sendPing { err in
+                self.task.sendPing { [weak self] err in
                     if let err {
-                        self.queue.async {
-                            guard !self.cancelled, !self.done else { return }
+                        self?.queue.async {
+                            guard let self, !self.cancelled, !self.done else { return }
                             NSLog("[VolcAsr] ping failed: \(err.localizedDescription)")
                             self.resolveError("连接中断，请重试")
                         }
