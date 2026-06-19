@@ -10,6 +10,7 @@ final class DeckNavController: UINavigationController {
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
@@ -58,6 +59,26 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             terminalVC?.reportImportFailure("\(error)")
             return false
         }
+    }
+
+    // MARK: - 后台保活(issue #34):切后台申请有限执行窗口(iOS 约 30s),让 SSH/PTY/xray 在窗口内不被
+    // 立刻冻结 → 短暂切走(看通知/回消息)再切回时连接还活着;窗口耗尽或回前台后若已断,走现有优雅重连。
+    // ⚠️ 做不到长时间后台驻留(iOS 模型硬约束);只把"切个微信回来终端就死"改善成"短暂切走能续上"。
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        bgTask = application.beginBackgroundTask(withName: "keep-ssh-warm") { [weak self] in
+            self?.endBgTask()   // expiration:窗口耗尽,必须自己结束 task,否则被强杀
+        }
+        AgentLog.info("app", "enter background, bgTask granted=\(bgTask != .invalid)")
+    }
+
+    func applicationWillEnterForeground(_ application: UIApplication) {
+        endBgTask()   // 回前台不再需要后台预算(终端态主动重连在 TerminalViewController 前台观察者里)
+    }
+
+    private func endBgTask() {
+        guard bgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(bgTask)
+        bgTask = .invalid
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
