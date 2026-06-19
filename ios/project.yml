@@ -9,7 +9,7 @@ options:
 # (含内嵌的 ShareExtension + RecordingWidget extension)。避免手滑选到 RecordingWidget scheme:
 # 那个 widget 只有 Live Activity、没主屏小组件,单跑会报「Failed to show Widget」(Code=8)。
 schemes:
-  Agent Station:
+  Agent Deck:
     build:
       targets:
         XrealPOC: all
@@ -54,10 +54,9 @@ targets:
     dependencies:
       - package: Citadel
       - package: SwiftTerm
-      # 嵌入「分享到 Agent Station」扩展(接收语音备忘录等分享的音频文件)。
-      # 真机首次装需在 Xcode Run 一次开通 App Group provisioning(CLI 签不了带新能力的 profile)。
+      # 付费开发者账号后恢复(App ID 名额不再受限)。
+      # ShareExtension = 分享音频进 app(会议纪要链路);RecordingWidget = 锁屏/灵动岛录音 Live Activity。
       - target: ShareExtension
-      # 嵌入录音 Live Activity widget extension(锁屏/灵动岛录音状态,#23 P2)。
       - target: RecordingWidget
     postBuildScripts:
       - name: Stamp Git revision
@@ -93,7 +92,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient
-        PRODUCT_NAME: Agent Station
+        PRODUCT_NAME: Agent Deck
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: App/Info.plist
         GENERATE_INFOPLIST_FILE: NO
@@ -103,7 +102,7 @@ targets:
         # App Group:读 ShareExtension 落进来的共享音频收件箱(AudioInbox)。
         CODE_SIGN_ENTITLEMENTS: App/XrealPOC.entitlements
 
-  # 「分享到 Agent Station」Share Extension —— 接收音频文件存进 App Group 共享收件箱。
+  # 「分享到 Agent Deck」Share Extension —— 接收音频文件存进 App Group 共享收件箱。
   # 刻意精简:不依赖 Citadel/SwiftTerm,只用 UIKit + Shared/AudioInbox.swift。
   ShareExtension:
     type: app-extension
@@ -116,7 +115,7 @@ targets:
       Release: BuildSettings.xcconfig
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.ShareExtension
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.shareext
         PRODUCT_NAME: ShareExtension
         INFOPLIST_FILE: ShareExtension/Info.plist
         GENERATE_INFOPLIST_FILE: NO
@@ -138,7 +137,7 @@ targets:
       Release: BuildSettings.xcconfig
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.RecordingWidget
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.kevinfitzroy.xrealclient.recwidget
         PRODUCT_NAME: RecordingWidget
         INFOPLIST_FILE: RecordingWidget/Info.plist
         GENERATE_INFOPLIST_FILE: NO

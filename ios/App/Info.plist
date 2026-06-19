@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 出口合规:只用标准加密(SSH/TLS),声明不含非豁免加密 → 上传 TestFlight/App Store 不再每次追问。 -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- 锁屏录音(#23 P2):后台音频模式 → 息屏后 app 不挂起、录音继续;Live Activity 才名副其实。 -->
 	<key>UIBackgroundModes</key>
 	<array>
@@ -21,7 +24,7 @@
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Agent Station</string>
+	<string>Agent Deck</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -42,6 +45,9 @@
 	     UIViewControllerBasedStatusBarAppearance 保持默认 YES,VC override 才生效。 -->
 	<key>UIStatusBarHidden</key>
 	<true/>
+	<!-- 全屏沉浸 app(AR 眼镜 DP 输出),不参与 iPad 分屏多任务 → 豁免「必须支持全部 4 个方向」校验(上传错误 90474)。 -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -57,16 +63,19 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>按住语音键说话,把语音识别成文本注入远程终端。</string>
 	<!-- SPEC §8 real-device config-injection channel: a self-contained `.xrhosts`
-	     bundle (Valet output) AirDropped to the phone → "用 Agent Station 打开" → import.
+	     bundle (Valet output) AirDropped to the phone → "用 Agent Deck 打开" → import.
 	     We OWN the type (UTExportedTypeDeclarations) and claim Owner rank so AirDrop
 	     offers us. We do NOT list public.json in LSItemContentTypes (would noisily
 	     grab every .json); the type conforms to public.data/public.json only so the
 	     bundle is recognized as JSON-shaped, which does not make us a .json handler. -->
+	<!-- .xrhosts 是「导入即拷贝」(读一次写进 app 自己的配置,不改原文件)→ 声明不就地编辑,消除上传 Document Configuration 警告。 -->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Agent Station Config</string>
+			<string>Agent Deck Config</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
@@ -81,7 +90,7 @@
 			<key>UTTypeIdentifier</key>
 			<string>io.github.kevinfitzroy.xrealclient.hosts</string>
 			<key>UTTypeDescription</key>
-			<string>Agent Station Config</string>
+			<string>Agent Deck Config</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.json</string>

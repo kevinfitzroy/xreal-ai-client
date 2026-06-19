@@ -60,6 +60,6 @@ struct RecordingLiveActivityWidget: Widget {
     }
 
     private func subtitle(_ c: ActivityViewContext<RecordingActivityAttributes>) -> String {
-        c.state.projectName.map { "Agent Station → \($0)" } ?? "Agent Station"
+        c.state.projectName.map { "Agent Deck → \($0)" } ?? "Agent Deck"
     }
 }
