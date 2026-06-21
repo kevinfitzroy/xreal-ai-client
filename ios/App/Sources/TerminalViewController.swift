@@ -84,7 +84,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private enum ViewState { case home, list, terminal, logs }
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
-    private var view_ = ViewState.list
+    private var view_ = ViewState.list {
+        didSet { UIApplication.shared.isIdleTimerDisabled = (view_ == .terminal) }   // 终端态阻止熄屏;其它态恢复
+    }
     private static let minPageTapInterval: CFTimeInterval = 0.22
     private static let noEchoGraceSeconds: TimeInterval = 3.8
 
