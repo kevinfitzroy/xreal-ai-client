@@ -119,6 +119,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var reachable: Set<String>? = nil
     private var probedHosts: Set<String> = []   // hosts whose probe landed this round (incremental loading)
     private var fetchGen = 0                     // race guard: overlapping refreshManifests
+    private var hostFailStreak: [String: Int] = [:]      // host → 连续抓取失败次数(失败迟滞,SPEC §3 可靠性)
+    private static let disconnectAfterFails = 3          // 连续失败 N 次才真翻离线;期间保留上一轮好状态
 
     private var kbConnectObs: NSObjectProtocol?
     private var kbDisconnectObs: NSObjectProtocol?
@@ -650,6 +652,38 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         if view_ == .list { deckList.setSections(buildSections()) }
     }
 
+    /// 应用一个 host 的抓取结果,带**失败迟滞**(SPEC §3 可靠性):超时/连不上**不立刻翻离线**——
+    /// 连续失败 < N 次保留上一轮好状态(reachable 成员 + 状态 + project 列表都不动);≥ N 次才真离线。
+    /// 治"跳板/代理 host 擦超时就闪离线 / sub-project(尤其 live-only 的 Codex)闪没"。
+    private func applyHostFetch(_ r: HostFetchResult) {
+        let name = r.host.name
+        guard r.liveFetched else {
+            // 无 basePath:无可达性概念,直接用结果(status 空,不计 streak)。
+            statusByHost[name] = r.status
+            hosts = hosts.map { $0.name == name ? r.host : $0 }
+            return
+        }
+        probedHosts.insert(name)
+        if r.reachable {
+            hostFailStreak[name] = 0
+            statusByHost[name] = r.status
+            var reach = reachable ?? []; reach.insert(name); reachable = reach
+            hosts = hosts.map { $0.name == name ? r.host : $0 }   // 成功:用新 manifest 的 projects
+            return
+        }
+        // 失败:迟滞
+        let streak = (hostFailStreak[name] ?? 0) + 1
+        hostFailStreak[name] = streak
+        if streak >= Self.disconnectAfterFails {
+            statusByHost[name] = [:]
+            var reach = reachable ?? []; reach.remove(name); reachable = reach
+            AgentLog.info("network", "\(name): 连续失败 \(streak) 次 → 离线")
+        } else {
+            // 宽限:保留上一轮 reachable 成员 + 状态 + projects(全不动)。
+            AgentLog.debug("network", "\(name): 抓取失败 \(streak)/\(Self.disconnectAfterFails),保留上一轮好状态")
+        }
+    }
+
     /// Fetch each host's manifest + status off the main actor (concurrent + per-host timeout in
     /// ManifestFetcher), pushing the list INCREMENTALLY as each host resolves (SPEC §9). `fetchGen`
     /// discards a superseded fetch.
@@ -663,28 +697,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 guard let self, gen == self.fetchGen else { return }
                 let level: AgentLogLevel = !r.liveFetched ? .debug : (r.reachable ? .info : .warn)
                 AgentLog.shared.log(level, "manifest", "\(r.host.name) resolved reachable=\(r.reachable) projects=\(r.host.projects.count) states=\(r.status.count)")
-                self.probedHosts.insert(r.host.name)
-                self.statusByHost[r.host.name] = r.status
-                if r.liveFetched {
-                    var reach = self.reachable ?? []
-                    if r.reachable { reach.insert(r.host.name) } else { reach.remove(r.host.name) }
-                    self.reachable = reach
-                }
-                self.hosts = self.hosts.map { $0.name == r.host.name ? r.host : $0 }
+                self.applyHostFetch(r)   // 带失败迟滞(超时不立刻翻离线)
                 self.pushList()
                 self.pushHome()
             }
             await MainActor.run {
                 guard gen == self.fetchGen else { return }
-                // 合并:result 只含启用 host(snapshot=enabledHosts);停用的在 self.hosts 原样保留,
-                // 否则会被整体替换抹掉、从列表消失(host 删除 bug)。
-                let fetched = Dictionary(result.hosts.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
-                self.hosts = self.hosts.map { fetched[$0.name] ?? $0 }
-                for (name, st) in result.statusByHost { self.statusByHost[name] = st }
-                var reach = self.reachable ?? []
-                for h in result.hosts { if result.reachable.contains(h.name) { reach.insert(h.name) } else { reach.remove(h.name) } }
-                self.reachable = reach
-                self.probedHosts.formUnion(result.hosts.map { $0.name })
+                // 每个 host 已在回调里经 applyHostFetch(失败迟滞)处理过;停用的不在 result 里 → 原样保留。这里只收尾。
                 self.pushList()
                 self.pushHome()
                 AgentLog.info("manifest", "refresh done reachable=\(result.reachable.count)/\(result.hosts.count)")
@@ -1346,14 +1365,14 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         guard active.contains(where: { !$0.basePath.isEmpty }) else { return }
         Task {
             guard let round = await fleetTriage.runOnce(hosts: active) else { return }  // nil = 上一轮还在跑,跳过
-            // 合并回写:只更新被巡检(启用)的 host;停用的保留原样,不从列表/状态里消失。
-            let fetched = Dictionary(round.fetch.hosts.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
-            self.hosts = self.hosts.map { fetched[$0.name] ?? $0 }
-            for (name, st) in round.fetch.statusByHost { self.statusByHost[name] = st }
-            var reach = self.reachable ?? []
-            for h in active { if round.fetch.reachable.contains(h.name) { reach.insert(h.name) } else { reach.remove(h.name) } }
-            self.reachable = reach
-            self.probedHosts.formUnion(round.fetch.hosts.map { $0.name })
+            // 逐 host 走 applyHostFetch(失败迟滞);停用的不在 round 里 → 原样保留,不从列表消失。
+            for h in round.fetch.hosts {
+                self.applyHostFetch(HostFetchResult(
+                    host: h,
+                    status: round.fetch.statusByHost[h.name] ?? [:],
+                    reachable: round.fetch.reachable.contains(h.name),
+                    liveFetched: !h.basePath.isEmpty))
+            }
             self.triageItems = round.items
             self.pushList()
             self.pushHome()

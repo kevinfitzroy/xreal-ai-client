@@ -133,6 +133,8 @@
 2. host 可达 + status.json 有该 session → 用上报状态。
 3. host 可达 + 无该 session 记录 → `unknown`(无徽章)。**不做 capture-pane 兜底。**
 
+**失败迟滞(实现要求,可靠性):** 单次 manifest 拉取失败/超时**不立刻**翻 `disconnected`——**连续失败 N 次(默认 3)才真标离线**;期间**保留上一轮好状态**(可达 + 各 session 状态 + **project 列表**全不动)。原因:跳板/代理 host 连接建立慢,每轮全新连接常擦超时 → 否则会"擦一下就闪离线 / sub-project(尤其 Maestro 动态加的、不在 seed 配置里的 Codex)闪没",而点进去其实连得上。配套:per-host 超时放宽(iOS 15s,给跳板/代理余量)。iOS 落点:`TerminalViewController.applyHostFetch`(`hostFailStreak`)+ `ManifestFetcher.perHostTimeoutMs`。Android 待跟。
+
 **展示规则(实现要求):**
 - 时长 = `now - since`;`<0` 或 `>1440` 分钟则隐藏时长(钟偏/陈旧)。文案如 `3m working`、`12m waiting`。
 - **增量渲染防闪烁**:状态刷新走 **DOM patch**(按 **`host + " " + session` 复合键**定位,**不能只用 session**——不同 host 会有同名 `maestro` session,只用 session 会串台),不整列表重绘。结构变了(project 增删)才重渲染。
