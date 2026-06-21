@@ -1602,11 +1602,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         AgentLog.info("typed", "dismiss")
     }
 
-    /// 送出:整段注入终端。**不加 🎤 前缀**(打字是精确文本);默认追加 \n 直接执行(见 issue 决策点)。
+    /// 送出:整段注入终端。**不加 🎤 前缀**(打字是精确文本);**不加 \n**(注入后用户复核再按 Enter 执行,#32 决策)。
     private func submitTypedInput(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            sendToActivePTY(Data((text + "\n").utf8))
+            sendToActivePTY(Data(text.utf8))
             AgentLog.info("typed", "submit chars=\(text.count)")
         }
         hideTypedInput()
