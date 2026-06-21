@@ -41,7 +41,7 @@ enum ManifestFetcher {
     /// render that host disconnected while every reachable host already showed up. Mirrors
     /// Android's CONNECT_TIMEOUT_MS (12s there); shorter here for snappier UX. We don't rely
     /// on Citadel/NIO honoring its own connect timeout against a blackhole — this is external.
-    static let perHostTimeoutMs = 7_000
+    static let perHostTimeoutMs = 15_000   // 跳板/代理 host 连接建立慢 → 7s 太狠常擦超时误报离线;放宽(客户端再加失败迟滞)
 
     /// Concurrent fetch (Phase 3). Each host is probed in its own child task with its own
     /// timeout + do/catch, so one dead host can't hang or cancel the others; results are
