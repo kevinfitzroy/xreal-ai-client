@@ -676,10 +676,15 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             }
             await MainActor.run {
                 guard gen == self.fetchGen else { return }
-                self.hosts = result.hosts
-                self.statusByHost = result.statusByHost
-                self.reachable = result.reachable
-                self.probedHosts = Set(result.hosts.map { $0.name })
+                // 合并:result 只含启用 host(snapshot=enabledHosts);停用的在 self.hosts 原样保留,
+                // 否则会被整体替换抹掉、从列表消失(host 删除 bug)。
+                let fetched = Dictionary(result.hosts.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+                self.hosts = self.hosts.map { fetched[$0.name] ?? $0 }
+                for (name, st) in result.statusByHost { self.statusByHost[name] = st }
+                var reach = self.reachable ?? []
+                for h in result.hosts { if result.reachable.contains(h.name) { reach.insert(h.name) } else { reach.remove(h.name) } }
+                self.reachable = reach
+                self.probedHosts.formUnion(result.hosts.map { $0.name })
                 self.pushList()
                 self.pushHome()
                 AgentLog.info("manifest", "refresh done reachable=\(result.reachable.count)/\(result.hosts.count)")
