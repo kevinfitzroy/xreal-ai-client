@@ -76,44 +76,32 @@ final class TypedInputOverlay: UIView {
     // MARK: - accessory 快捷键条
 
     private func makeAccessoryBar() -> UIView {
-        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 48))
+        let bar = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 184))   // 高些 → 候选键多行
         bar.backgroundColor = UIColor(white: 0.16, alpha: 1)
         bar.autoresizingMask = .flexibleWidth
 
-        let cancel = barButton("取消", color: .systemRed, action: #selector(tapCancel))
-        let send = barButton("送出", color: .systemGreen, action: #selector(tapSubmit))
+        // 候选键:多行自动换行(不用左右拖)
+        let flow = ChipFlowView(chips: Self.chips.map { chipButton($0) })
+        flow.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(flow)
+
+        // 底部按钮行:Cancel(左)/ Send(右)
+        let cancel = barButton("Cancel", color: .systemRed, action: #selector(tapCancel))
+        let send = barButton("Send", color: .systemGreen, action: #selector(tapSubmit))
         cancel.translatesAutoresizingMaskIntoConstraints = false
         send.translatesAutoresizingMaskIntoConstraints = false
-
-        // 中段:可横滚的 chip 行
-        let scroll = UIScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.showsHorizontalScrollIndicator = false
-        let stack = UIStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.spacing = 8
-        stack.alignment = .center
-        for c in Self.chips {
-            let b = chipButton(c)
-            stack.addArrangedSubview(b)
-        }
-        scroll.addSubview(stack)
-        bar.addSubview(cancel); bar.addSubview(scroll); bar.addSubview(send)
+        bar.addSubview(cancel); bar.addSubview(send)
 
         NSLayoutConstraint.activate([
-            cancel.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
-            cancel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            send.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
-            send.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-            scroll.leadingAnchor.constraint(equalTo: cancel.trailingAnchor, constant: 10),
-            scroll.trailingAnchor.constraint(equalTo: send.leadingAnchor, constant: -10),
-            scroll.topAnchor.constraint(equalTo: bar.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-            stack.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 7),
-            stack.bottomAnchor.constraint(equalTo: scroll.bottomAnchor, constant: -7),
-            stack.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            flow.topAnchor.constraint(equalTo: bar.topAnchor, constant: 8),
+            flow.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            flow.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            flow.bottomAnchor.constraint(equalTo: cancel.topAnchor, constant: -6),
+
+            cancel.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 14),
+            cancel.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -10),
+            send.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -14),
+            send.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -10),
         ])
         return bar
     }
@@ -156,5 +144,32 @@ final class TypedInputOverlay: UIView {
 extension TypedInputOverlay: UITextViewDelegate {
     func textViewDidChange(_ tv: UITextView) {
         placeholder.isHidden = !tv.text.isEmpty
+    }
+}
+
+/// 候选键的**自动换行(flow)**容器:按可用宽度从左到右排,放不下就换行 —— 不用横向拖。
+private final class ChipFlowView: UIView {
+    private let chips: [UIButton]
+    private let hGap: CGFloat = 8, vGap: CGFloat = 8, rowH: CGFloat = 34
+
+    init(chips: [UIButton]) {
+        self.chips = chips
+        super.init(frame: .zero)
+        chips.forEach { addSubview($0) }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let maxW = bounds.width
+        guard maxW > 0 else { return }
+        var x: CGFloat = 0, y: CGFloat = 0
+        for b in chips {
+            b.sizeToFit()
+            let w = min(b.bounds.width, maxW)
+            if x > 0, x + w > maxW { x = 0; y += rowH + vGap }   // 超出本行宽度 → 换行
+            b.frame = CGRect(x: x, y: y, width: w, height: rowH)
+            x += w + hGap
+        }
     }
 }

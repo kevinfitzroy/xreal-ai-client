@@ -29,6 +29,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private let voiceOverlay = VoiceOverlayView()
     private lazy var typedInputOverlay = TypedInputOverlay()   // 方案二打字输入(仅 BuildFeatures.typedInput)
     private var typedInputActive = false
+    private var typedInputPinnedFrame: CGRect?   // 打字态:把 term.frame 钉死在此值,任何 layoutTerm 都返回它 → 不 PTY resize
     private let pageCueView = UIImageView()
     private let terminalBottomCover = UIView()
 
@@ -1409,6 +1410,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     private func termBaseFrame() -> CGRect {
+        if let pinned = typedInputPinnedFrame { return pinned }   // 打字态:帧钉死,不随键盘/vkey 动(防 tmux 抖)
         let overlap = forcedKeyboardOverlap ?? keyboardOverlap
         // terminal 核心区 = 整屏扣掉 vkey/inputAccessoryView overlap;5-unit 热区和 overlay 三段都基于这个 frame。
         return CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - overlap))
@@ -1580,8 +1582,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func showTypedInput() {
         typedInputActive = true
-        forcedKeyboardOverlap = 0          // 冻结 term.frame:忽略系统键盘 overlap
-        layoutTerm()
+        typedInputPinnedFrame = term?.frame   // 钉住当前帧:打字态全程不动 term.frame → 不 PTY resize / tmux 不抖
+        // 不调 layoutTerm:term 帧保持原样(被 overlay 盖住,尺寸无所谓);系统键盘弹出由观察者 guard + 钉帧双保险拦住
         view.bringSubviewToFront(typedInputOverlay)
         typedInputOverlay.frame = view.bounds
         typedInputOverlay.present()
@@ -1590,11 +1592,13 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     private func hideTypedInput() {
         typedInputOverlay.dismissOverlay()
-        typedInputActive = false
-        forcedKeyboardOverlap = nil
-        keyboardOverlap = 0
-        layoutTerm()
-        _ = term?.becomeFirstResponder()   // 还焦点给终端(硬件键继续进)
+        _ = term?.becomeFirstResponder()   // 还焦点给终端(硬件键继续进);vkey 回来期间帧仍被钉住
+        // 等键盘/vkey 动画落定再解封:此时稳态帧 == 钉住帧 → 无跳变。期间 termBaseFrame 一直返回钉住帧。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            guard let self else { return }
+            self.typedInputActive = false
+            self.typedInputPinnedFrame = nil
+        }
         AgentLog.info("typed", "dismiss")
     }
 
