@@ -1904,6 +1904,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         ) { [weak self] _ in
             guard let self else { return }
             MeetingStore.shared.processPending()   // 后台收到的录音(独立于 host)→ 前台即开始转写
+            // 终端态回前台(issue #34):warm 身份还在但 ssh 已断(后台窗口耗尽被挂起→RST)→ 主动补一轮重连。
+            // 补 onNetworkPathChanged 的盲区:同网回前台路径不变,NWPathMonitor 不 fire。
+            if self.view_ == .terminal, self.ssh == nil, self.warmHost != nil, self.autoReconnectWork == nil {
+                _ = self.scheduleAutoReconnect(host: self.warmHost!, session: self.warmSession ?? "",
+                                               name: self.warmHost!, type: "claude", route: "fg-resume")
+            }
             guard (self.view_ == .list || self.view_ == .home), !self.hosts.isEmpty else { return }
             self.refreshManifests()                                    // 快路径:列表/Home 状态即时刷新
             if self.hosts.contains(where: { !$0.basePath.isEmpty }) { self.runTriageRound() }   // 语义分诊一轮
