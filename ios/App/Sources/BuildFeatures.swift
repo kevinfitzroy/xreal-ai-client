@@ -11,4 +11,13 @@ enum BuildFeatures {
     /// 点击翻页一次一格、一次 SSH 往返,弱网更稳。需要时把下面改成 `true` 重编。
     /// 见 [`ios/README.md`](../../README.md) 「拨轮(可选)」。
     static let scrollRail = false
+
+    /// **轻量打字输入**(方案二,#32)。默认 **开**(已真机验证)。
+    ///
+    /// 终端态**双指轻点**唤起覆盖终端的打字 overlay(`TypedInputOverlay`):系统原生键盘 + `inputAccessoryView`
+    /// 多行快捷键条(`/` `?` `!` + `/compact` `/context` 等命令),送出后整段经 `sendToActivePTY` 注入。
+    /// **关键:打字态钉死 `term.frame`** → 不触发 PTY resize / tmux 重绘。
+    ///
+    /// 决策(#32):送出**不加 `\n`**(注入后用户复核、再按 Enter 执行,同语音安全网)。
+    static let typedInput = true
 }

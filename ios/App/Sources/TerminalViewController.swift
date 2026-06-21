@@ -27,6 +27,9 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var term: TerminalHostView!
     // 语音预览浮层(原生)。
     private let voiceOverlay = VoiceOverlayView()
+    private lazy var typedInputOverlay = TypedInputOverlay()   // 方案二打字输入(仅 BuildFeatures.typedInput)
+    private var typedInputActive = false
+    private var typedInputPinnedFrame: CGRect?   // 打字态:把 term.frame 钉死在此值,任何 layoutTerm 都返回它 → 不 PTY resize
     private let pageCueView = UIImageView()
     private let terminalBottomCover = UIView()
 
@@ -138,7 +141,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        navigationItem.title = "Agent Station"
+        navigationItem.title = "Agent Deck"
         navigationItem.largeTitleDisplayMode = .always
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "slider.horizontal.3"),
@@ -236,6 +239,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.onStopRecording = { [weak self] in self?.finishVoiceRecording() }
         voiceOverlay.onCancelRecording = { [weak self] in self?.cancelVoiceRecording() }
         view.addSubview(voiceOverlay)
+        if BuildFeatures.typedInput { setupTypedInput() }
         pageCueView.isHidden = true
         pageCueView.alpha = 0
         pageCueView.isUserInteractionEnabled = false
@@ -1025,7 +1029,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         _ = becomeFirstResponder()      // 列表态 VC 收硬件键 → 列表导航
         if reloadList { pushList() }
         navigationController?.setNavigationBarHidden(false, animated: false) // 列表:恢复 nav bar(大标题)
-        navigationItem.title = "Agent Station"
+        navigationItem.title = "Agent Deck"
         navigationItem.largeTitleDisplayMode = .always
         if navigationItem.rightBarButtonItem == nil {   // 从 logs 回列表 → 恢复齿轮
             navigationItem.rightBarButtonItem = UIBarButtonItem(
@@ -1147,7 +1151,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func hideHomePanel(animated: Bool) {
         view_ = .list
         navigationController?.setNavigationBarHidden(false, animated: false)   // 回列表:恢复 nav bar
-        navigationItem.title = "Agent Station"
+        navigationItem.title = "Agent Deck"
         navigationItem.largeTitleDisplayMode = .always
         _ = becomeFirstResponder()
         pushList()
@@ -1406,6 +1410,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     private func termBaseFrame() -> CGRect {
+        if let pinned = typedInputPinnedFrame { return pinned }   // 打字态:帧钉死,不随键盘/vkey 动(防 tmux 抖)
         let overlap = forcedKeyboardOverlap ?? keyboardOverlap
         // terminal 核心区 = 整屏扣掉 vkey/inputAccessoryView overlap;5-unit 热区和 overlay 三段都基于这个 frame。
         return CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - overlap))
@@ -1518,6 +1523,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         kbFrameObs = nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] note in
             guard let self,
                   let v = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+            if self.typedInputActive { return }   // 打字态:旁路终端键盘避让,冻结 term.frame(不 PTY resize)
             let kbInView = self.view.convert(v, from: nil)
             let overlap = max(0, self.view.bounds.maxY - kbInView.minY)
             self.keyboardOverlap = overlap
@@ -1530,6 +1536,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
         kbHideObs = nc.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
+            if self.typedInputActive { return }   // 打字态自管收起,不动终端避让
             self.keyboardOverlap = 0
             if !self.edgeDragging { self.clearForcedKeyboardOverlap() }
             self.layoutTerm()
@@ -1554,6 +1561,55 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             width: term.frame.width,
             height: Self.channelStripHeight
         )
+    }
+
+    // MARK: - 轻量打字输入(方案二,issue;仅 BuildFeatures.typedInput)
+    private func setupTypedInput() {
+        typedInputOverlay.frame = view.bounds
+        typedInputOverlay.onSubmit = { [weak self] text in self?.submitTypedInput(text) }
+        typedInputOverlay.onCancel = { [weak self] in self?.hideTypedInput() }
+        view.addSubview(typedInputOverlay)
+        // provisional 触发:双指轻点唤起(不撞单指翻页热区;最终触发待定,见 issue)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(onTypedInputTrigger))
+        tap.numberOfTouchesRequired = 2
+        view.addGestureRecognizer(tap)
+    }
+
+    @objc private func onTypedInputTrigger() {
+        guard BuildFeatures.typedInput, view_ == .terminal, !typedInputActive else { return }
+        showTypedInput()
+    }
+
+    private func showTypedInput() {
+        typedInputActive = true
+        typedInputPinnedFrame = term?.frame   // 钉住当前帧:打字态全程不动 term.frame → 不 PTY resize / tmux 不抖
+        // 不调 layoutTerm:term 帧保持原样(被 overlay 盖住,尺寸无所谓);系统键盘弹出由观察者 guard + 钉帧双保险拦住
+        view.bringSubviewToFront(typedInputOverlay)
+        typedInputOverlay.frame = view.bounds
+        typedInputOverlay.present()
+        AgentLog.info("typed", "present")
+    }
+
+    private func hideTypedInput() {
+        typedInputOverlay.dismissOverlay()
+        _ = term?.becomeFirstResponder()   // 还焦点给终端(硬件键继续进);vkey 回来期间帧仍被钉住
+        // 等键盘/vkey 动画落定再解封:此时稳态帧 == 钉住帧 → 无跳变。期间 termBaseFrame 一直返回钉住帧。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            guard let self else { return }
+            self.typedInputActive = false
+            self.typedInputPinnedFrame = nil
+        }
+        AgentLog.info("typed", "dismiss")
+    }
+
+    /// 送出:整段注入终端。**不加 🎤 前缀**(打字是精确文本);**不加 \n**(注入后用户复核再按 Enter 执行,#32 决策)。
+    private func submitTypedInput(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            sendToActivePTY(Data(text.utf8))
+            AgentLog.info("typed", "submit chars=\(text.count)")
+        }
+        hideTypedInput()
     }
 
     // MARK: - 终端右缘无极拨轮(issue #24,仅 BuildFeatures.scrollRail 开时挂载)
