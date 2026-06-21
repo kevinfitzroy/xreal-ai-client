@@ -253,6 +253,10 @@ final class FleetTriage {
         // 清理已不在闸门内(不再 waiting)的去重记录,防无限增长 + 防 stale 裁决复活。
         lastHash = lastHash.filter { liveKeys.contains($0.key) }
         lastVerdict = lastVerdict.filter { liveKeys.contains($0.key) }
+        // lastSeenTail 是 baseline,不能按 liveKeys(仅本轮 waiting)清——会误删还没轮到的 session。
+        // 按"当前所有 host 的 session 全集"清:只回收 manifest 里已消失(Maestro 删掉)的,防无界增长(#36 B1)。
+        let allSessionKeys = Set(hosts.flatMap { h in h.projects.map { h.name + "\u{1}" + $0.session } })
+        lastSeenTail = lastSeenTail.filter { allSessionKeys.contains($0.key) }
 
         // 排序:high 紧急在前,其次等得最久(since 小=早;0 排末)。
         items.sort { a, b in
