@@ -13,6 +13,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        CrashReporter.install()   // NSException 捕获 + 启动重喷(issue #35;signal 方案因独立启动白屏已撤)
         // (iOS 全面原生化后无 WKWebView,旧的 WebViewKeyboard 软键盘抑制 swizzle 已无意义,移除。)
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.overrideUserInterfaceStyle = .dark   // 全局深色 console 风(终端本就深色,列表/Home 一致 + 科技感)
