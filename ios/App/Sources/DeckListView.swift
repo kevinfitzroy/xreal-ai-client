@@ -17,6 +17,7 @@ struct DeckSection {
     let addr: String
     let proxy: String
     let up: Bool
+    let enabled: Bool   // 人为「启用/巡检」开关(SPEC §15);关 = 灰掉 + 不自动连接
     let rows: [DeckRow]
 }
 
@@ -26,6 +27,7 @@ struct DeckSection {
 final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {
     var onSelect: ((DeckRow) -> Void)?
     var onRefresh: (() -> Void)?
+    var onToggleHost: ((String, Bool) -> Void)?   // host name, 新启用态(SPEC §15)
 
     private let table = UITableView(frame: .zero, style: .insetGrouped)
     private let emptyLabel = UILabel()
@@ -41,6 +43,7 @@ final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {
         table.dataSource = self
         table.delegate = self
         table.register(DeckProjectCell.self, forCellReuseIdentifier: "cell")
+        table.register(DeckHostHeader.self, forHeaderFooterViewReuseIdentifier: "header")
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 60
         let rc = UIRefreshControl()
@@ -118,15 +121,20 @@ final class DeckListView: UIView, UITableViewDataSource, UITableViewDelegate {
 
     func tableView(_ t: UITableView, cellForRowAt ip: IndexPath) -> UITableViewCell {
         let cell = t.dequeueReusableCell(withIdentifier: "cell", for: ip) as! DeckProjectCell
-        cell.configure(sections[ip.section].rows[ip.row])
+        let sec = sections[ip.section]
+        cell.configure(sec.rows[ip.row])
+        cell.contentView.alpha = sec.enabled ? 1 : 0.4   // 停用 host:行灰掉
         cell.setKeyFocused(ip == selected)
         return cell
     }
-    func tableView(_ t: UITableView, titleForHeaderInSection s: Int) -> String? {
+    func tableView(_ t: UITableView, viewForHeaderInSection s: Int) -> UIView? {
+        let h = t.dequeueReusableHeaderFooterView(withIdentifier: "header") as! DeckHostHeader
         let sec = sections[s]
-        let proxy = sec.proxy.isEmpty ? "" : "  ·  🔒 \(sec.proxy)"
-        return sec.hostName + "  ·  " + sec.addr + proxy + (sec.up ? "" : "  ·  离线")
+        h.configure(sec) { [weak self] on in self?.onToggleHost?(sec.hostName, on) }
+        return h
     }
+    func tableView(_ t: UITableView, heightForHeaderInSection s: Int) -> CGFloat { UITableView.automaticDimension }
+    func tableView(_ t: UITableView, estimatedHeightForHeaderInSection s: Int) -> CGFloat { 44 }
     func tableView(_ t: UITableView, didSelectRowAt ip: IndexPath) {
         t.deselectRow(at: ip, animated: true)
         selected = ip; highlightSelected()
@@ -270,4 +278,46 @@ final class DeckProjectCell: UITableViewCell {
         if secs < 86400 { return "\(secs/3600)h" }
         return "\(secs/86400)d"
     }
+}
+
+/// host section header:host 名/别名/proxy/状态 + 右侧「启用/巡检」UISwitch(SPEC §15)。触摸操作。
+/// 关 = 该 host 不被自动巡检/manifest 刷新连接(灰掉 + 显示「停用」)。
+final class DeckHostHeader: UITableViewHeaderFooterView {
+    private let label = UILabel()
+    private let toggle = UISwitch()
+    private var onToggle: ((Bool) -> Void)?
+
+    override init(reuseIdentifier: String?) {
+        super.init(reuseIdentifier: reuseIdentifier)
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.textColor = .secondaryLabel
+        label.adjustsFontSizeToFitWidth = true
+        label.minimumScaleFactor = 0.7
+        toggle.addTarget(self, action: #selector(switched), for: .valueChanged)
+        toggle.setContentHuggingPriority(.required, for: .horizontal)
+        toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [label, toggle])
+        stack.axis = .horizontal; stack.alignment = .center; stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
+        ])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
+
+    func configure(_ sec: DeckSection, onToggle: @escaping (Bool) -> Void) {
+        self.onToggle = onToggle
+        let proxy = sec.proxy.isEmpty ? "" : "  ·  🔒 \(sec.proxy)"
+        let suffix = !sec.enabled ? "  ·  停用" : (sec.up ? "" : "  ·  离线")
+        label.text = sec.hostName + "  ·  " + sec.addr + proxy + suffix
+        label.alpha = sec.enabled ? 1 : 0.5
+        toggle.isOn = sec.enabled
+    }
+
+    @objc private func switched() { onToggle?(toggle.isOn) }
 }

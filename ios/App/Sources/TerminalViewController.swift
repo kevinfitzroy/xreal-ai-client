@@ -151,6 +151,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         deckList.translatesAutoresizingMaskIntoConstraints = false
         deckList.onSelect = { [weak self] r in self?.onOpenProject(host: r.host, session: r.session, name: r.name, type: r.type.rawValue) }
         deckList.onRefresh = { [weak self] in self?.refreshManifests() }
+        deckList.onToggleHost = { [weak self] host, on in
+            HostEnabledStore.setEnabled(host, on)
+            self?.pushList()                     // 立即灰掉/恢复
+            if on { self?.refreshManifests() }   // 重新启用 → 拉一次状态
+        }
         view.addSubview(deckList)
         NSLayoutConstraint.activate([
             deckList.topAnchor.constraint(equalTo: view.topAnchor),
@@ -605,8 +610,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     // MARK: - 列表数据:hosts + 状态 → [DeckSection](SPEC §3 状态映射,对齐 DeckJSON 逻辑)
+    /// 启用(未被人为停用)的 host —— 自动巡检 / manifest 刷新只连这些(SPEC §15)。
+    private var enabledHosts: [HostConfig] { hosts.filter { HostEnabledStore.isEnabled($0.name) } }
+
     private func buildSections() -> [DeckSection] {
         hosts.map { h in
+            guard HostEnabledStore.isEnabled(h.name) else {
+                // 停用:不自动连接 → 无 loading/状态,只列 project(灰由 DeckListView 处理)。
+                let rows = h.projects.map { p in
+                    DeckRow(host: h.name, session: p.session, name: p.name, type: p.type, state: nil, since: 0, loading: false)
+                }
+                return DeckSection(hostName: h.name, addr: h.addr, proxy: hostProxyLabel(h), up: true, enabled: false, rows: rows)
+            }
             let hostStatus = statusByHost[h.name] ?? [:]
             let hostLoading = (reachable == nil) || !probedHosts.contains(h.name)
             let unreachable = reachable != nil && !h.basePath.isEmpty && !(reachable!.contains(h.name))
@@ -621,7 +636,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 return DeckRow(host: h.name, session: p.session, name: p.name, type: p.type,
                                state: state, since: live?.since ?? 0, loading: hostLoading)
             }
-            return DeckSection(hostName: h.name, addr: h.addr, proxy: hostProxyLabel(h), up: hostLoading || !unreachable, rows: rows)
+            return DeckSection(hostName: h.name, addr: h.addr, proxy: hostProxyLabel(h), up: hostLoading || !unreachable, enabled: true, rows: rows)
         }
     }
 
@@ -639,7 +654,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// ManifestFetcher), pushing the list INCREMENTALLY as each host resolves (SPEC §9). `fetchGen`
     /// discards a superseded fetch.
     private func refreshManifests() {
-        let snapshot = hosts
+        let snapshot = enabledHosts   // 停用 host 不自动连接(SPEC §15);per-host 合并,停用的保留
         AgentLog.info("manifest", "refresh start hosts=\(snapshot.count)")
         fetchGen += 1
         let gen = fetchGen
@@ -1322,13 +1337,18 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     /// 跑一轮巡检:digest 喂 Home,顺带用这一轮 fresh fetch 刷新列表状态(巡检 = Home/列表的 live 刷新)。
     /// `runOnce` 内部 `running` 防重入;不动 `fetchGen`(那是事件驱动 refresh 的序号,互不干涉,末写为准)。
     private func runTriageRound() {
-        guard hosts.contains(where: { !$0.basePath.isEmpty }) else { return }
+        let active = enabledHosts   // 停用 host 不巡检(SPEC §15)
+        guard active.contains(where: { !$0.basePath.isEmpty }) else { return }
         Task {
-            guard let round = await fleetTriage.runOnce(hosts: hosts) else { return }  // nil = 上一轮还在跑,跳过
-            self.hosts = round.fetch.hosts
-            self.statusByHost = round.fetch.statusByHost
-            self.reachable = round.fetch.reachable
-            self.probedHosts = Set(round.fetch.hosts.map { $0.name })
+            guard let round = await fleetTriage.runOnce(hosts: active) else { return }  // nil = 上一轮还在跑,跳过
+            // 合并回写:只更新被巡检(启用)的 host;停用的保留原样,不从列表/状态里消失。
+            let fetched = Dictionary(round.fetch.hosts.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+            self.hosts = self.hosts.map { fetched[$0.name] ?? $0 }
+            for (name, st) in round.fetch.statusByHost { self.statusByHost[name] = st }
+            var reach = self.reachable ?? []
+            for h in active { if round.fetch.reachable.contains(h.name) { reach.insert(h.name) } else { reach.remove(h.name) } }
+            self.reachable = reach
+            self.probedHosts.formUnion(round.fetch.hosts.map { $0.name })
             self.triageItems = round.items
             self.pushList()
             self.pushHome()
