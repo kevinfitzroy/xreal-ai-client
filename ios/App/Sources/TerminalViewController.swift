@@ -31,6 +31,11 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var typedInputActive = false
     private var typedInputPinnedFrame: CGRect?   // 打字态:把 term.frame 钉死在此值,任何 layoutTerm 都返回它 → 不 PTY resize
     private let pageCueView = UIImageView()
+    // 常驻细分割线:让翻页「提示区 == 作用区」可见,用户点前就知道边界(方案 A)。
+    private let pageDivTop = UIView()      // 翻上/翻下 分界(0.5),较显
+    private let pageDivBottom = UIView()   // 翻下/缓冲 分界(pageDownEnd),更淡
+    private var pagePressStart: CGPoint = .zero     // 按压起点(term 坐标):位移超阈值→判为滚动/横滑,让位
+    private var pagePressLiveZone: TerminalTouchZone = .none  // 当前手指所在区(随小幅挪动更新)
     private let terminalBottomCover = UIView()
 
     // 终端右缘无极拨轮(issue #24,BuildFeatures.scrollRail 开时启用)+ 底部"新消息"药丸。
@@ -72,7 +77,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var kbFrameObs: NSObjectProtocol?
     private var kbHideObs: NSObjectProtocol?
     private var edgeDragging = false
-    private weak var termPageTap: UITapGestureRecognizer?
+    private weak var termPagePress: UILongPressGestureRecognizer?   // 按下即高亮、抬手才翻(minPressDuration=0)
     private weak var termVoicePress: UILongPressGestureRecognizer?
     private weak var termReturnPan: UIPanGestureRecognizer?
     private weak var listResumePan: UIPanGestureRecognizer?
@@ -198,13 +203,16 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
             else if gr is UIPanGestureRecognizer, BuildFeatures.scrollRail || gr !== t.panGestureRecognizer { gr.isEnabled = false }
         }
         // terminal 触摸分区(SPEC §6):只按 term.frame 核心显示区切 5 份;vkey/inputAccessoryView 不参与计算。
-        // 点击翻页:拨轮开时让位(disabled),由右缘拨轮接管滚动。
-        let pageTap = UITapGestureRecognizer(target: self, action: #selector(handleTermPageTap(_:)))
-        pageTap.cancelsTouchesInView = false
-        pageTap.delegate = self
-        pageTap.isEnabled = !BuildFeatures.scrollRail
-        t.addGestureRecognizer(pageTap)
-        self.termPageTap = pageTap
+        // 翻页:按下即高亮所在区(提示区==作用区)、可上下滑改区、抬手才执行(方案 A)。
+        // 用 minPressDuration=0 的 long-press 拿到 began/changed/ended,而非 tap(tap 点完才知,看不到边界)。
+        // 拨轮开时让位(disabled),由右缘拨轮接管滚动。
+        let pagePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermPagePress(_:)))
+        pagePress.minimumPressDuration = 0
+        pagePress.cancelsTouchesInView = false
+        pagePress.delegate = self
+        pagePress.isEnabled = !BuildFeatures.scrollRail
+        t.addGestureRecognizer(pagePress)
+        self.termPagePress = pagePress
         if BuildFeatures.scrollRail { setupScrollRail() }
         let voicePress = UILongPressGestureRecognizer(target: self, action: #selector(handleTermVoicePress(_:)))
         voicePress.minimumPressDuration = 0
@@ -254,6 +262,12 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         pageCueView.isUserInteractionEnabled = false
         pageCueView.contentMode = .center
         view.addSubview(pageCueView)
+        for (div, alpha) in [(pageDivTop, CGFloat(0.16)), (pageDivBottom, CGFloat(0.09))] {
+            div.backgroundColor = UIColor.white.withAlphaComponent(alpha)
+            div.isUserInteractionEnabled = false
+            div.isHidden = true
+            view.addSubview(div)
+        }
         terminalBottomCover.backgroundColor = Self.terminalBackgroundColor
         terminalBottomCover.isHidden = true
         view.addSubview(terminalBottomCover)
@@ -542,7 +556,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        if let termPageTap, gestureRecognizer === termPageTap {
+        if let termPagePress, gestureRecognizer === termPagePress {
             guard view_ == .terminal, !term.isHidden, voice.currentState == .idle else { return false }
             let zone = terminalTouchZone(at: gestureRecognizer.location(in: term), height: term.bounds.height)
             return zone == .pageUp || zone == .pageDown
@@ -592,6 +606,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 翻页按压被动:只在「无位移点按」抬手时翻;与原生竖向滚动 pan / 横滑回列表并存,位移大就自己让位。
+        if let termPagePress, gestureRecognizer === termPagePress || otherGestureRecognizer === termPagePress { return true }
         if let termReturnPan, gestureRecognizer === termReturnPan || otherGestureRecognizer === termReturnPan { return true }
         if let listResumePan, gestureRecognizer === listResumePan || otherGestureRecognizer === listResumePan { return true }
         if let listLogPan, gestureRecognizer === listLogPan || otherGestureRecognizer === listLogPan { return true }
@@ -1054,6 +1070,8 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func showListView(reloadList: Bool = true) {
         voiceOverlay.hide()
         pageCueView.isHidden = true
+        pageDivTop.isHidden = true
+        pageDivBottom.isHidden = true
         if BuildFeatures.scrollRail { scrollRail.isHidden = true; hideNewMsgPill() }
         logPanel.isHidden = true
         logDragging = false
@@ -1468,6 +1486,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.frame = f
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
         layoutChannelStrip()
+        layoutPageDividers()
         if !terminalBottomCover.isHidden {
             terminalBottomCover.frame = CGRect(
                 x: x,
@@ -1597,6 +1616,24 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceOverlay.reservedBottomInset = terminalBottomVoiceZoneHeight(in: f.height)
         if BuildFeatures.scrollRail { positionRail(in: f) }
         layoutChannelStrip()
+        layoutPageDividers()
+    }
+
+    /// 常驻细分割线:翻上/翻下(0.5)+ 翻下/缓冲(pageDownEnd)。与 hit-test 同常量 → 用户点前即见边界。
+    /// 拨轮态(滚动交右缘拨轮)/ 打字态(overlay 盖屏)/ 非终端态不显示。
+    private func layoutPageDividers() {
+        guard let term else { return }
+        let show = view_ == .terminal && !term.isHidden && !BuildFeatures.scrollRail && typedInputPinnedFrame == nil
+        pageDivTop.isHidden = !show
+        pageDivBottom.isHidden = !show
+        guard show else { return }
+        let hair = 1 / UIScreen.main.scale
+        let H = term.bounds.height, x = term.frame.minX, w = term.frame.width
+        pageDivTop.frame = CGRect(x: x, y: term.frame.minY + H * Self.pageSplitFraction - hair / 2, width: w, height: hair)
+        pageDivBottom.frame = CGRect(x: x, y: term.frame.minY + H * Self.pageDownEndFraction - hair / 2, width: w, height: hair)
+        // 摆在 term 之上(盖住终端内容可见)、但低于 cue/voiceOverlay/channelStrip(那些 show 时各自 bringToFront)。
+        view.insertSubview(pageDivTop, aboveSubview: term)
+        view.insertSubview(pageDivBottom, aboveSubview: term)
     }
 
     private func layoutChannelStrip() {
@@ -1795,18 +1832,50 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         }
     }
 
-    /// terminal 触摸分区:上半屏(0–0.5)→ 翻页上;中段(0.5–0.8)→ 翻页下;底部热区由 `handleTermVoicePress` 接管。
-    @objc private func handleTermPageTap(_ g: UITapGestureRecognizer) {
+    /// 翻页按压(方案 A):按下即高亮所在区(提示区==作用区),小幅上下挪可改区,抬手才翻。
+    /// 位移超 `pagePressDragSlop` → 判为「竖向滚动/横滑回列表」,取消高亮+不翻页,让位给原生 pan / returnPan。
+    private static let pagePressDragSlop: CGFloat = 22
+    @objc private func handleTermPagePress(_ g: UILongPressGestureRecognizer) {
         guard view_ == .terminal else { return }
-        let zone = terminalTouchZone(at: g.location(in: term), height: term.bounds.height)
-        guard zone == .pageUp || zone == .pageDown else { return }
-        let now = CACurrentMediaTime()
-        guard now - lastPageTapAt >= Self.minPageTapInterval else { return }
-        lastPageTapAt = now
-        keyHaptic.prepare(); keyHaptic.impactOccurred()
-        let up = zone == .pageUp
-        termPage(up: up)
-        showPageCue(up: up)
+        let p = g.location(in: term)
+        let h = term.bounds.height
+        switch g.state {
+        case .began:
+            pagePressStart = p
+            pagePressLiveZone = terminalTouchZone(at: p, height: h)
+            if pagePressLiveZone == .pageUp || pagePressLiveZone == .pageDown {
+                showLivePageCue(up: pagePressLiveZone == .pageUp)
+            }
+        case .changed:
+            // 任意方向位移超阈值 → 这是竖向滚动 / 横滑回列表,不是翻页点按:撤销高亮、置 none(抬手不翻),
+            // 触摸继续喂原生 pan(同时识别)。阈值内的小幅挪动仍可跨邻近边界改区。
+            if max(abs(p.x - pagePressStart.x), abs(p.y - pagePressStart.y)) > Self.pagePressDragSlop
+                || pagePressLiveZone == .none {
+                if pagePressLiveZone != .none { pagePressLiveZone = .none; hidePageCue() }
+                return
+            }
+            let z = terminalTouchZone(at: p, height: h)
+            guard z != pagePressLiveZone else { return }
+            pagePressLiveZone = z
+            if z == .pageUp || z == .pageDown { showLivePageCue(up: z == .pageUp) }
+            else { hidePageCue() }   // 挪进缓冲/语音区 → 取消(抬手不翻)
+        case .ended:
+            let z = pagePressLiveZone
+            pagePressLiveZone = .none
+            guard z == .pageUp || z == .pageDown, voice.currentState == .idle else { hidePageCue(); return }
+            let now = CACurrentMediaTime()
+            guard now - lastPageTapAt >= Self.minPageTapInterval else { hidePageCue(); return }
+            lastPageTapAt = now
+            keyHaptic.prepare(); keyHaptic.impactOccurred()
+            let up = z == .pageUp
+            termPage(up: up)
+            flashPageCue(up: up)   // 已翻页确认:短暂保留再淡出
+        case .cancelled, .failed:
+            pagePressLiveZone = .none
+            hidePageCue()
+        default:
+            break
+        }
     }
 
     func termPage(up: Bool) {
@@ -1919,24 +1988,41 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
         voiceKeyAction(pressed: pressed)
     }
 
-    private func showPageCue(up: Bool) {
+    /// 把 cue 摆到 up/down 区 + 设箭头/底色。与 hit-test 用同一组分界常量 → 提示区严格==作用区。
+    private func setPageCueFrame(up: Bool) {
         let split = term.bounds.height * Self.pageSplitFraction
         let zoneY = term.frame.minY + (up ? 0 : split)
         let zoneH = up ? split : term.bounds.height * Self.pageDownEndFraction - split
-        let zoneFrame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: zoneH)
+        pageCueView.frame = CGRect(x: term.frame.minX, y: zoneY, width: term.frame.width, height: zoneH)
         let config = UIImage.SymbolConfiguration(pointSize: 58, weight: .semibold)
         pageCueView.image = UIImage(systemName: up ? "arrow.up" : "arrow.down", withConfiguration: config)
-        pageCueView.tintColor = UIColor.white.withAlphaComponent(0.64)
+        pageCueView.tintColor = UIColor.white.withAlphaComponent(0.72)
         pageCueView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
-        pageCueView.frame = zoneFrame
         pageCueView.layer.borderWidth = 1 / UIScreen.main.scale
-        pageCueView.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        pageCueView.layer.borderColor = UIColor.white.withAlphaComponent(0.20).cgColor
+    }
+
+    /// 手指按下/挪入翻页区:常亮高亮该区(不淡出),抬手前一直显示。
+    private func showLivePageCue(up: Bool) {
         pageCueView.layer.removeAllAnimations()
+        setPageCueFrame(up: up)
         pageCueView.isHidden = false
         pageCueView.alpha = 1
         view.bringSubviewToFront(pageCueView)
         view.bringSubviewToFront(voiceOverlay)
-        UIView.animate(withDuration: 0.32, delay: 0.50, options: [.curveEaseIn, .allowUserInteraction]) {
+    }
+
+    /// 立即撤销高亮(挪出翻页区 / 判为滚动 / 取消)。
+    private func hidePageCue() {
+        pageCueView.layer.removeAllAnimations()
+        pageCueView.alpha = 0
+        pageCueView.isHidden = true
+    }
+
+    /// 抬手执行后:短暂保留再淡出,作为「已翻页」确认。
+    private func flashPageCue(up: Bool) {
+        showLivePageCue(up: up)
+        UIView.animate(withDuration: 0.28, delay: 0.34, options: [.curveEaseIn, .allowUserInteraction]) {
             self.pageCueView.alpha = 0
         } completion: { _ in
             self.pageCueView.isHidden = true
