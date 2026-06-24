@@ -84,6 +84,6 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func applicationWillTerminate(_ application: UIApplication) {
         AgentLog.info("app", "terminate: stop xray tunnels")
-        XrayProxy.stopAll()
+        SingboxProxy.stopAll()
     }
 }

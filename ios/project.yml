@@ -70,19 +70,19 @@ targets:
           fi
           /usr/libexec/PlistBuddy -c "Set :AgentStationGitRevision $GIT_REV" "$INFO_PLIST" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Add :AgentStationGitRevision string $GIT_REV" "$INFO_PLIST"
-      - name: Embed optional Xraybridge
+      - name: Embed optional Singboxbridge
         script: |
           set -e
-          SRC="$PROJECT_DIR/App/Frameworks/Xraybridge.framework"
+          SRC="$PROJECT_DIR/App/Frameworks/Singboxbridge.framework"
           if [ ! -d "$SRC" ]; then
-            echo "Xraybridge.framework absent; SSH-over-443 proxy hosts will fail closed."
+            echo "Singboxbridge.framework absent; SSH-over-443 proxy hosts will fail closed."
             exit 0
           fi
           DST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
           mkdir -p "$DST"
           rsync -a --delete "$SRC" "$DST/"
           if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-NO}" != "NO" ]; then
-            /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --preserve-metadata=identifier,entitlements "$DST/Xraybridge.framework"
+            /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --preserve-metadata=identifier,entitlements "$DST/Singboxbridge.framework"
           fi
     # 版本号放进 Version.xcconfig; DEVELOPMENT_TEAM 放进 gitignored Signing.xcconfig —— 不让个人 Apple ID team 进公开 repo。
     # 真机构建需本地有 ios/Signing.xcconfig(内含 `DEVELOPMENT_TEAM = <你的 teamID>`);模拟器构建忽略签名,不需要。

@@ -128,12 +128,12 @@ enum ManifestFetcher {
         if let rawManifest, let projects = parseManifest(rawManifest, hostName: h.name) {
             var updated = h
             updated.projects = projects
-            XrayDebugLog.append("manifest \(h.name): projects=\(projects.count) states=\(status.count)")
+            TunnelDebugLog.append("manifest \(h.name): projects=\(projects.count) states=\(status.count)")
             NSLog("[ManifestFetcher] \(h.name): \(projects.count) projects, \(status.count) live states")
             AgentLog.info("network", "\(h.name): manifest OK projects=\(projects.count) states=\(status.count)")
             return HostFetchResult(host: updated, status: status, reachable: true, liveFetched: true, tails: tails)
         }
-        XrayDebugLog.append("manifest \(h.name): missing/bad states=\(status.count)")
+        TunnelDebugLog.append("manifest \(h.name): missing/bad states=\(status.count)")
         NSLog("[ManifestFetcher] \(h.name): manifest missing/bad → keep seed (reachable)")
         AgentLog.warn("network", "\(h.name): manifest missing/bad states=\(status.count)")
         return HostFetchResult(host: h, status: status, reachable: true, liveFetched: true, tails: tails)
@@ -202,11 +202,11 @@ enum ManifestFetcher {
             NSLog("[ManifestFetcher] connecting \(h.name)\(through)…")   // visible while a dead host hangs
             AgentLog.debug("network", "SSH connect \(h.name)\(through)")
             let conn = try await SshConnect.connect(target: h, via: via)
-            XrayDebugLog.append("ssh connected \(h.name)\(through)")
+            TunnelDebugLog.append("ssh connected \(h.name)\(through)")
             AgentLog.info("network", "SSH connected \(h.name)\(through)")
             return conn
         } catch {
-            XrayDebugLog.append("ssh failed \(h.name): \(String(describing: error).prefix(160))")
+            TunnelDebugLog.append("ssh failed \(h.name): \(String(describing: error).prefix(160))")
             NSLog("[ManifestFetcher] connect(\(h.name)) failed: \(error)")
             AgentLog.warn("network", "SSH failed \(h.name): \(String(describing: error).prefix(160))")
             return nil
