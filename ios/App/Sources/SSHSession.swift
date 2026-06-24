@@ -65,6 +65,9 @@ final class SSHSession {
                 self.client = conn.target
                 self.jumpClient = conn.jump
                 let client = conn.target
+                // #2 弱网:连接层掉线即时收尾(→ close → inbound 结束 → onClosed → 既有重连)。
+                // 比只靠 PTY inbound 流结束更快/更稳;静默 NAT 死亡两者都不触发,靠 #1 探针(见 VC)。
+                client.onDisconnect { [weak self] in self?.close() }
                 live = true
                 AgentLog.info("terminal", "PTY opening host=\(h.name) session=\(session)")
                 onConnected()
@@ -119,6 +122,26 @@ final class SSHSession {
         } catch {
             AgentLog.warn("terminal", "execCapture failed: \(String(describing: error).prefix(120))")
             return nil
+        }
+    }
+
+    /// #1 弱网保活探活:在已有连接上跑一个极轻 exec(`:`),带超时。true=连接活;false=超时/失败(视为已死)。
+    /// 为什么需要:静默 NAT 死亡(链路还"在"、无 RST)时 PTY inbound 流既不结束也不报错,onClosed 拖很久才触发;
+    /// 只有这种**主动探针**能及时发现 → 上层据此主动 close() 触发既有重连。探针流量也顺带保住沿途(含 §5.1
+    /// 隧道 :443)的 NAT 映射,降低空闲被回收的概率。Citadel 0.12.1 无原生 SSH keepalive,故走 app 层 exec 探针。
+    func probeAlive(timeoutMs: Int = 6000) async -> Bool {
+        guard client != nil else { return false }
+        // 探针 vs 超时竞速:先完成者赢。execCapture 非 nil(含空串)= 活;nil 或超时 = 死。
+        // 静默死亡时 execCapture 可能挂住 → 超时任务先返回 false;cancelAll 后由调用方 ssh.close() 清理挂住的 channel。
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask { (await self.execCapture(":")) != nil }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
         }
     }
 

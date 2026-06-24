@@ -224,6 +224,9 @@ enum SingboxConfig {
 
     /// 组装完整 sing-box 配置:ssh-in → route override 到 targetHost:targetPort → proxy outbound。
     private static func assemble(outbound: [String: Any], localPort: Int, targetHost: String, targetPort: Int) throws -> String {
+        var outbound = outbound
+        // #3 弱网:出站开 TCP Fast Open(重拨 :443 省 1 RTT;服务端不支持时 sing-box 自动回退)。vmess/vless 共用。
+        outbound["tcp_fast_open"] = true
         let route: [String: Any] = [
             "rules": [[
                 "inbound": ["ssh-in"],

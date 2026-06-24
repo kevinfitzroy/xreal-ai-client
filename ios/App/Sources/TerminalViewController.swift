@@ -85,7 +85,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private enum TerminalTouchZone { case pageUp, pageDown, voice, none }
     private enum ChannelStripState { case hidden, checking, suspect, reconnecting, disconnected }
     private var view_ = ViewState.list {
-        didSet { UIApplication.shared.isIdleTimerDisabled = (view_ == .terminal) }   // 终端态阻止熄屏;其它态恢复
+        didSet {
+            UIApplication.shared.isIdleTimerDisabled = (view_ == .terminal)   // 终端态阻止熄屏;其它态恢复
+            if view_ == .terminal { startKeepalive() } else { stopKeepalive() }   // #1 弱网保活:仅终端前台跑
+        }
     }
     private static let minPageTapInterval: CFTimeInterval = 0.22
     private static let noEchoGraceSeconds: TimeInterval = 3.8
@@ -99,6 +102,10 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private var channelStripState = ChannelStripState.hidden
     private var autoReconnectWork: DispatchWorkItem?
     private var autoReconnectAttempts = 0
+    private var keepaliveTimer: Timer?            // #1 弱网保活探针(仅终端前台 + 已连接时跑)
+    private var keepaliveInFlight = false
+    private static let keepaliveInterval: TimeInterval = 24   // NAT 多在 30~120s 回收空闲映射 → 24s 留余量
+    private static let keepaliveTimeoutMs = 6000
     // iOS.7 最近终端保活:backToList 不关 ssh,保留 SwiftTerm 绘制 + 后台继续喂输出;超时才真关。
     // 开同一 project / 列表右缘滑 = 滑回(已连接则瞬间,连接中则回到连接页);开不同 project = 关旧连新。
     // warm* = 当前/保活终端身份。
@@ -779,6 +786,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                 NSLog("[VC] PTY dropped gen=\(gen) view=\(self.view_ == .terminal ? "term" : "warm")")
                 AgentLog.warn("terminal", "PTY dropped host=\(h.name) session=\(p.session)")
                 self.ssh = nil
+                self.stopKeepalive()   // #1 连接没了,停探针(重连成功的 onConnected 会重开)
                 self.warmHost = nil; self.warmSession = nil   // 保活终端也断了 → 清理
                 self.activeHostConfig = nil
                 self.activeViaConfig = nil
@@ -812,6 +820,7 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
                     self.setChannelStrip(.hidden)
                     self.autoReconnectAttempts = 0
                     self.cancelAutoReconnect()
+                    self.startKeepalive()   // #1 连上即开保活探针(内部 guard view_==.terminal)
                     NSLog("[VC] PTY live host=\(h.name) session=\(p.session) view=\(self.view_ == .terminal ? "term" : "warm")")
                     AgentLog.info("terminal", "PTY live host=\(h.name) session=\(p.session)")
                     if self.view_ == .terminal {
@@ -1832,6 +1841,46 @@ final class TerminalViewController: UIViewController, TerminalViewDelegate, Term
     private func stopCopyModePoll() {
         copyModePollTimer?.invalidate()
         copyModePollTimer = nil
+    }
+
+    // MARK: - #1 弱网保活探针
+    /// 终端前台且已连接时,周期性主动探活(见 `SSHSession.probeAlive`):静默 NAT 死亡时 onClosed 不及时,
+    /// 探针失败就主动 `ssh.close()` → 走既有 `onClosed → scheduleAutoReconnect`(指数退避)。探针流量也保住 NAT。
+    private func startKeepalive() {
+        guard ssh != nil, view_ == .terminal, keepaliveTimer == nil else { return }
+        let t = Timer(timeInterval: Self.keepaliveInterval, repeats: true) { [weak self] _ in
+            self?.keepaliveTick()
+        }
+        keepaliveTimer = t
+        RunLoop.main.add(t, forMode: .common)
+    }
+
+    private func stopKeepalive() {
+        keepaliveTimer?.invalidate()
+        keepaliveTimer = nil
+        keepaliveInFlight = false
+    }
+
+    private func keepaliveTick() {
+        // 重连中 / 探针在飞 / 已离开终端 → 跳过(避免误判 + 不和重连叠加)。
+        guard view_ == .terminal, let ssh = ssh, autoReconnectWork == nil,
+              !keepaliveInFlight, channelStripState != .reconnecting else { return }
+        keepaliveInFlight = true
+        let gen = sessionGen
+        Task {
+            let alive = await ssh.probeAlive(timeoutMs: Self.keepaliveTimeoutMs)
+            await MainActor.run {
+                self.keepaliveInFlight = false
+                // 迟到结果防污染:会话没换、还是同一个 ssh、仍在终端、没有重连在飞,才据此动作。
+                guard self.sessionGen == gen, self.ssh === ssh, self.view_ == .terminal,
+                      self.autoReconnectWork == nil else { return }
+                if !alive {
+                    AgentLog.warn("network", "keepalive 探针失败 → 主动断开触发重连 session=\(self.activeSessionName ?? "?")")
+                    self.setChannelStrip(.suspect, "连接疑似中断,正在确认…")
+                    ssh.close()   // → SSHSession.onClosed → 既有 scheduleAutoReconnect
+                }
+            }
+        }
     }
 
     /// 用既有连接(execCapture,不新建 SSH)读 `#{pane_in_mode}`:"1"=仍在 → 保持;"0"/空(无 tmux)=已退出 → 复原;
