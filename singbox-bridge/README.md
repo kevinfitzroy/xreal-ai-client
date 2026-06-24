@@ -17,9 +17,11 @@
 ```bash
 cd singbox-bridge && ./build-ios.sh     # → ios/App/Frameworks/Singboxbridge.framework(不进 git)
 ```
-前置:Go ≥ 1.24(sing-box v1.13 要 go1.24.7;本机 go1.25 满足,**无需升 go**)、gomobile/gobind、能翻墙拉 sing-box。
+前置:**Go 1.25.x**(sing-box v1.13 本身只要 go1.24.7,但 gomobile 的 `golang.org/x/mobile` 要 go1.25.0 → 实测下限被抬到 1.25;本机有 go1.25.x 缓存即可,**无需手动升 go**)、gomobile/gobind、能翻墙拉 sing-box。
 
-**首次 build** 会 `go mod tidy` 解析 sing-box 全量依赖并生成 `go.sum`(Claude 环境无网络,仓库只 pin 直接依赖)——build 通过后请把 `go.mod`/`go.sum` 提交。
+`build-ios.sh` 已内置三处构建硬化(都踩过):① 自动用缓存的 **go1.25.x toolchain 当 GOROOT + GOTOOLCHAIN=local**(否则 gomobile 子进程会去下非法的 "go1.25");② `golang.org/x/mobile` 经 `tool` 指令进 go.mod(gomobile bind 必需);③ `GOSUMDB=off`(gomobile 内部 tidy 走 goproxy.cn 的 sumdb 常 504)。
+
+`go.mod`/`go.sum` 已提交(可复现);首次在新机 build 若缺 `go.sum` 会自动 `go mod tidy` 重生成。
 
 **build tag**:`with_utls`(reality uTLS 指纹必需);tun/quic/wireguard/clash-api 未启用以缩体积。
 

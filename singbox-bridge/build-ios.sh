@@ -17,6 +17,24 @@ cd "$(dirname "$0")"
 
 command -v gomobile >/dev/null || { echo "✗ gomobile not in PATH" >&2; exit 1; }
 
+# ── toolchain + 代理硬化(踩过两个坑)─────────────────────────────────────────
+# golang.org/x/mobile(gomobile binding 运行时)要 go≥1.25.0 → `go get -tool` 把本模块 go 指令抬到
+# 1.25.0。两个坑:
+#   ① GOTOOLCHAIN=auto 时 gomobile 内部子进程会去下**非法**的 "go1.25"(无 patch)→ toolchain not available;
+#   ② gomobile 内部 `go mod tidy` 逐个走 sumdb(经 goproxy.cn 镜像)校验间接依赖,该端点常 504。
+# 解法:把本机**已缓存的 go1.25.x toolchain 当 GOROOT** + GOTOOLCHAIN=local(toolchain 不再被当可下载
+# 模块 → 不触发"下 go1.25"也不触发 sumdb 校验它)+ GOSUMDB=off(跳过 sumdb 远程 tile;go.sum 已锁哈希)。
+TC_DIR="$(ls -d "$HOME"/go/pkg/mod/golang.org/toolchain@*go1.25*darwin-* 2>/dev/null | sort -V | tail -1)"
+if [ -n "$TC_DIR" ] && [ -x "$TC_DIR/bin/go" ]; then
+  export GOROOT="$TC_DIR"; export GOTOOLCHAIN=local; export PATH="$GOROOT/bin:$PATH"
+  echo "→ GOROOT=$GOROOT (GOTOOLCHAIN=local, $("$GOROOT/bin/go" version | awk '{print $3}'))"
+else
+  export GOTOOLCHAIN="${GOTOOLCHAIN_PIN:-go1.25.0}"
+  echo "→ 未找到缓存的 go1.25 toolchain;退回 GOTOOLCHAIN=$GOTOOLCHAIN(可能需联网下)"
+fi
+export GOSUMDB=off
+export GOFLAGS="${GOFLAGS:-} -mod=mod"
+
 # Claude 环境无网络 → go.sum 不随仓库提交;首次 build 在你本机 tidy 出来(之后请提交 go.mod/go.sum)。
 if [ ! -f go.sum ]; then
   echo "→ go.sum 缺失,首次 build:go mod tidy(拉 sing-box 全量依赖,几分钟)…"
