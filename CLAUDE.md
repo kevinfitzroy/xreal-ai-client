@@ -189,7 +189,8 @@ GFW 对 :22 限速/阻断海外 host,但同机 :443 的 xray(vmess+TLS)服务正
 | 编译 Debug APK | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug` | 产物在 `android/app/build/outputs/apk/debug/app-debug.apk` |
 | 装到 emulator/真机 | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew installDebug` | emulator 需先启动或真机已 USB 连接 |
 | 全清重编 | `cd android && JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew clean assembleDebug` | Gradle 缓存或依赖出问题时用 |
-| **build SSH-over-443 隧道 aar** | `cd xray-bridge && ./build.sh` | 出 `android/app/libs/xraybridge.aar`(不进 git)→ 下次 assembleDebug 自动带隧道能力。**前置**:NDK r27c + gomobile/gobind + 翻墙(脚本默认走 SOCKS `127.0.0.1:10808`)。坑见 §5.1 / memory `ssh-over-443`:go.mod pin 兼容本机 go 的 xray-core 版本、`GOROOT` 须指向新 go(非 PATH)。**没 build 不影响普通构建**(隧道功能仅不可用) |
+| **build SSH-over-443 隧道 aar(Android)** | `cd xray-bridge && ./build.sh` | 出 `android/app/libs/xraybridge.aar`(不进 git)→ 下次 assembleDebug 自动带隧道能力。**前置**:NDK r27c + gomobile/gobind + 翻墙(脚本默认走 SOCKS `127.0.0.1:10808`)。坑见 §5.1 / memory `ssh-over-443`:go.mod pin 兼容本机 go 的 xray-core 版本、`GOROOT` 须指向新 go(非 PATH)。**没 build 不影响普通构建**(隧道功能仅不可用) |
+| **build SSH-over-443 隧道 framework(iOS)** | `cd singbox-bridge && ./build-ios.sh` | 出 `ios/App/Frameworks/Singboxbridge.framework`(不进 git)→ 下次 xcodebuild 自动嵌入。**iOS 隧道引擎已从 xray-core 换 sing-box**(issue #46:xray-core 的 vless+Reality/Vision 真机连上即停,桌面 sing-box 同节点稳)。**前置**:go ≥1.24(sing-box v1.13 要 go1.24.7,本机 go1.25 够,无需升)+ gomobile/gobind + 翻墙。**首次 build 自动 `go mod tidy` 生成 go.sum**(之后提交)。build tag `with_utls`(reality 必需)。**没 build 不影响普通构建** |
 
 如果嫌每次写 `JAVA_HOME` 麻烦,可以 `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"` 加进 `~/.zshrc`,或在 shell 里直接 `export` 一次。
 
